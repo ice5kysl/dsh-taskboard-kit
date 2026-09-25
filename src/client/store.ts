@@ -31,8 +31,8 @@ export interface TaskboardState {
   board: Board | null
   /** Task open in the detail drawer. */
   selectedId: string | null
-  /** Whether the done column also lists cancelled tasks. */
-  showCancelled: boolean
+  /** Whether the closed column is expanded (default: a collapsed strip). */
+  showClosed: boolean
   /** A mutation is in flight — action buttons stay disabled meanwhile. */
   busy: boolean
 }
@@ -50,7 +50,7 @@ export interface TaskboardStore {
   setCwd(cwd: string | null): void
   refresh(): Promise<void>
   select(id: string | null): void
-  setShowCancelled(on: boolean): void
+  setShowClosed(on: boolean): void
   clearError(): void
   /** Create a task; resolves true on success so the form can close itself. */
   create(input: CreateInput): Promise<boolean>
@@ -73,7 +73,7 @@ const INITIAL: TaskboardState = {
   cwd: null,
   board: null,
   selectedId: null,
-  showCancelled: false,
+  showClosed: false,
   busy: false,
 }
 
@@ -171,8 +171,8 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
     select(id) {
       set({ selectedId: id })
     },
-    setShowCancelled(on) {
-      set({ showCancelled: on })
+    setShowClosed(on) {
+      set({ showClosed: on })
     },
     clearError() {
       set({ error: null })

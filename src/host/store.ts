@@ -23,6 +23,7 @@ import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/prom
 import { dirname, join, resolve } from 'node:path'
 import type { ErrorCode, UpdateAction } from '../shared/bridge.ts'
 import {
+  TASK_VALUES,
   compareTasks,
   emptyBoard,
   type Board,
@@ -31,6 +32,7 @@ import {
   type TaskLogEntry,
   type TaskPriority,
   type TaskStatus,
+  type TaskValue,
 } from '../shared/types.ts'
 
 /** A structured store failure; `code` is the bridge-facing error code. */
@@ -74,11 +76,16 @@ export async function loadBoard(cwd: string): Promise<Board> {
   if (!parsed || parsed.version !== 1) {
     throw new StoreError('internal', `unsupported taskboard version in ${file} (expected 1)`)
   }
-  // Schema drift normalization (version stays 1 for added fields): boards
-  // written before v0.2 have no comments array — hydrate it in place so every
-  // later reader can treat it as always present.
+  // Schema drift normalization (version stays 1 for added/renamed fields):
+  //   v0.2 added comments — hydrate it in place;
+  //   v0.3 renamed cancelled → closed (status AND log events) and added value.
   for (const task of Object.values(parsed.tasks ?? {})) {
     if (!Array.isArray(task.comments)) task.comments = []
+    if (task.value === undefined) task.value = null
+    if ((task.status as string) === 'cancelled') task.status = 'closed'
+    for (const entry of task.log ?? []) {
+      if ((entry.event as string) === 'cancelled') entry.event = 'closed'
+    }
   }
   return parsed
 }
@@ -182,8 +189,9 @@ async function isStaleLock(lockPath: string): Promise<boolean> {
 // ------------------------------------------------------------- input parsing
 
 const PRIORITIES: readonly TaskPriority[] = ['high', 'medium', 'low']
-const STATUSES: readonly TaskStatus[] = ['open', 'in_progress', 'done', 'cancelled']
-const ACTIONS: readonly UpdateAction[] = ['start', 'stop', 'done', 'reopen', 'cancel']
+const STATUSES: readonly TaskStatus[] = ['open', 'in_progress', 'review', 'done', 'closed']
+// `cancel` is the pre-v0.3 name of `close`; accepted as an alias forever.
+const ACTIONS: readonly UpdateAction[] = ['start', 'stop', 'submit', 'approve', 'reject', 'done', 'close', 'reopen', 'cancel']
 
 function requireId(id: unknown): string {
   if (typeof id !== 'string' || id.trim() === '') {
@@ -240,6 +248,16 @@ function parseAction(action: unknown): UpdateAction | undefined {
   return action as UpdateAction
 }
 
+/** Value points: one of TASK_VALUES (0.5/1/2/3/5/8); `undefined` = untouched, `null` = clear. */
+function parseValue(value: unknown): TaskValue | null | undefined {
+  if (value === undefined) return undefined
+  if (value === null) return null
+  if (typeof value !== 'number' || !TASK_VALUES.includes(value as TaskValue)) {
+    throw new StoreError('invalid-input', `value must be one of ${TASK_VALUES.join(' | ')} (or null to clear)`)
+  }
+  return value as TaskValue
+}
+
 function mustTask(board: Board, id: string): Task {
   const task = board.tasks[id]
   if (!task) throw new StoreError('not-found', `no such task: ${id}`)
@@ -258,6 +276,8 @@ export interface CreateTaskInput {
   /** Set = delegate to that actor; omitted/null/empty = into the claimable pool. */
   assignee?: string | null
   priority?: TaskPriority
+  /** Value points (0.5/1/2/3/5/8); omitted/null = unestimated. */
+  value?: TaskValue | null
   tags?: string[]
 }
 
@@ -266,6 +286,7 @@ export async function createTask(cwd: string, input: CreateTaskInput, by: string
   const detail = parseDetail(input?.detail) ?? ''
   const assignee = parseAssignee(input?.assignee) ?? null
   const priority = parsePriority(input?.priority) ?? 'medium'
+  const value = parseValue(input?.value) ?? null
   const tags = parseTags(input?.tags) ?? []
   return withBoardLock(cwd, async () => {
     const board = await loadBoard(cwd)
@@ -281,6 +302,7 @@ export async function createTask(cwd: string, input: CreateTaskInput, by: string
       status: 'open',
       assignee,
       priority,
+      value,
       tags,
       created_by: by,
       created_at: now,
@@ -297,7 +319,7 @@ export async function createTask(cwd: string, input: CreateTaskInput, by: string
 /**
  * The core atomic action: take a task out of the claimable pool. Succeeds only
  * while the task is open AND unassigned; anything else (already claimed, in
- * progress, done, cancelled, or delegated to someone) is a conflict.
+ * progress, review, done, closed, or delegated to someone) is a conflict.
  */
 export async function claimTask(cwd: string, id: string, by: string): Promise<Task> {
   const taskId = requireId(id)
@@ -325,19 +347,24 @@ export interface UpdateTaskPatch {
   title?: string
   detail?: string
   priority?: TaskPriority
+  /** Value points (0.5/1/2/3/5/8); null clears back to unestimated. */
+  value?: TaskValue | null
   tags?: string[]
   /** Appended to the last log entry this update produces (or a new 'updated' one). */
   note?: string
 }
 
 /**
- * Status transitions by action:
- *   start:  open → in_progress ('started')
- *   stop:   in_progress → open ('stopped', assignee kept — the kanban's
- *           "back to todo" drag; combine with assignee:null to also unassign)
- *   done:   open | in_progress → done ('done')
- *   reopen: done | cancelled → open ('reopened', assignee kept)
- *   cancel: open | in_progress → cancelled ('cancelled')
+ * Status transitions by action (v0.3 review flow):
+ *   start:   open → in_progress ('started')
+ *   stop:    in_progress → open ('stopped', assignee kept)
+ *   submit:  in_progress → review ('submitted')
+ *   approve: review → done ('approved')
+ *   reject:  review → in_progress ('rejected')
+ *   done:    open | in_progress | review → done ('done')
+ *   close:   open | in_progress | review | done → closed ('closed')
+ *   reopen:  done | closed → open ('reopened', assignee kept)
+ * The legacy action `cancel` behaves exactly as `close`.
  * The action lands first; an assignee change in the same call is then checked
  * against the RESULTING status.
  */
@@ -353,6 +380,7 @@ export async function updateTask(
   const title = patch?.title === undefined ? undefined : requireTitle(patch.title)
   const detail = parseDetail(patch?.detail)
   const priority = parsePriority(patch?.priority)
+  const value = parseValue(patch?.value)
   const tags = parseTags(patch?.tags)
   const note = typeof patch?.note === 'string' && patch.note.trim() !== '' ? patch.note.trim() : undefined
 
@@ -363,13 +391,9 @@ export async function updateTask(
     const events: TaskEvent[] = []
 
     if (action) {
-      const event = transitionOf(task, action)
-      task.status = action === 'start' ? 'in_progress'
-        : action === 'stop' ? 'open'
-        : action === 'done' ? 'done'
-        : action === 'reopen' ? 'open'
-        : 'cancelled'
-      events.push(event)
+      const transition = transitionOf(task, action)
+      task.status = transition.to
+      events.push(transition.event)
     }
 
     if (assignee !== undefined && assignee !== task.assignee) {
@@ -396,6 +420,10 @@ export async function updateTask(
       task.priority = priority
       fieldsChanged = true
     }
+    if (value !== undefined && value !== task.value) {
+      task.value = value
+      fieldsChanged = true
+    }
     if (tags !== undefined && JSON.stringify(tags) !== JSON.stringify(task.tags)) {
       task.tags = tags
       fieldsChanged = true
@@ -417,22 +445,28 @@ export async function updateTask(
   })
 }
 
-/** The log event one action produces, or an invalid-transition StoreError. */
-function transitionOf(task: Task, action: UpdateAction): TaskEvent {
-  const legal =
-    (action === 'start' && task.status === 'open')
-    || (action === 'stop' && task.status === 'in_progress')
-    || (action === 'done' && (task.status === 'open' || task.status === 'in_progress'))
-    || (action === 'reopen' && (task.status === 'done' || task.status === 'cancelled'))
-    || (action === 'cancel' && (task.status === 'open' || task.status === 'in_progress'))
-  if (!legal) {
+/** The status machine (v0.3): action → allowed source statuses → target + event. */
+type EffectiveAction = Exclude<UpdateAction, 'cancel'>
+
+const TRANSITIONS: Record<EffectiveAction, { from: readonly TaskStatus[]; to: TaskStatus; event: TaskEvent }> = {
+  start: { from: ['open'], to: 'in_progress', event: 'started' },
+  stop: { from: ['in_progress'], to: 'open', event: 'stopped' },
+  submit: { from: ['in_progress'], to: 'review', event: 'submitted' },
+  approve: { from: ['review'], to: 'done', event: 'approved' },
+  reject: { from: ['review'], to: 'in_progress', event: 'rejected' },
+  done: { from: ['open', 'in_progress', 'review'], to: 'done', event: 'done' },
+  close: { from: ['open', 'in_progress', 'review', 'done'], to: 'closed', event: 'closed' },
+  reopen: { from: ['done', 'closed'], to: 'open', event: 'reopened' },
+}
+
+/** The transition one action produces, or an invalid-transition StoreError. */
+function transitionOf(task: Task, action: UpdateAction): { to: TaskStatus; event: TaskEvent } {
+  const effective: EffectiveAction = action === 'cancel' ? 'close' : action
+  const transition = TRANSITIONS[effective]
+  if (!transition.from.includes(task.status)) {
     throw new StoreError('invalid-transition', `${task.id} is ${task.status}; action "${action}" is not allowed now`)
   }
-  return action === 'start' ? 'started'
-    : action === 'stop' ? 'stopped'
-    : action === 'done' ? 'done'
-    : action === 'reopen' ? 'reopened'
-    : 'cancelled'
+  return transition
 }
 
 /**

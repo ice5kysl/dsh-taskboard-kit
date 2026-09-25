@@ -45,6 +45,7 @@ export {
 } from './store.ts'
 export { resolveCwd } from './workspace.ts'
 export { L } from './locale.ts'
+export { TASK_VALUES } from '../shared/types.ts'
 
 /** The slice of `@deepseek-ai/dsh-host-webserver` this plugin uses. */
 interface WebServerLike {
@@ -124,21 +125,25 @@ export function apply(ctx: Context): void {
       text: L(
         '## 任务看板\n' +
         '本 workspace 有一块共享任务看板（taskboard_* 工具），人类在界面的看板标签页里看到的是同一块板。规则：\n' +
-        '- 会话开始先调用 taskboard_list：看待认领池（column=pool）、指派给你的、以及进行中的任务；\n' +
+        '- 会话开始先调用 taskboard_list：看待认领池（column=pool）、指派给你的、进行中的、以及待审核（column=review）的任务；\n' +
         '- 动手做一件事之前先占位：池里的任务用 taskboard_claim 认领；指派给你的任务用 taskboard_update（action=start）开工。\n' +
         '  认领/开工之前不要直接干活——板子存在的意义就是避免撞车；\n' +
-        '- 有进展、做完、或需要留记录时，即时 taskboard_update（action=done 收尾，note 记进展）——人类在面板上实时看着；\n' +
-        '- 实现发现、交接说明、测试反馈要留给下一个接手的人时，用 taskboard_comment（不改任务状态）；接手任务前先 taskboard_get 看留言和时间线；\n' +
-        '- claim 冲突 = 别人已经占了：换别的待认领任务，或向人类请示，不要硬做同一个。',
+        '- 做完用 taskboard_update（action=submit）提交审核，不要直接 done；审核者 approve 通过、reject 打回' +
+        '（打回时用 taskboard_comment 写明原因）；被打回（回到 in_progress）改完再 submit；\n' +
+        '- 进展/完成即时 taskboard_update（note 记进展）；实现发现、交接说明、测试反馈用 taskboard_comment（不改状态），' +
+        '接手任务前先 taskboard_get 看留言和时间线；\n' +
+        '- 不要的任务用 action=close（旧名 cancel 是它的别名）；claim 冲突 = 别人已经占了：换别的待认领任务，或向人类请示，不要硬做同一个。',
         '## Task board\n' +
         'This workspace has a shared task board (taskboard_* tools); the human watches the SAME board in the kanban tab. Rules:\n' +
-        '- At session start, call taskboard_list: check the claimable pool (column=pool), tasks delegated to you, and work in progress;\n' +
+        '- At session start, call taskboard_list: check the claimable pool (column=pool), tasks delegated to you, work in progress, and the review queue (column=review);\n' +
         '- Before working on anything, take ownership first: taskboard_claim a pool task, or taskboard_update (action=start) ' +
         'a task delegated to you. Never just start working — the board exists to prevent collisions;\n' +
-        '- Report progress as it happens with taskboard_update (action=done to finish, note to log progress) — the human sees it live;\n' +
-        '- Leave implementation findings, handoff notes or test feedback with taskboard_comment (state untouched); ' +
-        'before picking up a task, taskboard_get first to read its comments and timeline;\n' +
-        '- A claim conflict means someone else got there first: pick another pool task or ask the human — never work the same task anyway.',
+        '- When finished, taskboard_update (action=submit) to hand the task to review instead of marking it done yourself; ' +
+        'the reviewer approves (→ done) or rejects (→ in_progress, with a taskboard_comment explaining why); after a rejection, fix and submit again;\n' +
+        '- Report progress as it happens with taskboard_update (note to log progress); leave findings, handoff notes or test feedback ' +
+        'with taskboard_comment (state untouched); before picking up a task, taskboard_get first to read its comments and timeline;\n' +
+        '- Close unwanted tasks with action=close (cancel is its legacy alias); a claim conflict means someone else got there first: ' +
+        'pick another pool task or ask the human — never work the same task anyway.',
       ),
     })
     log.info('taskboard rules added to the system prompt')

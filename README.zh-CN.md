@@ -12,10 +12,10 @@
   - `taskboard_list` — 列出任务（按状态 / 列 / 负责人过滤）
   - `taskboard_create` — 新建任务，可选直接指派给谁
   - `taskboard_claim` — 从待认领池原子认领（并发下恰好一人成功）
-  - `taskboard_update` — 开始 / 暂停 / 完成 / 重开 / 取消、改派、改字段、附注
+  - `taskboard_update` — 开始 / 暂停 / 提交审核 / 通过 / 打回 / 完成 / 关闭 / 重开、改派、改字段（含价值度）、附注
   - `taskboard_comment` — 给任务留言（实现发现 / 交接说明 / 测试反馈），不改任务状态
   - `taskboard_get` — 任务全文 + 事件时间线 + 留言串
-- **「看板」会话页签**：四条泳道（待认领 · 已指派 · 进行中 · 已完成），卡片带优先级 / 负责人 / 存留时长 / 标签，详情抽屉里有事件流水，一键认领 / 开始 / 完成 / 重开 / 改派。
+- **「看板」会话页签**：六条泳道（待认领 · 已指派 · 进行中 · 待审核 · 已完成 · 已关闭），卡片带优先级 / 价值度 / 负责人 / 存留时长 / 标签，详情抽屉里有事件流水和留言，一键认领 / 开始 / 提交 / 通过 / 打回 / 关闭 / 改派。
 - **会话开始感知**：Agent 会被告知有几条待认领、几条进行中；系统提示词里写入了「先认领再动手」的协作规则。
 
 ## 板文件
@@ -31,9 +31,13 @@
 | 待认领 | `open` 且无负责人——任何人可 `claim` |
 | 已指派 | `open` 且有负责人——已委派、未开始 |
 | 进行中 | 已认领或已开始 |
-| 已完成 | `done`（已取消的任务默认折叠，toggle 可显示） |
+| 待审核 | 已提交（submit），等审核者 `approve` 通过 / `reject` 打回 |
+| 已完成 | 审核通过（或直接 `done`） |
+| 已关闭 | 放弃的任务——`close`（面板默认折叠，toggle 可显示） |
 
-流转：`open → in_progress`（claim / start）、`in_progress → open`（stop——回到待办，保留负责人）、`open|in_progress → done`、`open|in_progress → cancelled`、`done|cancelled → open`（reopen）。状态名刻意对齐 msg9 任务模型，未来接服务端看板时语义不变。
+流转图：`open → in_progress → review → done`；任何非终态可 `closed`；`done | closed → open`（reopen）。按动作说：`open → in_progress`（claim / start）、`in_progress → open`（stop）、`in_progress → review`（submit）、`review → done`（approve）、`review → in_progress`（reject）、`open|in_progress|review → done`、`open|in_progress|review|done → closed`（close，旧名 `cancel` 是它的别名）、`done|closed → open`（reopen）。状态名刻意对齐 msg9 任务模型，未来接服务端看板时语义不变。旧版本写出的板文件无感加载：`cancelled` 状态/日志事件归一为 `closed`，缺的 `value` / `comments` 字段自动补齐。
+
+每个任务还有**价值度**（value points，斐波那契刻度 ½ / 1 / 2 / 3 / 5 / 8，`null` = 未评估），用来回答"这张卡值多少"——创建或更新时设置，CLI 里 `--value 1/2` 表示 ½、`--value none` 清除。
 
 ## 安装
 
@@ -51,9 +55,11 @@ dsh plugin --profile web add dsh-taskboard-kit
 ```bash
 taskboard list                              # 看板（待认领在前）
 taskboard claim T-3 --by kimi               # 原子认领，log 记 "kimi"
+taskboard update T-3 --action submit --by kimi          # 提交审核
+taskboard update T-3 --action approve --by claude       # 审核通过
 taskboard update T-3 --action done --note "搞定了" --by kimi
-taskboard comment T-3 --text "交接：…" --by kimi      # 不改任务状态
-taskboard create --title "…" --priority high --by claude
+taskboard comment T-3 --text "交接：…" --by kimi        # 不改任务状态
+taskboard create --title "…" --priority high --value 3 --by claude
 ```
 
 `--by` 指定 log 里的操作者（默认 `$TASKBOARD_ACTOR` 或 `cli-agent`）；`--cwd` 指向别的 workspace；`--json` 输出机器可读结果；认领失败退出码 `3` 并给出可读的冲突原因。包还没上 npm 之前，直接从仓库调用：`node /path/to/dsh-taskboard-kit/bin/taskboard.mjs list`。dsh web 跑不跑都能用；web 在跑时，本机进程也可以直接调回环 bridge `/dsh-taskboard/*`。

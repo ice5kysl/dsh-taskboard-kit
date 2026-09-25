@@ -7,15 +7,17 @@
  * Code, Claude Code, any shell) work the same board through the same lock
  * and the same atomic claim — never by hand-editing the JSON.
  *
- *   taskboard list [--status open|in_progress|done|cancelled] [--assignee NAME|none]
+ *   taskboard list [--status open|in_progress|review|done|closed] [--assignee NAME|none]
  *   taskboard get <id>
- *   taskboard create --title T [--detail D] [--assignee A] [--priority high|medium|low] [--tags a,b]
+ *   taskboard create --title T [--detail D] [--assignee A] [--priority high|medium|low] [--value V] [--tags a,b]
  *   taskboard claim <id>
- *   taskboard update <id> [--action start|stop|done|reopen|cancel] [--assignee A|none]
- *                         [--title T] [--detail D] [--priority P] [--tags a,b] [--note N]
+ *   taskboard update <id> [--action start|stop|submit|approve|reject|done|close|reopen|cancel]
+ *                         [--assignee A|none] [--title T] [--detail D] [--priority P] [--value V|none] [--tags a,b] [--note N]
  *   taskboard comment <id> --text TEXT
  *   taskboard path
  *
+ * --value takes the Fibonacci value points 0.5 1 2 3 5 8 ("1/2" works for 0.5;
+ * "none" on update clears back to unestimated).
  * Global flags: --cwd DIR (default: pwd) · --by NAME (default: $TASKBOARD_ACTOR
  * or "cli-agent") · --json (machine-readable output).
  * Exit codes: 0 ok · 1 usage/internal error · 2 not found / invalid · 3 claim conflict.
@@ -27,9 +29,16 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const lib = await import(join(dirname(fileURLToPath(import.meta.url)), '..', 'lib', 'index.js'))
-const { StoreError, addComment, boardFilePath, claimTask, createTask, getTask, listTasks, updateTask } = lib
+const { StoreError, TASK_VALUES, addComment, boardFilePath, claimTask, createTask, getTask, listTasks, updateTask } = lib
 
 const EXIT = { ok: 0, error: 1, invalid: 2, conflict: 3 }
+
+/** --value flag: "0.5"/"1/2"/"1"/"2"/"3"/"5"/"8" → the TaskValue; "none" → null (clear). */
+function parseValueFlag(raw) {
+  if (raw.trim().toLowerCase() === 'none') return null
+  const num = Number(raw.trim() === '1/2' ? '0.5' : raw.trim())
+  return TASK_VALUES.includes(num) ? num : undefined
+}
 
 function parseArgs(argv) {
   const flags = {}
@@ -54,12 +63,13 @@ function parseArgs(argv) {
 
 function line(task) {
   const who = task.assignee ?? '·pool·'
-  return `${task.id} · ${task.status} · ${who} · ${task.priority} · ${task.title}`
+  const value = task.value != null ? ` · v${task.value}` : ''
+  return `${task.id} · ${task.status} · ${who} · ${task.priority}${value} · ${task.title}`
 }
 
 function full(task) {
   const head = [
-    `${task.id} · ${task.status} · ${task.assignee ?? '·pool·'} · ${task.priority}`,
+    `${task.id} · ${task.status} · ${task.assignee ?? '·pool·'} · ${task.priority}${task.value != null ? ` · v${task.value}` : ''}`,
     `title: ${task.title}`,
     task.tags.length ? `tags: ${task.tags.join(', ')}` : '',
     `created by ${task.created_by} at ${task.created_at} · updated ${task.updated_at}`,
@@ -124,6 +134,14 @@ async function main() {
       if (typeof flags.detail === 'string') input.detail = flags.detail
       if (typeof flags.assignee === 'string') input.assignee = flags.assignee
       if (typeof flags.priority === 'string') input.priority = flags.priority
+      if (typeof flags.value === 'string') {
+        const parsed = parseValueFlag(flags.value)
+        if (parsed === undefined) {
+          console.error(`create: --value must be one of ${TASK_VALUES.join(' ')} ("1/2" = 0.5)`)
+          return EXIT.invalid
+        }
+        input.value = parsed
+      }
       if (typeof flags.tags === 'string') input.tags = flags.tags.split(',').map((t) => t.trim()).filter(Boolean)
       const task = await createTask(cwd, input, by)
       print(asJson ? task : `created ${line(task)}`, asJson)
@@ -141,6 +159,14 @@ async function main() {
       if (typeof flags.title === 'string') patch.title = flags.title
       if (typeof flags.detail === 'string') patch.detail = flags.detail
       if (typeof flags.priority === 'string') patch.priority = flags.priority
+      if (typeof flags.value === 'string') {
+        const parsed = parseValueFlag(flags.value)
+        if (parsed === undefined) {
+          console.error(`update: --value must be one of ${TASK_VALUES.join(' ')} ("1/2" = 0.5, "none" clears)`)
+          return EXIT.invalid
+        }
+        patch.value = parsed
+      }
       if (typeof flags.tags === 'string') patch.tags = flags.tags.split(',').map((t) => t.trim()).filter(Boolean)
       if (typeof flags.note === 'string') patch.note = flags.note
       const { task, events } = await updateTask(cwd, rest[0], patch, by)

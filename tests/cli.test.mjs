@@ -94,5 +94,36 @@ assert.equal(noText.code, 2)
 assert.match(noText.stderr, /--text is required/)
 ok('comment without --text exits 2')
 
+const half = JSON.parse(await cli('create', '--title', '半个点的任务', '--value', '1/2', '--json'))
+assert.equal(half.id, 'T-2')
+assert.equal(half.value, 0.5, '"1/2" maps to 0.5')
+ok('create --value 1/2 maps to 0.5')
+
+const halfListed = await cli('list')
+assert.match(halfListed, /T-2 · open · ·pool· · medium · v0\.5 · 半个点的任务/)
+ok('list renders the value suffix')
+
+await cli('claim', 'T-2')
+const submitted = JSON.parse(await cli('update', 'T-2', '--action', 'submit', '--json'))
+assert.equal(submitted.status, 'review')
+const approved = JSON.parse(await cli('update', 'T-2', '--action', 'approve', '--json'))
+assert.equal(approved.status, 'done')
+assert.deepEqual(approved.log.slice(-2).map((e) => e.event), ['submitted', 'approved'])
+ok('submit → approve walks the review flow')
+
+const badValue = await cliFails('create', '--title', 'bad points', '--value', '4')
+assert.equal(badValue.code, 2)
+assert.match(badValue.stderr, /--value must be one of/)
+ok('illegal --value exits 2')
+
+const closed = JSON.parse(await cli('update', 'T-2', '--action', 'cancel', '--json'))
+assert.equal(closed.status, 'closed')
+assert.equal(closed.log.at(-1).event, 'closed')
+ok('cancel still works as the close alias')
+
+const cleared = JSON.parse(await cli('update', 'T-2', '--value', 'none', '--json'))
+assert.equal(cleared.value, null, '"none" clears the estimate')
+ok('update --value none clears back to unestimated')
+
 await rm(ws, { recursive: true, force: true })
 console.log(`all checks passed (${checks})`)

@@ -61,13 +61,17 @@ function errorText(error: unknown): string {
   return L('taskboard 工具失败：{message}', 'taskboard tool failed: {message}', { message: (error as Error).message })
 }
 
+function valueLabel(task: Task): string {
+  return task.value !== null ? ` · v${task.value}` : ''
+}
+
 function summaryLine(task: Task): string {
-  return `${task.id} · ${task.status} · ${whoLabel(task.assignee)} · ${task.priority} · ${task.title}`
+  return `${task.id} · ${task.status} · ${whoLabel(task.assignee)} · ${task.priority}${valueLabel(task)} · ${task.title}`
 }
 
 function formatGet(task: Task): string {
   const lines = [
-    `${task.id} · ${task.status} · ${task.priority}`,
+    `${task.id} · ${task.status} · ${task.priority}${valueLabel(task)}`,
     task.title,
     L('负责人：{who} · 创建：{creator} {created} · 更新：{updated}', 'assignee: {who} · created by {creator} {created} · updated {updated}', {
       who: whoLabel(task.assignee),
@@ -97,11 +101,11 @@ export function registerTaskboardTools(ctx: Context): void {
     name: 'taskboard_list',
     description:
       'List tasks on this workspace\'s shared task board (the same board the human sees in the kanban tab). ' +
-      'Call it at session start to see what is claimable, delegated to you, or in progress. ' +
+      'Call it at session start to see what is claimable, delegated to you, in progress, or awaiting review. ' +
       'One summary line per task; use taskboard_get for a task\'s full detail and timeline.',
     parameters: {
-      status: { type: 'string', enum: ['open', 'in_progress', 'done', 'cancelled'], description: 'Keep only this status.' },
-      column: { type: 'string', enum: ['pool', 'assigned', 'in_progress', 'done'], description: 'Keep only this kanban column (pool = open and unassigned, i.e. claimable).' },
+      status: { type: 'string', enum: ['open', 'in_progress', 'review', 'done', 'closed'], description: 'Keep only this status.' },
+      column: { type: 'string', enum: ['pool', 'assigned', 'in_progress', 'review', 'done', 'closed'], description: 'Keep only this kanban column (pool = open and unassigned, i.e. claimable; review = submitted, awaiting approval).' },
       assignee: { type: 'string', description: 'Keep only tasks owned by this actor; pass "none" for unassigned (claimable) tasks.' },
     },
     output: TEXT_OUTPUT,
@@ -117,13 +121,14 @@ export function registerTaskboardTools(ctx: Context): void {
           return true
         })
         const totals = L(
-          '看板合计：open {open} · in_progress {ip} · done {done} · cancelled {cx}',
-          'board totals: open {open} · in_progress {ip} · done {done} · cancelled {cx}',
+          '看板合计：open {open} · in_progress {ip} · review {rv} · done {done} · closed {cx}',
+          'board totals: open {open} · in_progress {ip} · review {rv} · done {done} · closed {cx}',
           {
             open: all.filter((task) => task.status === 'open').length,
             ip: all.filter((task) => task.status === 'in_progress').length,
+            rv: all.filter((task) => task.status === 'review').length,
             done: all.filter((task) => task.status === 'done').length,
-            cx: all.filter((task) => task.status === 'cancelled').length,
+            cx: all.filter((task) => task.status === 'closed').length,
           },
         )
         if (listed.length === 0) {
@@ -151,6 +156,7 @@ export function registerTaskboardTools(ctx: Context): void {
       detail: { type: 'string', description: 'Markdown body with the full context (rendered as plain text in the panel).' },
       assignee: { type: 'string', description: 'Delegate to this actor; omit for the claimable pool.' },
       priority: { type: 'string', enum: ['high', 'medium', 'low'], description: 'Default: medium.' },
+      value: { type: 'number', enum: [0.5, 1, 2, 3, 5, 8], description: 'Value points — one of 0.5 1 2 3 5 8; omit if unestimated.' },
       tags: { type: 'array', items: { type: 'string' }, description: 'Free-form grouping labels.' },
       by: { type: 'string', description: 'Acting identity recorded in the task log (default: TASKBOARD_ACTOR or dsh-agent).' },
     },
@@ -163,6 +169,7 @@ export function registerTaskboardTools(ctx: Context): void {
           ...(args.detail !== undefined ? { detail: args.detail } : {}),
           ...(args.assignee !== undefined ? { assignee: args.assignee } : {}),
           ...(args.priority !== undefined ? { priority: args.priority } : {}),
+          ...(args.value !== undefined ? { value: args.value } : {}),
           ...(args.tags !== undefined ? { tags: args.tags } : {}),
         }, actorOf(args.by))
         const placement = task.assignee
@@ -221,17 +228,18 @@ export function registerTaskboardTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'taskboard_update',
     description:
-      'Update a task you own: move it through its lifecycle (action start/stop/done/reopen/cancel), reassign it, ' +
-      'edit title/detail/priority/tags, and attach a note to the log entry. ' +
+      'Update a task you own: move it through its lifecycle (action start/stop/submit/approve/reject/done/close/reopen), ' +
+      'reassign it, edit title/detail/priority/value/tags, and attach a note to the log entry. ' +
       'Report progress as you go — the human watches the same board in the kanban tab. ' +
       'To leave information without changing state, use taskboard_comment instead.',
     parameters: {
       id: { type: 'string', required: true, description: 'Task id, e.g. T-1.' },
-      action: { type: 'string', enum: ['start', 'stop', 'done', 'reopen', 'cancel'], description: 'start: open→in_progress; stop: in_progress→open (back to todo, assignee kept); done: open|in_progress→done; reopen: done|cancelled→open; cancel: open|in_progress→cancelled.' },
+      action: { type: 'string', enum: ['start', 'stop', 'submit', 'approve', 'reject', 'done', 'close', 'reopen', 'cancel'], description: 'start: open→in_progress; stop: in_progress→open; submit: in_progress→review (hand to a reviewer); approve: review→done; reject: review→in_progress (send back); done: open|in_progress|review→done; close: open|in_progress|review|done→closed (cancel is its legacy alias); reopen: done|closed→open.' },
       assignee: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'New owner while open/in_progress; null unassigns back to the pool.' },
       title: { type: 'string', description: 'New title.' },
       detail: { type: 'string', description: 'New markdown body.' },
       priority: { type: 'string', enum: ['high', 'medium', 'low'], description: 'New priority.' },
+      value: { oneOf: [{ type: 'number', enum: [0.5, 1, 2, 3, 5, 8] }, { type: 'null' }], description: 'Value points — one of 0.5 1 2 3 5 8; null clears back to unestimated.' },
       tags: { type: 'array', items: { type: 'string' }, description: 'Replace the tag list.' },
       note: { type: 'string', description: 'Progress note appended to the log entry this update produces.' },
       by: { type: 'string', description: 'Acting identity recorded in the task log (default: TASKBOARD_ACTOR or dsh-agent).' },
@@ -246,6 +254,7 @@ export function registerTaskboardTools(ctx: Context): void {
           ...(args.title !== undefined ? { title: args.title } : {}),
           ...(args.detail !== undefined ? { detail: args.detail } : {}),
           ...(args.priority !== undefined ? { priority: args.priority } : {}),
+          ...(args.value !== undefined ? { value: args.value } : {}),
           ...(args.tags !== undefined ? { tags: args.tags } : {}),
           ...(args.note !== undefined ? { note: args.note } : {}),
         }, actorOf(args.by))

@@ -111,7 +111,7 @@ await check('apply(): the「看板」conversation view tab is registered', () =>
   const state = store.getState()
   assert.equal(state.status, 'loading')
   assert.equal(state.board, null)
-  assert.equal(state.showCancelled, false)
+  assert.equal(state.showClosed, false)
 
   // Effects: just the board poller — its disposer must stop the interval.
   assert.equal(disposers.length, 1)
@@ -120,15 +120,16 @@ await check('apply(): the「看板」conversation view tab is registered', () =>
 
 // --------------------------------------------------------- shared board math
 
-await check('columnOf: the four column derivations match the contract', () => {
+await check('columnOf: the five statuses map onto the six columns', () => {
   // open + no assignee → the claimable pool
   assert.equal(client.columnOf({ status: 'open', assignee: null }), 'pool')
   // open + assignee → delegated, not yet started
   assert.equal(client.columnOf({ status: 'open', assignee: 'kimi' }), 'assigned')
+  // the other four statuses map one-to-one onto their columns
   assert.equal(client.columnOf({ status: 'in_progress', assignee: 'kimi' }), 'in_progress')
-  // done AND cancelled both land in the done column
+  assert.equal(client.columnOf({ status: 'review', assignee: 'kimi' }), 'review')
   assert.equal(client.columnOf({ status: 'done', assignee: 'kimi' }), 'done')
-  assert.equal(client.columnOf({ status: 'cancelled', assignee: null }), 'done')
+  assert.equal(client.columnOf({ status: 'closed', assignee: null }), 'closed')
 })
 
 await check('compareTasks: priority first, then oldest first', () => {
@@ -156,35 +157,60 @@ await check('compareTasks: priority first, then oldest first', () => {
 
 // --------------------------------------------------------- drag-and-drop semantics
 
-await check('planDrop: drops compile into the contract op sequences', () => {
+await check('planDrop: drops compile into the six-column op sequences', () => {
   assert.equal(typeof client.planDrop, 'function')
   const poolCard = { status: 'open', assignee: null }
   const assignedCard = { status: 'open', assignee: 'kimi' }
   const wipCard = { status: 'in_progress', assignee: 'kimi' }
+  const reviewCard = { status: 'review', assignee: 'kimi' }
   const doneCard = { status: 'done', assignee: 'kimi' }
-  const cancelledCard = { status: 'cancelled', assignee: null }
+  const closedCard = { status: 'closed', assignee: 'kimi' }
 
-  // A pool card dropped on 进行中 is claimed (by the human, host-side).
-  assert.deepEqual(client.planDrop(poolCard, 'in_progress'), [{ kind: 'claim' }])
-  // A delegated card dropped on 进行中 just starts.
-  assert.deepEqual(client.planDrop(assignedCard, 'in_progress'), [{ kind: 'update', patch: { action: 'start' } }])
-  // 进行中 back to 待认领: stop (in_progress → open) and unassign, in one patch.
-  assert.deepEqual(client.planDrop(wipCard, 'pool'), [{ kind: 'update', patch: { action: 'stop', assignee: null } }])
-  // 已完成 to 已指派 with a name: reopen straight into that assignee.
-  assert.deepEqual(client.planDrop(doneCard, 'assigned', 'nova'), [{ kind: 'update', patch: { action: 'reopen', assignee: 'nova' } }])
+  // 待认领 → 待审核: claim first, then submit.
+  assert.deepEqual(client.planDrop(poolCard, 'review'), [
+    { kind: 'claim' },
+    { kind: 'update', patch: { action: 'submit' } },
+  ])
+  // 已指派 → 待审核: start, then submit.
+  assert.deepEqual(client.planDrop(assignedCard, 'review'), [
+    { kind: 'update', patch: { action: 'start' } },
+    { kind: 'update', patch: { action: 'submit' } },
+  ])
+  // 进行中 → 待审核: just submit.
+  assert.deepEqual(client.planDrop(wipCard, 'review'), [{ kind: 'update', patch: { action: 'submit' } }])
+  // 待审核 → 进行中: reject (打回继续干).
+  assert.deepEqual(client.planDrop(reviewCard, 'in_progress'), [{ kind: 'update', patch: { action: 'reject' } }])
+  // 待审核 → 已完成: approve.
+  assert.deepEqual(client.planDrop(reviewCard, 'done'), [{ kind: 'update', patch: { action: 'approve' } }])
+  // Anything not closed → 已关闭: close.
+  assert.deepEqual(client.planDrop(poolCard, 'closed'), [{ kind: 'update', patch: { action: 'close' } }])
+  assert.deepEqual(client.planDrop(wipCard, 'closed'), [{ kind: 'update', patch: { action: 'close' } }])
+  assert.deepEqual(client.planDrop(reviewCard, 'closed'), [{ kind: 'update', patch: { action: 'close' } }])
+  assert.deepEqual(client.planDrop(doneCard, 'closed'), [{ kind: 'update', patch: { action: 'close' } }])
+  // 已完成/已关闭 never go back to 待审核.
+  assert.deepEqual(client.planDrop(doneCard, 'review'), [])
+  assert.deepEqual(client.planDrop(closedCard, 'review'), [])
   // Dropping where the card already lives is a no-op — no request may fire.
-  assert.deepEqual(client.planDrop(doneCard, 'done'), [])
-  assert.deepEqual(client.planDrop(cancelledCard, 'done'), [])
   assert.deepEqual(client.planDrop(poolCard, 'pool'), [])
+  assert.deepEqual(client.planDrop(reviewCard, 'review'), [])
+  assert.deepEqual(client.planDrop(doneCard, 'done'), [])
+  assert.deepEqual(client.planDrop(closedCard, 'closed'), [])
   assert.deepEqual(client.planDrop(assignedCard, 'assigned', 'kimi'), [])
   // 已指派 with an EMPTY name means 放回待认领: same plan as a drop on pool.
   assert.deepEqual(client.planDrop(assignedCard, 'assigned', ''), [{ kind: 'update', patch: { assignee: null } }])
   assert.deepEqual(client.planDrop(assignedCard, 'assigned', '   '), [{ kind: 'update', patch: { assignee: null } }])
+  // 待审核 → 待认领: reject back to 进行中, then stop + unassign.
+  assert.deepEqual(client.planDrop(reviewCard, 'pool'), [
+    { kind: 'update', patch: { action: 'reject' } },
+    { kind: 'update', patch: { action: 'stop', assignee: null } },
+  ])
   // A finished card dropped on 进行中 needs both halves, in order.
   assert.deepEqual(client.planDrop(doneCard, 'in_progress'), [
     { kind: 'update', patch: { action: 'reopen' } },
     { kind: 'update', patch: { action: 'start' } },
   ])
+  // 已完成 → 已指派 with a name: reopen straight into that assignee.
+  assert.deepEqual(client.planDrop(doneCard, 'assigned', 'nova'), [{ kind: 'update', patch: { action: 'reopen', assignee: 'nova' } }])
 })
 
 // --------------------------------------------------------- actor roster

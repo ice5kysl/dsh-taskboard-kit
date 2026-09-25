@@ -6,16 +6,24 @@
  * every harness and every human working in the same directory sees the same
  * board. No server, no account system.
  *
- * Status names deliberately mirror the msg9 task model (open ≈ pending,
- * in_progress, done ≈ completed), so a future msg9-backed board store keeps
- * the semantics intact.
+ * Status flow (v0.3): 待认领/已指派(open) → 进行中(in_progress) →
+ * 待审核(review) → 已完成(done)；任何非终态可 已关闭(closed，面板默认折叠)。
+ * open/in_progress/done 刻意对齐 msg9 任务模型，未来服务端后端语义不变。
  *
  * @module dsh-taskboard-kit/shared/types
  */
 
-export type TaskStatus = 'open' | 'in_progress' | 'done' | 'cancelled'
+export type TaskStatus = 'open' | 'in_progress' | 'review' | 'done' | 'closed'
 
 export type TaskPriority = 'high' | 'medium' | 'low'
+
+/**
+ * 价值度（价值点数），斐波那契刻度：½ / 1 / 2 / 3 / 5 / 8。
+ * `null` = 未评估。
+ */
+export type TaskValue = 0.5 | 1 | 2 | 3 | 5 | 8
+
+export const TASK_VALUES: readonly TaskValue[] = [0.5, 1, 2, 3, 5, 8]
 
 export type TaskEvent =
   | 'created'
@@ -23,9 +31,12 @@ export type TaskEvent =
   | 'claimed'
   | 'started'
   | 'stopped'
+  | 'submitted'
+  | 'approved'
+  | 'rejected'
   | 'done'
   | 'reopened'
-  | 'cancelled'
+  | 'closed'
   | 'updated'
 
 export interface TaskLogEntry {
@@ -56,6 +67,8 @@ export interface Task {
   /** Who the task belongs to. `null` while it waits in the claimable pool. */
   assignee: string | null
   priority: TaskPriority
+  /** 价值度；`null` = 未评估。 */
+  value: TaskValue | null
   tags: string[]
   created_by: string
   created_at: string
@@ -73,20 +86,19 @@ export interface Board {
   tasks: Record<string, Task>
 }
 
-/** The four kanban columns the panel renders. */
-export type BoardColumn = 'pool' | 'assigned' | 'in_progress' | 'done'
+/** The six kanban columns; `closed` renders collapsed by default. */
+export type BoardColumn = 'pool' | 'assigned' | 'in_progress' | 'review' | 'done' | 'closed'
 
-export const BOARD_COLUMNS: readonly BoardColumn[] = ['pool', 'assigned', 'in_progress', 'done']
+export const BOARD_COLUMNS: readonly BoardColumn[] = ['pool', 'assigned', 'in_progress', 'review', 'done', 'closed']
 
 /**
  * Column derivation: an open task with no assignee waits in the claimable
- * pool; with an assignee it has been delegated; cancelled tasks land in the
- * done column (the panel hides them behind a toggle).
+ * pool; with an assignee it has been delegated; the other four statuses map
+ * one-to-one onto their columns.
  */
 export function columnOf(task: Pick<Task, 'status' | 'assignee'>): BoardColumn {
   if (task.status === 'open') return task.assignee ? 'assigned' : 'pool'
-  if (task.status === 'in_progress') return 'in_progress'
-  return 'done'
+  return task.status
 }
 
 export function emptyBoard(workspace: string): Board {

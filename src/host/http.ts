@@ -273,6 +273,7 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
         ...(request.detail !== undefined ? { detail: request.detail } : {}),
         ...(request.assignee !== undefined ? { assignee: request.assignee } : {}),
         ...(request.priority !== undefined ? { priority: request.priority } : {}),
+        ...(request.value !== undefined ? { value: request.value } : {}),
         ...(request.tags !== undefined ? { tags: request.tags } : {}),
       }, HUMAN_ACTOR))
     }
@@ -296,6 +297,7 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
         ...(request.title !== undefined ? { title: request.title } : {}),
         ...(request.detail !== undefined ? { detail: request.detail } : {}),
         ...(request.priority !== undefined ? { priority: request.priority } : {}),
+        ...(request.value !== undefined ? { value: request.value } : {}),
         ...(request.tags !== undefined ? { tags: request.tags } : {}),
         ...(request.note !== undefined ? { note: request.note } : {}),
       }, HUMAN_ACTOR)).task)

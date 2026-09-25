@@ -2,16 +2,18 @@
  * The taskboard kanban view, registered as a「看板」session view tab next to
  * 对话 | 轨迹 | 文件 | 消息 (`conversation.view`, order 40).
  *
- * Layout: a top bar (workspace, task count, refresh, cancelled toggle, new
- * task) above four swim-lane columns (待认领 / 已指派 / 进行中 / 已完成 from
- * the contract's BOARD_COLUMNS). Cards are HTML5-draggable between lanes —
- * a drop compiles into the shared `planDrop` op sequence, never a hand-rolled
- * status mapping; a drop on 已指派 opens the lane's roster picker (no prompt,
- * no typing — the roster comes from the board itself, see actors.ts).
- * Clicking a card opens a 560px detail drawer that is absolutely positioned
- * INSIDE the panel (no portal — the shell's overlay layer would lose the
- * --dsw-alias-* theme tokens), tabbed into 详情 (read-only until 编辑 is
- * hit), 评论 (the thread + composer) and 动态 (the log timeline).
+ * Layout: a top bar (workspace, task count, refresh, new task) above the six
+ * swim-lane columns (待认领 / 已指派 / 进行中 / 待审核 / 已完成 / 已关闭 from
+ * the contract's BOARD_COLUMNS); 已关闭 renders collapsed as a narrow vertical
+ * strip on the right edge until clicked (store.showClosed). Cards carry a
+ * priority dot and a 价值度 badge (◆½…◆8), and are HTML5-draggable between
+ * lanes — a drop compiles into the shared `planDrop` op sequence, never a
+ * hand-rolled status mapping; a drop on 已指派 opens the lane's roster picker
+ * (no prompt, no typing — the roster comes from the board itself, see
+ * actors.ts). Clicking a card opens a 560px detail drawer that is absolutely
+ * positioned INSIDE the panel (no portal — the shell's overlay layer would
+ * lose the --dsw-alias-* theme tokens), tabbed into 详情 (read-only until
+ * 编辑 is hit), 评论 (the thread + composer) and 动态 (the log timeline).
  *
  * It is a pure projection of the store (`useSyncExternalStore`) — every
  * action goes through `TaskboardStore`, so the model tools, the view and the
@@ -31,6 +33,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import {
   BOARD_COLUMNS,
+  TASK_VALUES,
   columnOf,
   compareTasks,
   type BoardColumn,
@@ -38,6 +41,7 @@ import {
   type TaskComment,
   type TaskEvent,
   type TaskPriority,
+  type TaskValue,
 } from '../shared/types.ts'
 import { planDrop, type DropOp } from '../shared/dnd.ts'
 import { knownActors } from './actors.ts'
@@ -117,6 +121,8 @@ const TB_CSS = `
 /* Drop-target highlight rides the injected stylesheet (inline styles cannot
    express state classes); !important beats the lane's inline background. */
 .tb-column.dragover { box-shadow: inset 0 0 0 2px ${ACCENT} !important; background: ${HOVER_BG} !important; }
+/* The collapsed closed column (narrow vertical strip). */
+.tb-closed-strip:hover { background: ${HOVER_BG} !important; }
 /* In-column assignee picker rows. */
 .tb-picker-row { display: flex; width: 100%; box-sizing: border-box; align-items: center; gap: 6px; border: none; border-radius: 6px; background: transparent; color: inherit; padding: 7px 10px; font-size: 12px; font-family: inherit; cursor: pointer; text-align: left; }
 .tb-picker-row:hover { background: ${HOVER_BG}; }
@@ -235,13 +241,19 @@ function columnLabel(column: BoardColumn): string {
     case 'pool': return L('待认领', 'Pool')
     case 'assigned': return L('已指派', 'Assigned')
     case 'in_progress': return L('进行中', 'In progress')
+    case 'review': return L('待审核', 'In review')
     case 'done': return L('已完成', 'Done')
+    case 'closed': return L('已关闭', 'Closed')
   }
 }
 
 function statusLabel(task: Task): string {
-  if (task.status === 'cancelled') return L('已取消', 'Cancelled')
   return columnLabel(columnOf(task))
+}
+
+/** 0.5 renders as ½, everything else as its plain number. */
+function valueText(value: TaskValue): string {
+  return value === 0.5 ? '½' : String(value)
 }
 
 function priorityLabel(priority: TaskPriority): string {
@@ -258,9 +270,12 @@ const EVENT_LABELS: Record<TaskEvent, [string, string]> = {
   claimed: ['认领', 'claimed'],
   started: ['开始', 'started'],
   stopped: ['停止', 'stopped'],
+  submitted: ['提交审核', 'submitted'],
+  approved: ['通过', 'approved'],
+  rejected: ['打回', 'rejected'],
   done: ['完成', 'done'],
   reopened: ['重开', 'reopened'],
-  cancelled: ['取消', 'cancelled'],
+  closed: ['关闭', 'closed'],
   updated: ['更新', 'updated'],
 }
 
@@ -308,15 +323,11 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   const actors = useMemo(() => (board ? knownActors(board) : []), [board])
   const columns = useMemo(
     () =>
-      BOARD_COLUMNS.map((column) => {
-        let list = tasks.filter((task) => columnOf(task) === column)
-        // Cancelled tasks land in the done column but hide behind the toggle.
-        if (column === 'done' && !state.showCancelled) {
-          list = list.filter((task) => task.status !== 'cancelled')
-        }
-        return { column, tasks: [...list].sort(compareTasks) }
-      }),
-    [tasks, state.showCancelled],
+      BOARD_COLUMNS.map((column) => ({
+        column,
+        tasks: tasks.filter((task) => columnOf(task) === column).sort(compareTasks),
+      })),
+    [tasks],
   )
   const selectedId = state.selectedId
   const selected: Task | null = selectedId && board ? board.tasks[selectedId] ?? null : null
@@ -425,36 +436,43 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
         </div>
       ) : (
         <div style={styles.lanes}>
-          {columns.map(({ column, tasks: list }) => (
-            <ColumnView
-              key={column}
-              column={column}
-              tasks={list}
-              state={state}
-              store={store}
-              onCreate={() => setCreateOpen(true)}
-              dnd={dnd}
-              overlay={
-                column === 'assigned' && pickerTask ? (
-                  <AssignPicker
-                    actors={actors}
-                    current={pickerTask.assignee}
-                    onPick={(name) => {
-                      const task = pickerTask
-                      setAssignPickerId(null)
-                      void runPlan(task, planDrop(task, 'assigned', name))
-                    }}
-                    onPool={() => {
-                      const task = pickerTask
-                      setAssignPickerId(null)
-                      void runPlan(task, planDrop(task, 'pool'))
-                    }}
-                    onCancel={() => setAssignPickerId(null)}
-                  />
-                ) : undefined
-              }
-            />
-          ))}
+          {columns.map(({ column, tasks: list }) =>
+            column === 'closed' && !state.showClosed ? (
+              // The closed column defaults to a narrow strip (still a drop
+              // target); a click expands it into a full lane.
+              <ClosedStrip key={column} count={list.length} dnd={dnd} onExpand={() => store.setShowClosed(true)} />
+            ) : (
+              <ColumnView
+                key={column}
+                column={column}
+                tasks={list}
+                state={state}
+                store={store}
+                onCreate={() => setCreateOpen(true)}
+                dnd={dnd}
+                onCollapse={column === 'closed' ? () => store.setShowClosed(false) : undefined}
+                overlay={
+                  column === 'assigned' && pickerTask ? (
+                    <AssignPicker
+                      actors={actors}
+                      current={pickerTask.assignee}
+                      onPick={(name) => {
+                        const task = pickerTask
+                        setAssignPickerId(null)
+                        void runPlan(task, planDrop(task, 'assigned', name))
+                      }}
+                      onPool={() => {
+                        const task = pickerTask
+                        setAssignPickerId(null)
+                        void runPlan(task, planDrop(task, 'pool'))
+                      }}
+                      onCancel={() => setAssignPickerId(null)}
+                    />
+                  ) : undefined
+                }
+              />
+            ),
+          )}
         </div>
       )}
       {pickerTask && <div style={styles.backdrop} onClick={() => setAssignPickerId(null)} />}
@@ -472,7 +490,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   )
 }
 
-/** Top bar: title, workspace, count, refresh, cancelled toggle, new task. */
+/** Top bar: title, workspace, count, refresh, new task. */
 function TopBar({ state, store, total, onCreate }: { state: TaskboardState; store: TaskboardStore; total: number; onCreate(): void }): JSX.Element {
   return (
     <header style={styles.topbar}>
@@ -484,14 +502,6 @@ function TopBar({ state, store, total, onCreate }: { state: TaskboardState; stor
       )}
       <span style={styles.topbarCount}>{L('{n} 个任务', '{n} tasks', { n: total })}</span>
       <span style={styles.topbarSpacer} />
-      <button
-        type="button"
-        className={state.showCancelled ? 'tb-chip active' : 'tb-chip'}
-        onClick={() => store.setShowCancelled(!state.showCancelled)}
-        title={L('在完成列里显示已取消的任务', 'Show cancelled tasks in the done column')}
-      >
-        {L('显示已取消', 'Show cancelled')}
-      </button>
       <button type="button" className="tb-iconbtn" onClick={() => void store.refresh()} title={L('刷新', 'Refresh')}>
         ↻
       </button>
@@ -515,6 +525,7 @@ function ColumnView({
   onCreate,
   dnd,
   overlay,
+  onCollapse,
 }: {
   column: BoardColumn
   tasks: Task[]
@@ -523,6 +534,8 @@ function ColumnView({
   onCreate(): void
   dnd: LaneDnd
   overlay?: ReactNode
+  /** Given only for the expanded closed lane: folds it back into the strip. */
+  onCollapse?: () => void
 }): JSX.Element {
   return (
     <section
@@ -548,6 +561,11 @@ function ColumnView({
         <span style={styles.columnTitle}>{columnLabel(column)}</span>
         <span style={styles.columnCount}>{tasks.length}</span>
         <span style={styles.topbarSpacer} />
+        {onCollapse && (
+          <button type="button" className="tb-iconbtn" onClick={onCollapse} title={L('收起已关闭列', 'Collapse the closed column')}>
+            ⇥
+          </button>
+        )}
         <button type="button" className="tb-iconbtn" onClick={onCreate} title={L('新建任务', 'New task')}>
           +
         </button>
@@ -566,17 +584,47 @@ function ColumnView({
   )
 }
 
-/** One task card: priority dot, title, assignee badge, age, tag capsules.
+/** The collapsed closed column: a narrow vertical strip on the board's right
+ *  edge. It stays a live drop target (a drop here = close the task); a click
+ *  expands the lane. */
+function ClosedStrip({ count, dnd, onExpand }: { count: number; dnd: LaneDnd; onExpand(): void }): JSX.Element {
+  return (
+    <button
+      type="button"
+      style={styles.closedStrip}
+      className={dnd.overColumn === 'closed' ? 'tb-closed-strip tb-column dragover' : 'tb-closed-strip'}
+      title={L('展开已关闭列', 'Expand the closed column')}
+      onClick={onExpand}
+      onDragOver={(event) => {
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'move'
+        if (dnd.overColumn !== 'closed') dnd.setOverColumn('closed')
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+        dnd.setOverColumn(null)
+      }}
+      onDrop={(event) => {
+        event.preventDefault()
+        const id = event.dataTransfer.getData('text/plain')
+        if (id) dnd.onDropTask(id, 'closed')
+      }}
+    >
+      <span style={styles.closedStripText}>{L('已关闭 ({n})', 'Closed ({n})', { n: count })}</span>
+    </button>
+  )
+}
+
+/** One task card: priority dot, value badge, title, assignee badge, age, tags.
  *  Cards are the drag source: the task id rides dataTransfer, and the card
  *  turns translucent while it is being dragged. */
 function TaskCard({ task, selected, onOpen, dnd }: { task: Task; selected: boolean; onOpen(): void; dnd: LaneDnd }): JSX.Element {
-  const cancelled = task.status === 'cancelled'
   const dragging = dnd.dragId === task.id
   return (
     <button
       type="button"
       className={selected ? 'tb-card active' : 'tb-card'}
-      style={{ opacity: dragging ? 0.5 : cancelled ? 0.65 : 1 }}
+      style={{ opacity: dragging ? 0.5 : 1 }}
       draggable
       onDragStart={(event) => {
         event.dataTransfer.setData('text/plain', task.id)
@@ -594,7 +642,12 @@ function TaskCard({ task, selected, onOpen, dnd }: { task: Task; selected: boole
           style={{ ...styles.dot, background: PRIORITY_COLORS[task.priority] ?? FAINT }}
           title={L('优先级：{p}', 'Priority: {p}', { p: priorityLabel(task.priority) })}
         />
-        <span style={{ ...styles.cardTitle, ...(cancelled ? styles.cardTitleCancelled : {}) }}>{task.title}</span>
+        {task.value != null && (
+          <span style={styles.valueBadge} title={L('价值度 {v}', 'Value {v}', { v: valueText(task.value) })}>
+            ◆{valueText(task.value)}
+          </span>
+        )}
+        <span style={styles.cardTitle}>{task.title}</span>
       </div>
       <div style={styles.cardMeta}>
         {task.assignee ? (
@@ -630,7 +683,9 @@ function DetailDrawer({ task, state, store, actors, onClose }: { task: Task; sta
   const [titleDraft, setTitleDraft] = useState(task.title)
   const [detailDraft, setDetailDraft] = useState(task.detail)
   const [priorityDraft, setPriorityDraft] = useState<TaskPriority>(task.priority)
+  const [valueDraft, setValueDraft] = useState<TaskValue | null>(task.value)
   const [tagsDraft, setTagsDraft] = useState(task.tags.join(', '))
+  const [rejectNote, setRejectNote] = useState('')
   const [commentDraft, setCommentDraft] = useState('')
   const busy = state.busy
   const column = columnOf(task)
@@ -649,6 +704,7 @@ function DetailDrawer({ task, state, store, actors, onClose }: { task: Task; sta
     setTitleDraft(task.title)
     setDetailDraft(task.detail)
     setPriorityDraft(task.priority)
+    setValueDraft(task.value)
     setTagsDraft(task.tags.join(', '))
     setEditing(true)
   }
@@ -661,6 +717,7 @@ function DetailDrawer({ task, state, store, actors, onClose }: { task: Task; sta
       title,
       detail: detailDraft,
       priority: priorityDraft,
+      value: valueDraft,
       tags: parseTags(tagsDraft),
     })
     // On failure the error strip explains it and the form stays open.
@@ -671,7 +728,15 @@ function DetailDrawer({ task, state, store, actors, onClose }: { task: Task; sta
     titleDraft.trim() !== task.title ||
     detailDraft !== task.detail ||
     priorityDraft !== task.priority ||
+    valueDraft !== task.value ||
     parseTags(tagsDraft).join(' ') !== task.tags.join(' ')
+
+  /** 打回 review：可选的一句 note 随 reject 一起提交。 */
+  const submitReject = async (): Promise<void> => {
+    const note = rejectNote.trim()
+    const ok = await store.update({ id: task.id, action: 'reject', ...(note ? { note } : {}) })
+    if (ok) setRejectNote('')
+  }
 
   const submitComment = async (): Promise<void> => {
     const text = commentDraft.trim()
@@ -712,6 +777,7 @@ function DetailDrawer({ task, state, store, actors, onClose }: { task: Task; sta
             <span>{task.id}</span>
             <span>{statusLabel(task)}</span>
             <span>{L('优先级 {p}', 'priority {p}', { p: priorityLabel(task.priority) })}</span>
+            <span>{task.value != null ? `◆${valueText(task.value)}` : L('未评估', 'unestimated')}</span>
             <span>{task.assignee ?? L('待认领', 'unclaimed')}</span>
             {task.tags.map((tag) => (
               <span key={tag} className="tb-tag">{tag}</span>
@@ -734,21 +800,46 @@ function DetailDrawer({ task, state, store, actors, onClose }: { task: Task; sta
               </button>
             )}
             {column === 'in_progress' && (
-              <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => update({ id: task.id, action: 'done' })}>
-                {L('完成', 'Done')}
-              </button>
+              <>
+                <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => update({ id: task.id, action: 'submit' })}>
+                  {L('提交审核', 'Submit for review')}
+                </button>
+                <button type="button" className="tb-btn" disabled={busy} onClick={() => update({ id: task.id, action: 'done' })}>
+                  {L('完成', 'Done')}
+                </button>
+              </>
             )}
-            {column === 'done' && (
+            {column === 'review' && (
+              <>
+                <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => update({ id: task.id, action: 'approve' })}>
+                  {L('通过', 'Approve')}
+                </button>
+                <button type="button" className="tb-btn" disabled={busy} onClick={() => void submitReject()}>
+                  {L('打回', 'Reject')}
+                </button>
+              </>
+            )}
+            {(column === 'done' || column === 'closed') && (
               <button type="button" className="tb-btn" disabled={busy} onClick={() => update({ id: task.id, action: 'reopen' })}>
                 {L('重开', 'Reopen')}
               </button>
             )}
-            {column !== 'done' && (
-              <button type="button" className="tb-btn tb-btn-danger" disabled={busy} onClick={() => update({ id: task.id, action: 'cancel' })}>
-                {L('取消', 'Cancel')}
+            {column !== 'closed' && (
+              <button type="button" className="tb-btn tb-btn-danger" disabled={busy} onClick={() => update({ id: task.id, action: 'close' })}>
+                {L('关闭', 'Close')}
               </button>
             )}
           </div>
+          {column === 'review' && (
+            <input
+              className="tb-input"
+              value={rejectNote}
+              placeholder={L('打回原因（可选，随打回一起提交）', 'Reject reason (optional, sent with the rejection)')}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(event) => setRejectNote(event.target.value)}
+            />
+          )}
 
           <div style={styles.drawerSection}>
             <div style={styles.sectionTitle}>{L('指派', 'Assignee')}</div>
@@ -800,6 +891,10 @@ function DetailDrawer({ task, state, store, actors, onClose }: { task: Task; sta
                 </button>
               ))}
             </span>
+          </div>
+          <div style={styles.field}>
+            <span style={styles.fieldLabel}>{L('价值度（再点已选 = 未评估）', 'Value (click the pick again = unestimated)')}</span>
+            <ValueChips value={valueDraft} disabled={busy} onChange={setValueDraft} />
           </div>
           <label style={styles.field}>
             <span style={styles.fieldLabel}>{L('标签（逗号分隔）', 'Tags (comma separated)')}</span>
@@ -953,6 +1048,28 @@ function ActorChips({
 }
 
 /**
+ * The six 价值度 chips (½ 1 2 3 5 8): single-select, and clicking the
+ * selected chip again clears back to 未评估 (null).
+ */
+function ValueChips({ value, disabled, onChange }: { value: TaskValue | null; disabled?: boolean; onChange(next: TaskValue | null): void }): JSX.Element {
+  return (
+    <span style={styles.fieldRow}>
+      {TASK_VALUES.map((option) => (
+        <button
+          key={option}
+          type="button"
+          className={value === option ? 'tb-chip active' : 'tb-chip'}
+          disabled={disabled}
+          onClick={() => onChange(value === option ? null : option)}
+        >
+          {valueText(option)}
+        </button>
+      ))}
+    </span>
+  )
+}
+
+/**
  * The roster picker that floats inside the assigned lane after a card is
  * dropped on it: pick a name (the drop's planDrop runs with it), send the
  * card back to the pool, or cancel (backdrop / 取消 / ESC — no request).
@@ -1005,6 +1122,7 @@ function CreateForm({ state, store, actors, onClose }: { state: TaskboardState; 
   const [title, setTitle] = useState('')
   const [detail, setDetail] = useState('')
   const [priority, setPriority] = useState<TaskPriority>('medium')
+  const [value, setValue] = useState<TaskValue | null>(null)
   // No pick = into the claimable pool.
   const [assignee, setAssignee] = useState<string | null>(null)
 
@@ -1014,6 +1132,7 @@ function CreateForm({ state, store, actors, onClose }: { state: TaskboardState; 
       title: title.trim(),
       detail,
       priority,
+      value,
       assignee,
     })
     // On failure the store's error strip explains it and the draft survives.
@@ -1052,6 +1171,10 @@ function CreateForm({ state, store, actors, onClose }: { state: TaskboardState; 
               </button>
             ))}
           </span>
+        </div>
+        <div style={styles.field}>
+          <span style={styles.fieldLabel}>{L('价值度（不选 = 未评估）', 'Value (no pick = unestimated)')}</span>
+          <ValueChips value={value} onChange={setValue} />
         </div>
         <div style={styles.field}>
           <span style={styles.fieldLabel}>{L('指派给（不选 = 进待认领池）', 'Assign to (no pick = into the pool)')}</span>
@@ -1167,10 +1290,34 @@ const styles: Record<string, CSSProperties> = {
     padding: 8,
   },
   columnEmpty: { color: FAINT, fontSize: 11, textAlign: 'center', padding: '14px 0' },
+  closedStrip: {
+    width: 36,
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: BG,
+    border: `1px solid ${BORDER}`,
+    borderRadius: 8,
+    cursor: 'pointer',
+    padding: 0,
+    fontFamily: 'inherit',
+  },
+  closedStripText: { writingMode: 'vertical-rl', fontSize: 11, color: DIM, letterSpacing: 1, whiteSpace: 'nowrap' },
   cardTop: { display: 'flex', alignItems: 'flex-start', gap: 6, minWidth: 0 },
   dot: { width: 8, height: 8, borderRadius: 4, marginTop: 4, flexShrink: 0 },
   cardTitle: { flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 500, lineHeight: 1.45, overflowWrap: 'anywhere' },
-  cardTitleCancelled: { textDecoration: 'line-through', color: DIM },
+  valueBadge: {
+    flexShrink: 0,
+    fontSize: 10,
+    lineHeight: '14px',
+    marginTop: 1,
+    color: FAINT,
+    border: `1px solid ${FAINT}`,
+    borderRadius: 999,
+    padding: '0 5px',
+    whiteSpace: 'nowrap',
+  },
   cardMeta: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, paddingLeft: 14 },
   cardAge: { marginLeft: 'auto', color: FAINT, fontSize: 10, flexShrink: 0 },
   cardTags: { display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6, paddingLeft: 14 },

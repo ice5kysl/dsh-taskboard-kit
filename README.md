@@ -12,10 +12,10 @@ One local task board per dsh workspace. Agents create, claim and progress tasks 
   - `taskboard_list` — list tasks (filter by status / column / assignee)
   - `taskboard_create` — add a task, optionally delegating it to someone
   - `taskboard_claim` — atomically claim a task from the pool (exactly one winner under concurrency)
-  - `taskboard_update` — start / stop / done / reopen / cancel, reassign, edit fields, append notes
+  - `taskboard_update` — start / stop / submit / approve / reject / done / close / reopen, reassign, edit fields (incl. value points), append notes
   - `taskboard_comment` — add an information comment (findings / handoffs / test feedback) without changing state
   - `taskboard_get` — full task detail with the event timeline and the comment thread
-- **A「看板 / Board」conversation view** in dsh web: four swimlanes (pool · assigned · in progress · done), cards with priority / assignee / age / tags, a detail drawer with the event log, and one-click claim / start / done / reopen / reassign.
+- **A「看板 / Board」conversation view** in dsh web: six swimlanes (pool · assigned · in progress · review · done · closed), cards with priority / value / assignee / age / tags, a detail drawer with the event log and comments, and one-click claim / start / submit / approve / reject / close / reassign.
 - **Session-start awareness**: the agent is told how many tasks are waiting and in progress, and a system-prompt section teaches the claim-before-work rules.
 
 ## The board file
@@ -35,6 +35,7 @@ Each workspace gets `<workspace>/.dsh/taskboard.json`:
       "status": "open",            // open | in_progress | done | cancelled
       "assignee": null,             // null = waiting in the claimable pool
       "priority": "high",           // high | medium | low
+      "value": 3,                   // value points ½|1|2|3|5|8 · null = unestimated
       "tags": ["docs"],
       "created_by": "dsh-agent",
       "created_at": "…", "updated_at": "…",
@@ -54,9 +55,13 @@ Because the file lives in the workspace, every harness and every human working i
 | 待认领 / pool | `open` and no assignee — anyone may `claim` |
 | 已指派 / assigned | `open` with an assignee — delegated, not started |
 | 进行中 / in_progress | claimed or started |
-| 已完成 / done | `done` (cancelled tasks hide behind a toggle) |
+| 待审核 / review | submitted, waiting for a reviewer to `approve` / `reject` |
+| 已完成 / done | approved (or marked `done` directly) |
+| 已关闭 / closed | abandoned — `close` (the panel hides them behind a toggle) |
 
-Transitions: `open → in_progress` (claim / start), `in_progress → open` (stop — back to todo, assignee kept), `open|in_progress → done`, `open|in_progress → cancelled`, `done|cancelled → open` (reopen). Status names mirror the msg9 task model on purpose, so a future server-backed board keeps the same semantics.
+Flow: `open → in_progress → review → done`; any non-final status can go `closed`; `done | closed → open` (reopen). In actions: `open → in_progress` (claim / start), `in_progress → open` (stop), `in_progress → review` (submit), `review → done` (approve), `review → in_progress` (reject), `open|in_progress|review → done`, `open|in_progress|review|done → closed` (close; the legacy name `cancel` is its alias), `done|closed → open` (reopen). Status names mirror the msg9 task model on purpose, so a future server-backed board keeps the same semantics. Boards written by older versions load seamlessly: `cancelled` tasks/logs become `closed`, and missing `value` / `comments` fields are hydrated.
+
+Each task also carries **value points** (Fibonacci scale ½ / 1 / 2 / 3 / 5 / 8, `null` = unestimated) — what the card is worth. Set it at create or update time; on the CLI, `--value 1/2` means ½ and `--value none` clears the estimate.
 
 ## Install
 
@@ -74,9 +79,11 @@ The board is just a file, but **never hand-edit it** — the lock and the atomic
 ```bash
 taskboard list                              # see the board (pool first)
 taskboard claim T-3 --by kimi               # atomic claim, stamped "kimi"
+taskboard update T-3 --action submit --by kimi          # hand to review
+taskboard update T-3 --action approve --by claude       # reviewer passes it
 taskboard update T-3 --action done --note "shipped" --by kimi
-taskboard comment T-3 --text "handoff: …" --by kimi   # state untouched
-taskboard create --title "…" --priority high --by claude
+taskboard comment T-3 --text "handoff: …" --by kimi     # state untouched
+taskboard create --title "…" --priority high --value 3 --by claude
 ```
 
 `--by` names the actor in the task log (default `$TASKBOARD_ACTOR` or `cli-agent`); `--cwd` points at another workspace; `--json` gives machine-readable output; a lost claim exits `3` with a readable conflict. Until the package is on npm, invoke it straight from the repo: `node /path/to/dsh-taskboard-kit/bin/taskboard.mjs list`. Works with or without dsh web running — and while dsh web IS up, any local process can also call the loopback bridge `/dsh-taskboard/*` directly.

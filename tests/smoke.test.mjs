@@ -238,6 +238,36 @@ await check('taskboard_comment leaves a comment without touching the state', asy
   assert.ok(empty.includes('Invalid input'), empty)
 })
 
+await check('the review flow: claim → submit → reject → submit → approve', async () => {
+  await tool('taskboard_claim').execute({ id: 'T-2', by: 'kimi' }, exec)
+
+  const submitted = await tool('taskboard_update').execute({ id: 'T-2', action: 'submit', by: 'kimi' }, exec)
+  assert.ok(submitted.includes('Updated T-2: submitted. Now review'), submitted)
+
+  const tooEarly = await tool('taskboard_update').execute({ id: 'T-2', action: 'start' }, exec)
+  assert.ok(tooEarly.includes('not allowed'), tooEarly, 'review cannot restart directly')
+
+  const rejected = await tool('taskboard_update').execute({ id: 'T-2', action: 'reject', note: 'needs a test', by: 'human' }, exec)
+  assert.ok(rejected.includes('Updated T-2: rejected. Now in_progress'), rejected)
+
+  await tool('taskboard_update').execute({ id: 'T-2', action: 'submit', by: 'kimi' }, exec)
+  const approved = await tool('taskboard_update').execute({ id: 'T-2', action: 'approve', by: 'human' }, exec)
+  assert.ok(approved.includes('Updated T-2: approved. Now done'), approved)
+
+  const full = await tool('taskboard_get').execute({ id: 'T-2' }, exec)
+  for (const event of ['claimed', 'submitted', 'rejected', 'approved']) {
+    assert.ok(full.includes(`· ${event}`), `${event} missing from the timeline:\n${full}`)
+  }
+  assert.ok(full.includes('· rejected — needs a test'), full, 'the rejection note rides the event')
+
+  // One more pool task, so the session-start notice at the end still has work
+  // waiting in the pool.
+  const created = await tool('taskboard_create').execute({ title: 'another pool task', value: 3 }, exec)
+  assert.ok(created.includes('T-3'), created)
+  const valued = await tool('taskboard_list').execute({}, exec)
+  assert.ok(valued.includes('T-3 · open · unassigned · medium · v3 · another pool task'), valued)
+})
+
 // -------------------------------------------------------------- bridge http
 
 await check('bridge: GET /board from loopback answers ok:true with the board', async () => {
@@ -247,7 +277,9 @@ await check('bridge: GET /board from loopback answers ok:true with the board', a
   assert.equal(body.ok, true)
   assert.equal(body.board.version, 1)
   assert.equal(body.board.tasks['T-1'].status, 'done')
-  assert.equal(body.board.tasks['T-2'].status, 'open')
+  assert.equal(body.board.tasks['T-2'].status, 'done')
+  assert.equal(body.board.tasks['T-3'].status, 'open')
+  assert.equal(body.board.tasks['T-3'].value, 3)
 })
 
 await check('bridge: GET /board on a missing file still answers an empty board', async () => {
@@ -288,24 +320,58 @@ await check('bridge: POST /create with the mutate header creates as human', asyn
     method: 'POST',
     url: '/dsh-taskboard/create',
     headers: { 'x-taskboard': 'mutate' },
-    body: { cwd: ws, title: 'from the kanban', priority: 'low' },
+    body: { cwd: ws, title: 'from the kanban', priority: 'low', value: 5 },
   }))
   assert.equal(res.status, 200)
   const body = res.json()
   assert.equal(body.ok, true)
-  assert.equal(body.task.id, 'T-3')
+  assert.equal(body.task.id, 'T-4')
   assert.equal(body.task.created_by, 'human')
+  assert.equal(body.task.value, 5, 'value passes through the bridge')
 
   const board = await callBridge(fakeReq({ method: 'GET', url: `/dsh-taskboard/board?cwd=${encodeURIComponent(ws)}` }))
-  assert.equal(board.json().board.tasks['T-3'].title, 'from the kanban')
+  assert.equal(board.json().board.tasks['T-4'].title, 'from the kanban')
+})
+
+await check('bridge: POST /update walks submit → approve as human', async () => {
+  await callBridge(fakeReq({
+    method: 'POST',
+    url: '/dsh-taskboard/claim',
+    headers: { 'x-taskboard': 'mutate' },
+    body: { cwd: ws, id: 'T-4' },
+  }))
+  const submitted = await callBridge(fakeReq({
+    method: 'POST',
+    url: '/dsh-taskboard/update',
+    headers: { 'x-taskboard': 'mutate' },
+    body: { cwd: ws, id: 'T-4', action: 'submit' },
+  }))
+  assert.equal(submitted.status, 200)
+  assert.equal(submitted.json().task.status, 'review')
+  const approved = await callBridge(fakeReq({
+    method: 'POST',
+    url: '/dsh-taskboard/update',
+    headers: { 'x-taskboard': 'mutate' },
+    body: { cwd: ws, id: 'T-4', action: 'approve' },
+  }))
+  assert.equal(approved.status, 200)
+  assert.equal(approved.json().task.status, 'done')
 })
 
 await check('bridge: a claim conflict stays HTTP 200 with code conflict', async () => {
+  const created = await callBridge(fakeReq({
+    method: 'POST',
+    url: '/dsh-taskboard/create',
+    headers: { 'x-taskboard': 'mutate' },
+    body: { cwd: ws, title: 'claimable via panel' },
+  }))
+  const id = created.json().task.id // T-5
+
   const first = await callBridge(fakeReq({
     method: 'POST',
     url: '/dsh-taskboard/claim',
     headers: { 'x-taskboard': 'mutate' },
-    body: { cwd: ws, id: 'T-3' },
+    body: { cwd: ws, id },
   }))
   assert.equal(first.status, 200)
   assert.equal(first.json().ok, true)
@@ -314,7 +380,7 @@ await check('bridge: a claim conflict stays HTTP 200 with code conflict', async 
     method: 'POST',
     url: '/dsh-taskboard/claim',
     headers: { 'x-taskboard': 'mutate' },
-    body: { cwd: ws, id: 'T-3' },
+    body: { cwd: ws, id },
   }))
   assert.equal(second.status, 200)
   assert.deepEqual({ ok: second.json().ok, code: second.json().code }, { ok: false, code: 'conflict' })
@@ -324,7 +390,7 @@ await check('bridge: POST /comment without the mutate header is 403', async () =
   const res = await callBridge(fakeReq({
     method: 'POST',
     url: '/dsh-taskboard/comment',
-    body: { cwd: ws, id: 'T-3', text: 'sneaky' },
+    body: { cwd: ws, id: 'T-5', text: 'sneaky' },
   }))
   assert.equal(res.status, 403)
   assert.equal(res.json().ok, false)
@@ -335,12 +401,12 @@ await check('bridge: POST /comment with the mutate header comments as human', as
     method: 'POST',
     url: '/dsh-taskboard/comment',
     headers: { 'x-taskboard': 'mutate' },
-    body: { cwd: ws, id: 'T-3', text: 'looks good from the kanban' },
+    body: { cwd: ws, id: 'T-5', text: 'looks good from the kanban' },
   }))
   assert.equal(res.status, 200)
   const body = res.json()
   assert.equal(body.ok, true)
-  assert.equal(body.task.id, 'T-3')
+  assert.equal(body.task.id, 'T-5')
   assert.equal(body.task.comments.length, 1)
   assert.equal(body.task.comments[0].by, 'human')
   assert.equal(body.task.comments[0].text, 'looks good from the kanban')

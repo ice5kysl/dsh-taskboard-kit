@@ -19,7 +19,7 @@
  * @module dsh-taskboard-kit/shared/bridge
  */
 
-import type { Board, Task, TaskPriority } from './types.ts'
+import type { Board, Task, TaskPriority, TaskValue } from './types.ts'
 
 export const BRIDGE_PREFIX = '/dsh-taskboard'
 
@@ -34,6 +34,8 @@ export interface CreateRequest {
   /** Set = delegate to that actor; omitted/null = into the claimable pool. */
   assignee?: string | null
   priority?: TaskPriority
+  /** 价值度（½/1/2/3/5/8）；省略 = 未评估。 */
+  value?: TaskValue | null
   tags?: string[]
 }
 
@@ -42,7 +44,13 @@ export interface ClaimRequest {
   id: string
 }
 
-export type UpdateAction = 'start' | 'stop' | 'done' | 'reopen' | 'cancel'
+/**
+ * 状态流转动作：start(open→in_progress) · stop(in_progress→open) ·
+ * submit(in_progress→review) · approve(review→done) · reject(review→in_progress) ·
+ * done(open|in_progress|review→done) · close(非终态→closed) · reopen(done|closed→open)。
+ * 旧名 `cancel` 作为 `close` 的别名继续接受。
+ */
+export type UpdateAction = 'start' | 'stop' | 'submit' | 'approve' | 'reject' | 'done' | 'close' | 'reopen' | 'cancel'
 
 export interface UpdateRequest {
   cwd: string
@@ -52,6 +60,8 @@ export interface UpdateRequest {
   title?: string
   detail?: string
   priority?: TaskPriority
+  /** 价值度（½/1/2/3/5/8）；null = 清除为未评估。 */
+  value?: TaskValue | null
   tags?: string[]
   note?: string
 }
