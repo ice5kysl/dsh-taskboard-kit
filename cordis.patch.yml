@@ -1,0 +1,15 @@
+# dsh-taskboard-kit — bundle layer
+#
+# One Loader entry per package (the dsh client module system rejects multiple
+# active sources resolving to one package name), so the single `taskboard-kit`
+# entry carries both faces:
+#
+#   • host — the taskboard model tools (taskboard_list / taskboard_create /
+#     taskboard_claim / taskboard_update / taskboard_get) and the
+#     `/dsh-taskboard/*` bridge the browser calls (the board file never leaves
+#     the host).
+#   • web  — the same entry's `dsh.client` metadata makes the browser load the
+#     ./client face: the「看板」conversation view showing the same board.
+- insert:
+    - id: taskboard-kit
+      name: dsh-taskboard-kit

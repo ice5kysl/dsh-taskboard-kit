@@ -1,0 +1,69 @@
+{
+  "name": "dsh-taskboard-kit",
+  "version": "0.1.0",
+  "description": "dsh (DeepSeek Harness) taskboard kit: one local task board per workspace. Agents create/claim/progress tasks with model tools; humans watch and drive the same board in a kanban tab — a single JSON file in the workspace is the only source of truth, no server needed. 给每个 dsh workspace 一块本地任务看板：Agent 用工具认领推进，界面里点「看板」就能协同，数据就是工作区里的一个 JSON 文件。",
+  "type": "module",
+  "main": "lib/index.js",
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=20",
+    "dsh": "^0.1.2-rc.1"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "taskboard",
+    "kanban",
+    "agent",
+    "collaboration",
+    "local-first"
+  ],
+  "author": "ice5kysl",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node tests/smoke.test.mjs && node tests/store.test.mjs && node tests/client.test.mjs",
+    "prepare": "npm run build",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1",
+    "@types/node": "^20.19.43",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "esbuild": "^0.25.12",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.9.3"
+  },
+  "license": "MIT"
+}
