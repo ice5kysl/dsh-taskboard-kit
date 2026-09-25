@@ -35,6 +35,11 @@ export interface TaskboardState {
   showClosed: boolean
   /** A mutation is in flight — action buttons stay disabled meanwhile. */
   busy: boolean
+  /** Absolute path of the taskboard CLI (guide interpolation; null = the
+   *  host didn't report one, templates fall back to a placeholder). */
+  cli: string | null
+  /** Absolute path of the board file (guide interpolation). */
+  boardFile: string | null
 }
 
 /** Create/claim/update/comment requests without the cwd (the store fills it in). */
@@ -75,6 +80,8 @@ const INITIAL: TaskboardState = {
   selectedId: null,
   showClosed: false,
   busy: false,
+  cli: null,
+  boardFile: null,
 }
 
 /** Build a store. Tests pass a fake bridge; the app uses the default one. */
@@ -103,7 +110,13 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
     const res = await bridge.board(cwd)
     if (mine !== seq) return
     if (res.ok) {
-      set({ status: 'ready', board: res.board, error: null })
+      set({
+        status: 'ready',
+        board: res.board,
+        error: null,
+        cli: res.cli ?? null,
+        boardFile: res.board_file ?? null,
+      })
     } else {
       // A failed reload keeps the board it already has; only a failed FIRST
       // load turns the whole panel into an error block.
@@ -163,6 +176,8 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
         board: null,
         selectedId: null,
         error: null,
+        cli: null,
+        boardFile: null,
         status: next ? 'loading' : 'ready',
       })
       void refresh()

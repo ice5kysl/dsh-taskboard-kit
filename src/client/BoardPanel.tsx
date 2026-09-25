@@ -2,18 +2,21 @@
  * The taskboard kanban view, registered as a「看板」session view tab next to
  * 对话 | 轨迹 | 文件 | 消息 (`conversation.view`, order 40).
  *
- * Layout: a top bar (workspace, task count, refresh, new task) above the six
- * swim-lane columns (待认领 / 已指派 / 进行中 / 待审核 / 已完成 / 已关闭 from
- * the contract's BOARD_COLUMNS); 已关闭 renders collapsed as a narrow vertical
- * strip on the right edge until clicked (store.showClosed). Cards carry a
- * priority dot and a 价值度 badge (◆½…◆8), and are HTML5-draggable between
- * lanes — a drop compiles into the shared `planDrop` op sequence, never a
- * hand-rolled status mapping; a drop on 已指派 opens the lane's roster picker
- * (no prompt, no typing — the roster comes from the board itself, see
- * actors.ts). Clicking a card opens a 560px detail drawer that is absolutely
- * positioned INSIDE the panel (no portal — the shell's overlay layer would
- * lose the --dsw-alias-* theme tokens), tabbed into 详情 (read-only until
- * 编辑 is hit), 评论 (the thread + composer) and 动态 (the log timeline).
+ * Layout: a top bar (workspace, task count, guide, refresh, new task) above
+ * the six swim-lane columns (待认领 / 已指派 / 进行中 / 待审核 / 已完成 / 已关闭
+ * from the contract's BOARD_COLUMNS); 已关闭 renders collapsed as a narrow
+ * vertical strip on the right edge until clicked (store.showClosed). The「?
+ * 指南」top-bar button opens a centered in-panel guide overlay — what the
+ * board is, how humans drive it, and copyable templates for getting kimi /
+ * Claude Code on board (guide.ts). Cards carry a priority dot and a 价值度
+ * badge (◆½…◆8), and are HTML5-draggable between lanes — a drop compiles
+ * into the shared `planDrop` op sequence, never a hand-rolled status mapping;
+ * a drop on 已指派 opens the lane's roster picker (no prompt, no typing — the
+ * roster comes from the board itself, see actors.ts). Clicking a card opens a
+ * 560px detail drawer that is absolutely positioned INSIDE the panel (no
+ * portal — the shell's overlay layer would lose the --dsw-alias-* theme
+ * tokens), tabbed into 详情 (read-only until 编辑 is hit), 评论 (the thread +
+ * composer) and 动态 (the log timeline).
  *
  * It is a pure projection of the store (`useSyncExternalStore`) — every
  * action goes through `TaskboardStore`, so the model tools, the view and the
@@ -45,6 +48,7 @@ import {
 } from '../shared/types.ts'
 import { planDrop, type DropOp } from '../shared/dnd.ts'
 import { knownActors } from './actors.ts'
+import { conventionSnippet, dispatchSnippet } from './guide.ts'
 import { L } from './locale.ts'
 import type { TaskboardState, TaskboardStore } from './store.ts'
 
@@ -56,6 +60,8 @@ export interface BoardPanelProps {
   onBack?: () => void
   /** Current session list state; the view follows the selected session. */
   useSessions?: (selector: (state: SessionListLike) => unknown) => unknown
+  /** Open the guide overlay on first render (tests drive the open state). */
+  initialGuideOpen?: boolean
 }
 
 interface SessionListLike {
@@ -297,6 +303,8 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   const [overColumn, setOverColumn] = useState<BoardColumn | null>(null)
   // A drop on 已指派 parks here while the roster picker waits for a name.
   const [assignPickerId, setAssignPickerId] = useState<string | null>(null)
+  // The「? 指南」overlay.
+  const [guideOpen, setGuideOpen] = useState(props.initialGuideOpen === true)
 
   // Follow the current session's workspace.
   useEffect(() => {
@@ -317,6 +325,16 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [assignPickerId])
+
+  // ESC closes the guide overlay.
+  useEffect(() => {
+    if (!guideOpen) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setGuideOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [guideOpen])
 
   const board = state.board
   const tasks = useMemo(() => (board ? Object.values(board.tasks) : []), [board])
@@ -410,7 +428,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   return (
     <div style={styles.root} ref={rootHeightRef}>
       <style>{TB_CSS}</style>
-      <TopBar state={state} store={store} total={tasks.length} onCreate={() => setCreateOpen(true)} />
+      <TopBar state={state} store={store} total={tasks.length} onCreate={() => setCreateOpen(true)} onGuide={() => setGuideOpen(true)} />
       {state.error && (
         <div style={styles.noticeError}>
           <span style={styles.noticeText}>{state.error}</span>
@@ -486,12 +504,20 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
           )}
         </>
       )}
+      {guideOpen && (
+        <GuideOverlay
+          cli={state.cli}
+          cwd={state.cwd ?? '<workspace>'}
+          boardFile={state.boardFile}
+          onClose={() => setGuideOpen(false)}
+        />
+      )}
     </div>
   )
 }
 
-/** Top bar: title, workspace, count, refresh, new task. */
-function TopBar({ state, store, total, onCreate }: { state: TaskboardState; store: TaskboardStore; total: number; onCreate(): void }): JSX.Element {
+/** Top bar: title, workspace, count, refresh, guide, new task. */
+function TopBar({ state, store, total, onCreate, onGuide }: { state: TaskboardState; store: TaskboardStore; total: number; onCreate(): void; onGuide(): void }): JSX.Element {
   return (
     <header style={styles.topbar}>
       <span style={styles.topbarTitle}>{L('看板', 'Board')}</span>
@@ -502,6 +528,9 @@ function TopBar({ state, store, total, onCreate }: { state: TaskboardState; stor
       )}
       <span style={styles.topbarCount}>{L('{n} 个任务', '{n} tasks', { n: total })}</span>
       <span style={styles.topbarSpacer} />
+      <button type="button" className="tb-iconbtn" onClick={onGuide} title={L('使用指南', 'Guide')}>
+        ?
+      </button>
       <button type="button" className="tb-iconbtn" onClick={() => void store.refresh()} title={L('刷新', 'Refresh')}>
         ↻
       </button>
@@ -1197,6 +1226,119 @@ function CreateForm({ state, store, actors, onClose }: { state: TaskboardState; 
   )
 }
 
+// ------------------------------------------------------------------ guide
+
+/** Clipboard write with a fallback for webviews without the async API. */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    // execCommand path: select a temporary textarea and copy the selection.
+    try {
+      const area = document.createElement('textarea')
+      area.value = text
+      area.style.position = 'fixed'
+      area.style.opacity = '0'
+      document.body.appendChild(area)
+      area.select()
+      const ok = document.execCommand('copy')
+      area.remove()
+      return ok
+    } catch {
+      return false
+    }
+  }
+}
+
+/** One template block: a <pre> plus its copy button (turns 已复制 briefly). */
+function SnippetBlock({ text, label }: { text: string; label: string }): JSX.Element {
+  const [copied, setCopied] = useState(false)
+  const copy = async (): Promise<void> => {
+    if (!(await copyText(text))) return
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+  return (
+    <div style={styles.snippet}>
+      <div style={styles.snippetLabel}>{label}</div>
+      <pre style={styles.snippetPre}>{text}</pre>
+      <button type="button" className="tb-btn" style={styles.snippetCopy} onClick={() => void copy()}>
+        {copied ? L('已复制', 'Copied') : L('复制', 'Copy')}
+      </button>
+    </div>
+  )
+}
+
+/**
+ * The「? 指南」overlay: an in-panel, centered card (above the drawer) that
+ * explains the board to humans and — the point of the thing — hands them
+ * ready-to-paste templates for getting kimi / Claude Code on board.
+ */
+function GuideOverlay({ cli, cwd, boardFile, onClose }: { cli: string | null; cwd: string; boardFile: string | null; onClose(): void }): JSX.Element {
+  const file = boardFile ?? '.dsh/taskboard.json'
+  return (
+    <>
+      <div style={styles.guideBackdrop} onClick={onClose} />
+      <div style={styles.guideCard} role="dialog" aria-label={L('使用指南', 'Guide')}>
+        <div style={styles.guideHead}>
+          <span style={styles.guideTitle}>{L('使用指南', 'Guide')}</span>
+          <button type="button" className="tb-iconbtn" onClick={onClose} title={L('关闭', 'Close')}>
+            ×
+          </button>
+        </div>
+        <div style={styles.guideBody}>
+          <section style={styles.guideSection}>
+            <div style={styles.guideH}>{L('这是什么', 'What this is')}</div>
+            <p style={styles.guideP}>
+              {L('每个 workspace 一块任务看板；全部数据就是 {file} 这一个文件——没有服务端、没有账号。在同一个目录里干活的 Agent 和人类，看到的是同一块板。', 'Every workspace has one task board; all its data lives in a single file — {file}. No server, no accounts: agents and humans working in the same directory share the same board.', { file })}
+            </p>
+          </section>
+
+          <section style={styles.guideSection}>
+            <div style={styles.guideH}>{L('人类怎么用', 'For humans')}</div>
+            <ul style={styles.guideList}>
+              <li>{L('拖卡片换列推进状态；拖到「已指派」会弹出成员选择器，拖到最右的窄竖条 = 关闭任务。', 'Drag cards between lanes to move them; dropping on 已指派 opens the roster picker, dropping on the narrow strip at the right edge closes the task.')}</li>
+              <li>{L('点卡片开抽屉：详情（默认只读，改内容点「编辑」）/ 评论 / 动态 三个 tab。', 'Click a card for its drawer: three tabs — 详情 (read-only until you hit 编辑), 评论 and 动态.')}</li>
+              <li>{L('标准流程：认领或指派 → 开始 → 提交审核 → 通过/打回 → 完成；任何非终态都可关闭。', 'The flow: claim or assign → start → submit for review → approve/reject → done; anything not final can be closed.')}</li>
+            </ul>
+          </section>
+
+          <section style={styles.guideSection}>
+            <div style={styles.guideH}>{L('dsh 里的 Agent', 'Agents inside dsh')}</div>
+            <p style={styles.guideP}>
+              {L('taskboard_* 工具在 dsh 会话里自动可用，会话开始的提示里已经写明用法——零配置，直接用。', 'The taskboard_* tools are automatically available inside dsh sessions, and the session-start prompt already explains them — zero configuration needed.')}
+            </p>
+          </section>
+
+          <section style={styles.guideSection}>
+            <div style={styles.guideH}>{L('让 kimi / Claude Code 用起来', 'Get kimi / Claude Code on board')}</div>
+            <ul style={styles.guideList}>
+              <li>
+                <strong>{L('方式 A · 工作区约定文件（最省心）', 'A · Workspace convention file (easiest)')}</strong>
+                <br />
+                {L('把下面的「约定模板」存成 workspace 根目录的 AGENTS.md——他们每次会话开始都会读到。', 'Save the convention template below as AGENTS.md in the workspace root — they read it at the start of every session.')}
+              </li>
+              <li>
+                <strong>{L('方式 B · msg9 邮件派活', 'B · Dispatch over msg9 mail')}</strong>
+                <br />
+                {L('切到「消息」页签，发给他们的 msg9 地址（形如 kimi@<项目pod>.ice.msg9.io / claude@<项目pod>.ice.msg9.io，真实地址在联系人/广场里查），正文用「派活模板」+ 任务 ID。', 'Switch to the 消息 tab and mail their msg9 address (of the form kimi@<project-pod>.ice.msg9.io / claude@<project-pod>.ice.msg9.io — look the real one up in Contacts or the Square), with the dispatch template below plus a task id.')}
+              </li>
+              <li>
+                <strong>{L('方式 C · 直接粘进会话', 'C · Paste straight into a session')}</strong>
+                <br />
+                {L('复制「派活模板」，粘进他们会话的输入框即可。', 'Copy the dispatch template and paste it into their session input.')}
+              </li>
+            </ul>
+            <SnippetBlock label={L('约定模板（存为 AGENTS.md）', 'Convention template (save as AGENTS.md)')} text={conventionSnippet(cli, cwd)} />
+            <SnippetBlock label={L('派活模板（msg9 / 粘贴）', 'Dispatch template (msg9 / paste)')} text={dispatchSnippet(cli, cwd)} />
+          </section>
+        </div>
+      </div>
+    </>
+  )
+}
+
 // ------------------------------------------------------------------ styles
 
 const styles: Record<string, CSSProperties> = {
@@ -1420,4 +1562,64 @@ const styles: Record<string, CSSProperties> = {
   pickerEmpty: { color: FAINT, fontSize: 11, padding: '6px 8px', lineHeight: 1.5 },
   pickerFoot: { display: 'flex', flexDirection: 'column', gap: 1, borderTop: `1px solid ${BORDER}`, paddingTop: 4 },
   pickerCancel: { color: DIM },
+  // The guide overlay: centered card above everything else in the panel
+  // (backdrop z 30, card z 31 — the drawer sits at 21, the roster picker 25).
+  guideBackdrop: { position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.28)', zIndex: 30 },
+  guideCard: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    transform: 'translate(-50%, -50%)',
+    width: 720,
+    maxWidth: '94%',
+    maxHeight: '88%',
+    display: 'flex',
+    flexDirection: 'column',
+    background: BG,
+    border: `1px solid ${BORDER_STRONG}`,
+    borderRadius: 10,
+    boxShadow: '0 16px 44px rgba(0,0,0,0.22)',
+    zIndex: 31,
+    overflow: 'hidden',
+  },
+  guideHead: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    padding: '10px 14px',
+    borderBottom: `1px solid ${BORDER}`,
+    flexShrink: 0,
+  },
+  guideTitle: { fontSize: 14, fontWeight: 600 },
+  guideBody: {
+    flex: 1,
+    minHeight: 0,
+    overflowY: 'auto',
+    padding: '14px 18px 18px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 16,
+    fontSize: 12.5,
+    lineHeight: 1.7,
+  },
+  guideSection: { display: 'flex', flexDirection: 'column', gap: 6 },
+  guideH: { fontSize: 13, fontWeight: 600 },
+  guideP: { margin: 0, overflowWrap: 'anywhere' },
+  guideList: { margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 6 },
+  snippet: { position: 'relative', display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 },
+  snippetLabel: { fontSize: 11, fontWeight: 600, color: DIM },
+  snippetPre: {
+    margin: 0,
+    background: BG_SUNK,
+    border: `1px solid ${BORDER}`,
+    borderRadius: 8,
+    padding: '10px 12px',
+    fontSize: 11.5,
+    lineHeight: 1.6,
+    overflowX: 'auto',
+    whiteSpace: 'pre',
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  },
+  snippetCopy: { position: 'absolute', top: 24, right: 8, zIndex: 1 },
 }

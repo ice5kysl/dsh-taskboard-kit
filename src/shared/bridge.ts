@@ -81,5 +81,5 @@ export interface ApiError {
   code?: ErrorCode
 }
 
-export type BoardResponse = { ok: true; board: Board } | ApiError
+export type BoardResponse = { ok: true; board: Board; cli?: string | null; board_file?: string } | ApiError
 export type TaskResponse = { ok: true; task: Task } | ApiError

@@ -245,6 +245,28 @@ await check('knownActors: union of all four sources, cleaned and sorted', () => 
   assert.deepEqual(client.knownActors({ version: 1, workspace: '/work/b', next_seq: 1, tasks: {} }), [])
 })
 
+// --------------------------------------------------------- guide snippets
+
+await check('guide snippets: interpolate cli/cwd, degrade on a null cli', () => {
+  assert.equal(typeof client.conventionSnippet, 'function')
+  assert.equal(typeof client.dispatchSnippet, 'function')
+
+  const conv = client.conventionSnippet('/a/bin/taskboard.mjs', '/w')
+  assert.ok(conv.includes('/a/bin/taskboard.mjs'), 'cli path interpolated')
+  assert.ok(conv.includes('--cwd /w'), 'cwd interpolated')
+
+  const fallback = client.conventionSnippet(null, '/w')
+  assert.ok(fallback.includes('<taskboard 插件目录>/bin/taskboard.mjs'), 'null cli degrades to the placeholder')
+  assert.ok(fallback.includes('--cwd /w'), 'cwd still interpolated')
+
+  const disp = client.dispatchSnippet('/a/bin/taskboard.mjs', '/w')
+  assert.ok(disp.includes('assignee'), 'dispatch teaches the assignee lookup')
+  assert.ok(disp.includes('T-__'), 'dispatch keeps the first-task placeholder')
+  assert.ok(disp.includes('/a/bin/taskboard.mjs'), 'cli path interpolated')
+  const dispFallback = client.dispatchSnippet(null, '/w')
+  assert.ok(dispFallback.includes('<taskboard 插件目录>/bin/taskboard.mjs'), 'null cli degrades to the placeholder')
+})
+
 // ------------------------------------------------------------------ done
 
 console.log(failed === 0 ? 'all checks passed' : `${failed} check(s) failed`)

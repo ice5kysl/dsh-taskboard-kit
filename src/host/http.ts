@@ -24,7 +24,10 @@
  * @module dsh-taskboard-kit/http
  */
 
+import { existsSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import {
   BRIDGE_PREFIX,
@@ -40,6 +43,7 @@ import type { Board, Task } from '../shared/types.ts'
 import {
   StoreError,
   addComment,
+  boardFilePath,
   claimTask,
   createTask,
   loadBoard,
@@ -50,6 +54,19 @@ export { BRIDGE_PREFIX } from '../shared/bridge.ts'
 
 /** The actor every browser mutation is stamped with (contract). */
 const HUMAN_ACTOR = 'human'
+
+/**
+ * Absolute path of the bundled CLI (`bin/taskboard.mjs`), derived from the
+ * running bundle (`lib/index.js` → `../bin/…`). The panel's usage guide shows
+ * it in the copy-paste snippets; `null` when it cannot be resolved.
+ */
+function cliPath(): string | null {
+  try {
+    return join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'taskboard.mjs')
+  } catch {
+    return null
+  }
+}
 
 /** The store operations the bridge performs (injectable so tests can fake them). */
 export interface TaskboardBridgeDeps {
@@ -249,12 +266,19 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
     const method = req.method ?? 'GET'
 
     // The board read needs no mutate header and no existing file: a workspace
-    // that never touched the board simply gets an empty one back.
+    // that never touched the board simply gets an empty one back. `cli` /
+    // `board_file` tell the panel's guide where the CLI and the data live.
     if (method === 'GET' && path === `${BRIDGE_PREFIX}/board`) {
       const cwd = str(url.searchParams.get('cwd'))
       if (!cwd) throw new BridgeError(400, 'invalid-input', 'query parameter "cwd" is required')
       try {
-        return sendJson(res, 200, { ok: true, board: await deps.loadBoard(cwd) })
+        const cli = cliPath()
+        return sendJson(res, 200, {
+          ok: true,
+          board: await deps.loadBoard(cwd),
+          cli: cli && existsSync(cli) ? cli : null,
+          board_file: boardFilePath(cwd),
+        })
       } catch (error) {
         if (error instanceof StoreError) {
           return fail(res, error.code === 'internal' ? 500 : 200, error.code, error.message)
