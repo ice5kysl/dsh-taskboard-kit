@@ -6,11 +6,12 @@
  * task) above four swim-lane columns (待认领 / 已指派 / 进行中 / 已完成 from
  * the contract's BOARD_COLUMNS). Cards are HTML5-draggable between lanes —
  * a drop compiles into the shared `planDrop` op sequence, never a hand-rolled
- * status mapping. Clicking a card opens a detail drawer that is absolutely
- * positioned INSIDE the panel (no portal — the shell's overlay layer would
- * lose the --dsw-alias-* theme tokens). The drawer carries the status actions
- * (认领 / 开始 / 完成 / 取消 / 重开), the edit row (reassign, priority,
- * title/detail), the comment thread and the task's log timeline.
+ * status mapping; a drop on 已指派 opens the lane's roster picker (no prompt,
+ * no typing — the roster comes from the board itself, see actors.ts).
+ * Clicking a card opens a 560px detail drawer that is absolutely positioned
+ * INSIDE the panel (no portal — the shell's overlay layer would lose the
+ * --dsw-alias-* theme tokens), tabbed into 详情 (read-only until 编辑 is
+ * hit), 评论 (the thread + composer) and 动态 (the log timeline).
  *
  * It is a pure projection of the store (`useSyncExternalStore`) — every
  * action goes through `TaskboardStore`, so the model tools, the view and the
@@ -27,7 +28,7 @@
  * @module dsh-taskboard-kit/client-panel
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import {
   BOARD_COLUMNS,
   columnOf,
@@ -39,6 +40,7 @@ import {
   type TaskPriority,
 } from '../shared/types.ts'
 import { planDrop, type DropOp } from '../shared/dnd.ts'
+import { knownActors } from './actors.ts'
 import { L } from './locale.ts'
 import type { TaskboardState, TaskboardStore } from './store.ts'
 
@@ -115,6 +117,13 @@ const TB_CSS = `
 /* Drop-target highlight rides the injected stylesheet (inline styles cannot
    express state classes); !important beats the lane's inline background. */
 .tb-column.dragover { box-shadow: inset 0 0 0 2px ${ACCENT} !important; background: ${HOVER_BG} !important; }
+/* In-column assignee picker rows. */
+.tb-picker-row { display: flex; width: 100%; box-sizing: border-box; align-items: center; gap: 6px; border: none; border-radius: 6px; background: transparent; color: inherit; padding: 7px 10px; font-size: 12px; font-family: inherit; cursor: pointer; text-align: left; }
+.tb-picker-row:hover { background: ${HOVER_BG}; }
+/* Drawer tab strip. */
+.tb-tab { border: none; border-bottom: 2px solid transparent; background: transparent; color: ${DIM}; padding: 6px 2px; font-size: 12px; font-family: inherit; cursor: pointer; }
+.tb-tab:hover { color: ${FG}; }
+.tb-tab.active { color: ${ACCENT}; border-bottom-color: ${ACCENT}; font-weight: 600; }
 `
 
 // ------------------------------------------------------------------ helpers
@@ -193,6 +202,11 @@ function shortPath(cwd: string): string {
   return parts.slice(-2).join('/') || cwd
 }
 
+/** 「ui, kit，看板」→ ['ui', 'kit', '看板']：逗号/中文逗号/空白分隔，去空去重。 */
+function parseTags(text: string): string[] {
+  return [...new Set(text.split(/[,，\s]+/).map((tag) => tag.trim()).filter(Boolean))]
+}
+
 /** Card age badge: 5m / 3h / 2d since creation. */
 function ageText(iso: string): string {
   const at = Date.parse(iso)
@@ -266,6 +280,8 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   // HTML5 drag-and-drop: the dragged card's id + the lane under the pointer.
   const [dragId, setDragId] = useState<string | null>(null)
   const [overColumn, setOverColumn] = useState<BoardColumn | null>(null)
+  // A drop on 已指派 parks here while the roster picker waits for a name.
+  const [assignPickerId, setAssignPickerId] = useState<string | null>(null)
 
   // Follow the current session's workspace.
   useEffect(() => {
@@ -277,8 +293,19 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
     void store.refresh()
   }, [store])
 
+  // ESC aborts a pending assignment (no request fires).
+  useEffect(() => {
+    if (!assignPickerId) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setAssignPickerId(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [assignPickerId])
+
   const board = state.board
   const tasks = useMemo(() => (board ? Object.values(board.tasks) : []), [board])
+  const actors = useMemo(() => (board ? knownActors(board) : []), [board])
   const columns = useMemo(
     () =>
       BOARD_COLUMNS.map((column) => {
@@ -293,6 +320,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   )
   const selectedId = state.selectedId
   const selected: Task | null = selectedId && board ? board.tasks[selectedId] ?? null : null
+  const pickerTask: Task | null = assignPickerId && board ? board.tasks[assignPickerId] ?? null : null
   const drawerOpen = createOpen || selected !== null
   const closeDrawer = (): void => {
     setCreateOpen(false)
@@ -300,26 +328,12 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   }
 
   /**
-   * One drop = the shared `planDrop` op sequence, executed in order through
-   * the store (claim → store.claim, update → store.update with the patch).
-   * An empty plan is a no-op (no request); a failed step surfaces through the
-   * store's error channel and stops the sequence.
+   * Execute one shared `planDrop` op sequence in order through the store
+   * (claim → store.claim, update → store.update with the patch). An empty
+   * plan is a no-op (no request); a failed step surfaces through the store's
+   * error channel and stops the sequence.
    */
-  const runDrop = async (id: string, target: BoardColumn): Promise<void> => {
-    const task = tasks.find((row) => row.id === id)
-    if (!task) return
-    let ops: DropOp[]
-    if (target === 'assigned') {
-      // Dropping on 已指派 means delegating: ask for the name first.
-      const name = window.prompt(
-        L('指派给谁？（留空 = 放回待认领）', 'Assign to whom? (empty = back to pool)'),
-        task.assignee ?? '',
-      )
-      if (name === null) return // the prompt was cancelled: abort the drop
-      ops = planDrop(task, target, name)
-    } else {
-      ops = planDrop(task, target)
-    }
+  const runPlan = async (task: Task, ops: DropOp[]): Promise<void> => {
     if (ops.length === 0) return
     for (const op of ops) {
       const ok = op.kind === 'claim'
@@ -327,6 +341,22 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
         : await store.update({ id: task.id, ...op.patch })
       if (!ok) return
     }
+  }
+
+  /**
+   * One drop on a lane. Dropping on 已指派 never prompts: it opens the
+   * in-column roster picker (assignPickerId) and the drop continues when the
+   * user picks a name, chooses the pool, or aborts. Every other lane compiles
+   * straight into its planDrop sequence.
+   */
+  const runDrop = async (id: string, target: BoardColumn): Promise<void> => {
+    const task = tasks.find((row) => row.id === id)
+    if (!task) return
+    if (target === 'assigned') {
+      setAssignPickerId(id)
+      return
+    }
+    await runPlan(task, planDrop(task, target))
   }
   /** DnD wiring shared by the lanes and their cards. */
   const dnd: LaneDnd = {
@@ -404,17 +434,37 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
               store={store}
               onCreate={() => setCreateOpen(true)}
               dnd={dnd}
+              overlay={
+                column === 'assigned' && pickerTask ? (
+                  <AssignPicker
+                    actors={actors}
+                    current={pickerTask.assignee}
+                    onPick={(name) => {
+                      const task = pickerTask
+                      setAssignPickerId(null)
+                      void runPlan(task, planDrop(task, 'assigned', name))
+                    }}
+                    onPool={() => {
+                      const task = pickerTask
+                      setAssignPickerId(null)
+                      void runPlan(task, planDrop(task, 'pool'))
+                    }}
+                    onCancel={() => setAssignPickerId(null)}
+                  />
+                ) : undefined
+              }
             />
           ))}
         </div>
       )}
+      {pickerTask && <div style={styles.backdrop} onClick={() => setAssignPickerId(null)} />}
       {drawerOpen && (
         <>
           <div style={styles.backdrop} onClick={closeDrawer} />
           {createOpen ? (
-            <CreateForm state={state} store={store} onClose={() => setCreateOpen(false)} />
+            <CreateForm state={state} store={store} actors={actors} onClose={() => setCreateOpen(false)} />
           ) : (
-            selected && <DetailDrawer key={selected.id} task={selected} state={state} store={store} onClose={() => store.select(null)} />
+            selected && <DetailDrawer key={selected.id} task={selected} state={state} store={store} actors={actors} onClose={() => store.select(null)} />
           )}
         </>
       )}
@@ -454,7 +504,9 @@ function TopBar({ state, store, total, onCreate }: { state: TaskboardState; stor
 
 /** One swim lane: header (name + count + quick-add) above its sorted cards.
  *  The lane is also the drop target: dragOver highlights it (class-based,
- *  token colors), drop compiles into a planDrop sequence by the panel. */
+ *  token colors), drop compiles into a planDrop sequence by the panel.
+ *  `overlay` floats a card inside the lane (the assigned lane's roster
+ *  picker after a drop). */
 function ColumnView({
   column,
   tasks,
@@ -462,6 +514,7 @@ function ColumnView({
   store,
   onCreate,
   dnd,
+  overlay,
 }: {
   column: BoardColumn
   tasks: Task[]
@@ -469,6 +522,7 @@ function ColumnView({
   store: TaskboardStore
   onCreate(): void
   dnd: LaneDnd
+  overlay?: ReactNode
 }): JSX.Element {
   return (
     <section
@@ -507,6 +561,7 @@ function ColumnView({
           ))
         )}
       </div>
+      {overlay}
     </section>
   )
 }
@@ -562,14 +617,20 @@ function TaskCard({ task, selected, onOpen, dnd }: { task: Task; selected: boole
 }
 
 /**
- * The in-panel detail drawer (absolute, no portal). Keyed by task id at the
- * call site, so the edit drafts reset when the selection changes — but
+ * The in-panel detail drawer (absolute, no portal; 560px wide). Three tabs:
+ * 详情 (read-only by default — meta, status actions, roster chips, detail;
+ * an explicit 编辑 button opens the edit form), 评论 (the comment thread +
+ * composer) and 动态 (the log timeline). Keyed by task id at the call site,
+ * so the tab, edit mode and drafts reset when the selection changes — but
  * survive background refreshes of the same task.
  */
-function DetailDrawer({ task, state, store, onClose }: { task: Task; state: TaskboardState; store: TaskboardStore; onClose(): void }): JSX.Element {
-  const [assigneeDraft, setAssigneeDraft] = useState(task.assignee ?? '')
+function DetailDrawer({ task, state, store, actors, onClose }: { task: Task; state: TaskboardState; store: TaskboardStore; actors: string[]; onClose(): void }): JSX.Element {
+  const [tab, setTab] = useState<'detail' | 'comments' | 'activity'>('detail')
+  const [editing, setEditing] = useState(false)
   const [titleDraft, setTitleDraft] = useState(task.title)
   const [detailDraft, setDetailDraft] = useState(task.detail)
+  const [priorityDraft, setPriorityDraft] = useState<TaskPriority>(task.priority)
+  const [tagsDraft, setTagsDraft] = useState(task.tags.join(', '))
   const [commentDraft, setCommentDraft] = useState('')
   const busy = state.busy
   const column = columnOf(task)
@@ -578,6 +639,39 @@ function DetailDrawer({ task, state, store, onClose }: { task: Task; state: Task
   const update = (patch: Parameters<TaskboardStore['update']>[0]): void => {
     void store.update(patch)
   }
+
+  const switchTab = (next: 'detail' | 'comments' | 'activity'): void => {
+    setTab(next)
+    setEditing(false) // leaving the tab discards an unsaved edit form
+  }
+
+  const startEdit = (): void => {
+    setTitleDraft(task.title)
+    setDetailDraft(task.detail)
+    setPriorityDraft(task.priority)
+    setTagsDraft(task.tags.join(', '))
+    setEditing(true)
+  }
+
+  const saveEdit = async (): Promise<void> => {
+    const title = titleDraft.trim()
+    if (!title || busy) return
+    const ok = await store.update({
+      id: task.id,
+      title,
+      detail: detailDraft,
+      priority: priorityDraft,
+      tags: parseTags(tagsDraft),
+    })
+    // On failure the error strip explains it and the form stays open.
+    if (ok) setEditing(false)
+  }
+
+  const editDirty =
+    titleDraft.trim() !== task.title ||
+    detailDraft !== task.detail ||
+    priorityDraft !== task.priority ||
+    parseTags(tagsDraft).join(' ') !== task.tags.join(' ')
 
   const submitComment = async (): Promise<void> => {
     const text = commentDraft.trim()
@@ -591,169 +685,203 @@ function DetailDrawer({ task, state, store, onClose }: { task: Task; state: Task
     <aside style={styles.drawer}>
       <div style={styles.drawerHead}>
         <span style={styles.drawerTitle}>{task.title}</span>
+        {tab === 'detail' && !editing && (
+          <button type="button" className="tb-btn" onClick={startEdit}>
+            {L('编辑', 'Edit')}
+          </button>
+        )}
         <button type="button" className="tb-iconbtn" onClick={onClose} title={L('关闭', 'Close')}>
           ×
         </button>
       </div>
-      <div style={styles.drawerMeta}>
-        <span>{task.id}</span>
-        <span>{statusLabel(task)}</span>
-        <span>{L('优先级 {p}', 'priority {p}', { p: priorityLabel(task.priority) })}</span>
-        <span>{task.assignee ?? L('待认领', 'unclaimed')}</span>
-      </div>
-      <div style={styles.drawerMeta}>
-        <span>{L('由 {by} 创建', 'created by {by}', { by: task.created_by })}</span>
-        <span>{relTime(task.created_at)}</span>
-      </div>
-
-      <div style={styles.drawerActions}>
-        {column === 'pool' && (
-          <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => void store.claim(task.id)}>
-            {L('认领', 'Claim')}
-          </button>
-        )}
-        {column === 'assigned' && (
-          <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => update({ id: task.id, action: 'start' })}>
-            {L('开始', 'Start')}
-          </button>
-        )}
-        {column === 'in_progress' && (
-          <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => update({ id: task.id, action: 'done' })}>
-            {L('完成', 'Done')}
-          </button>
-        )}
-        {column === 'done' && (
-          <button type="button" className="tb-btn" disabled={busy} onClick={() => update({ id: task.id, action: 'reopen' })}>
-            {L('重开', 'Reopen')}
-          </button>
-        )}
-        {column !== 'done' && (
-          <button type="button" className="tb-btn tb-btn-danger" disabled={busy} onClick={() => update({ id: task.id, action: 'cancel' })}>
-            {L('取消', 'Cancel')}
-          </button>
-        )}
+      <div style={styles.tabRow}>
+        <button type="button" className={tab === 'detail' ? 'tb-tab active' : 'tb-tab'} onClick={() => switchTab('detail')}>
+          {L('详情', 'Details')}
+        </button>
+        <button type="button" className={tab === 'comments' ? 'tb-tab active' : 'tb-tab'} onClick={() => switchTab('comments')}>
+          {L('评论 ({n})', 'Comments ({n})', { n: task.comments.length })}
+        </button>
+        <button type="button" className={tab === 'activity' ? 'tb-tab active' : 'tb-tab'} onClick={() => switchTab('activity')}>
+          {L('动态', 'Activity')}
+        </button>
       </div>
 
-      <div style={styles.drawerSection}>
-        <div style={styles.sectionTitle}>{L('描述', 'Details')}</div>
-        {task.detail ? (
-          <div style={styles.detailBody}>{task.detail}</div>
-        ) : (
-          <div style={styles.detailEmpty}>{L('（没有描述）', '(no description)')}</div>
-        )}
-      </div>
+      {tab === 'detail' && !editing && (
+        <>
+          <div style={styles.drawerMeta}>
+            <span>{task.id}</span>
+            <span>{statusLabel(task)}</span>
+            <span>{L('优先级 {p}', 'priority {p}', { p: priorityLabel(task.priority) })}</span>
+            <span>{task.assignee ?? L('待认领', 'unclaimed')}</span>
+            {task.tags.map((tag) => (
+              <span key={tag} className="tb-tag">{tag}</span>
+            ))}
+          </div>
+          <div style={styles.drawerMeta}>
+            <span>{L('由 {by} 创建', 'created by {by}', { by: task.created_by })}</span>
+            <span>{relTime(task.created_at)}</span>
+          </div>
 
-      <div style={styles.drawerSection}>
-        <div style={styles.sectionTitle}>{L('编辑', 'Edit')}</div>
-        <label style={styles.field}>
-          <span style={styles.fieldLabel}>{L('改派（留空 = 放回待认领池）', 'Reassign (empty = back to the pool)')}</span>
-          <span style={styles.fieldRow}>
+          <div style={styles.drawerActions}>
+            {column === 'pool' && (
+              <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => void store.claim(task.id)}>
+                {L('认领', 'Claim')}
+              </button>
+            )}
+            {column === 'assigned' && (
+              <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => update({ id: task.id, action: 'start' })}>
+                {L('开始', 'Start')}
+              </button>
+            )}
+            {column === 'in_progress' && (
+              <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => update({ id: task.id, action: 'done' })}>
+                {L('完成', 'Done')}
+              </button>
+            )}
+            {column === 'done' && (
+              <button type="button" className="tb-btn" disabled={busy} onClick={() => update({ id: task.id, action: 'reopen' })}>
+                {L('重开', 'Reopen')}
+              </button>
+            )}
+            {column !== 'done' && (
+              <button type="button" className="tb-btn tb-btn-danger" disabled={busy} onClick={() => update({ id: task.id, action: 'cancel' })}>
+                {L('取消', 'Cancel')}
+              </button>
+            )}
+          </div>
+
+          <div style={styles.drawerSection}>
+            <div style={styles.sectionTitle}>{L('指派', 'Assignee')}</div>
+            <ActorChips
+              actors={actors}
+              current={task.assignee}
+              busy={busy}
+              onSelect={(name) => {
+                if (name !== task.assignee) update({ id: task.id, assignee: name })
+              }}
+              poolLabel={L('移回待认领', 'Back to pool')}
+              emptyHint={L('暂无可指派成员——Agent 或人认领过一次就会出现在这里', 'No assignable members yet — an agent or human shows up here after claiming once.')}
+            />
+          </div>
+
+          <div style={styles.drawerSection}>
+            <div style={styles.sectionTitle}>{L('描述', 'Description')}</div>
+            {task.detail ? (
+              <div style={styles.detailBody}>{task.detail}</div>
+            ) : (
+              <div style={styles.detailEmpty}>{L('（没有描述）', '(no description)')}</div>
+            )}
+          </div>
+        </>
+      )}
+
+      {tab === 'detail' && editing && (
+        <div style={styles.drawerSection}>
+          <label style={styles.field}>
+            <span style={styles.fieldLabel}>{L('标题', 'Title')}</span>
+            <input className="tb-input" value={titleDraft} onChange={(event) => setTitleDraft(event.target.value)} />
+          </label>
+          <label style={styles.field}>
+            <span style={styles.fieldLabel}>{L('描述', 'Details')}</span>
+            <textarea className="tb-textarea" rows={8} value={detailDraft} onChange={(event) => setDetailDraft(event.target.value)} />
+          </label>
+          <div style={styles.field}>
+            <span style={styles.fieldLabel}>{L('优先级', 'Priority')}</span>
+            <span style={styles.fieldRow}>
+              {(['high', 'medium', 'low'] as const).map((priority) => (
+                <button
+                  key={priority}
+                  type="button"
+                  className={priorityDraft === priority ? 'tb-chip active' : 'tb-chip'}
+                  disabled={busy}
+                  onClick={() => setPriorityDraft(priority)}
+                >
+                  {priorityLabel(priority)}
+                </button>
+              ))}
+            </span>
+          </div>
+          <label style={styles.field}>
+            <span style={styles.fieldLabel}>{L('标签（逗号分隔）', 'Tags (comma separated)')}</span>
             <input
               className="tb-input"
-              value={assigneeDraft}
-              placeholder={L('指派人，例如 kimi', 'assignee, e.g. kimi')}
+              value={tagsDraft}
+              placeholder="ui, kit"
               autoComplete="off"
               spellCheck={false}
-              onChange={(event) => setAssigneeDraft(event.target.value)}
+              onChange={(event) => setTagsDraft(event.target.value)}
             />
-            <button
-              type="button"
-              className="tb-btn"
-              disabled={busy || assigneeDraft.trim() === (task.assignee ?? '')}
-              onClick={() => update({ id: task.id, assignee: assigneeDraft.trim() ? assigneeDraft.trim() : null })}
-            >
-              {L('改派', 'Reassign')}
-            </button>
-          </span>
-        </label>
-        <div style={styles.field}>
-          <span style={styles.fieldLabel}>{L('优先级', 'Priority')}</span>
-          <span style={styles.fieldRow}>
-            {(['high', 'medium', 'low'] as const).map((priority) => (
-              <button
-                key={priority}
-                type="button"
-                className={task.priority === priority ? 'tb-chip active' : 'tb-chip'}
-                disabled={busy}
-                onClick={() => update({ id: task.id, priority })}
-              >
-                {priorityLabel(priority)}
-              </button>
-            ))}
-          </span>
-        </div>
-        <label style={styles.field}>
-          <span style={styles.fieldLabel}>{L('标题', 'Title')}</span>
-          <input className="tb-input" value={titleDraft} onChange={(event) => setTitleDraft(event.target.value)} />
-        </label>
-        <label style={styles.field}>
-          <span style={styles.fieldLabel}>{L('描述', 'Details')}</span>
-          <textarea className="tb-textarea" rows={5} value={detailDraft} onChange={(event) => setDetailDraft(event.target.value)} />
-        </label>
-        <div style={styles.drawerActions}>
-          <button
-            type="button"
-            className="tb-btn tb-btn-primary"
-            disabled={busy || !titleDraft.trim() || (titleDraft.trim() === task.title && detailDraft === task.detail)}
-            onClick={() => update({ id: task.id, title: titleDraft.trim(), detail: detailDraft })}
-          >
-            {L('保存修改', 'Save changes')}
-          </button>
-        </div>
-      </div>
-
-      <div style={styles.drawerSection}>
-        <div style={styles.sectionTitle}>{L('评论（{n}）', 'Comments ({n})', { n: task.comments.length })}</div>
-        {task.comments.length === 0 ? (
-          <div style={styles.detailEmpty}>{L('还没有评论。', 'No comments yet.')}</div>
-        ) : (
-          <ul style={styles.logList}>
-            {task.comments.map((comment, index) => (
-              <CommentRow key={`${comment.at}-${index}`} comment={comment} />
-            ))}
-          </ul>
-        )}
-        <div style={styles.commentComposer}>
-          <textarea
-            className="tb-textarea"
-            rows={3}
-            value={commentDraft}
-            placeholder={L('写下发现、交接说明或测试反馈…', 'Findings, handoff notes or test feedback…')}
-            onChange={(event) => setCommentDraft(event.target.value)}
-          />
+          </label>
           <div style={styles.drawerActions}>
             <button
               type="button"
               className="tb-btn tb-btn-primary"
-              disabled={busy || !commentDraft.trim()}
-              onClick={() => void submitComment()}
+              disabled={busy || !titleDraft.trim() || !editDirty}
+              onClick={() => void saveEdit()}
             >
-              {busy ? L('发送中…', 'Sending…') : L('发表评论', 'Comment')}
+              {busy ? L('保存中…', 'Saving…') : L('保存修改', 'Save changes')}
+            </button>
+            <button type="button" className="tb-btn" disabled={busy} onClick={() => setEditing(false)}>
+              {L('取消', 'Cancel')}
             </button>
           </div>
         </div>
-      </div>
+      )}
 
-      <div style={styles.drawerSection}>
-        <div style={styles.sectionTitle}>{L('动态（{n}）', 'Activity ({n})', { n: log.length })}</div>
-        {log.length === 0 ? (
-          <div style={styles.detailEmpty}>{L('（还没有动态）', '(no activity yet)')}</div>
-        ) : (
-          <ul style={styles.logList}>
-            {log.map((entry, index) => (
-              <li key={`${entry.at}-${index}`} style={styles.logRow}>
-                <span style={styles.logDot} />
-                <span style={styles.logMain}>
-                  <span style={styles.logEvent}>{eventLabel(entry.event)}</span>
-                  <span style={styles.logBy}>{entry.by}</span>
-                  <span style={styles.logTime} title={entry.at}>{relTime(entry.at)}</span>
-                  {entry.note ? <span style={styles.logNote}>{entry.note}</span> : null}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {tab === 'comments' && (
+        <div style={styles.drawerSection}>
+          {task.comments.length === 0 ? (
+            <div style={styles.detailEmpty}>{L('还没有评论。', 'No comments yet.')}</div>
+          ) : (
+            <ul style={styles.logList}>
+              {task.comments.map((comment, index) => (
+                <CommentRow key={`${comment.at}-${index}`} comment={comment} />
+              ))}
+            </ul>
+          )}
+          <div style={styles.commentComposer}>
+            <textarea
+              className="tb-textarea"
+              rows={3}
+              value={commentDraft}
+              placeholder={L('写下发现、交接说明或测试反馈…', 'Findings, handoff notes or test feedback…')}
+              onChange={(event) => setCommentDraft(event.target.value)}
+            />
+            <div style={styles.drawerActions}>
+              <button
+                type="button"
+                className="tb-btn tb-btn-primary"
+                disabled={busy || !commentDraft.trim()}
+                onClick={() => void submitComment()}
+              >
+                {busy ? L('发送中…', 'Sending…') : L('发表评论', 'Comment')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === 'activity' && (
+        <div style={styles.drawerSection}>
+          {log.length === 0 ? (
+            <div style={styles.detailEmpty}>{L('（还没有动态）', '(no activity yet)')}</div>
+          ) : (
+            <ul style={styles.logList}>
+              {log.map((entry, index) => (
+                <li key={`${entry.at}-${index}`} style={styles.logRow}>
+                  <span style={styles.logDot} />
+                  <span style={styles.logMain}>
+                    <span style={styles.logEvent}>{eventLabel(entry.event)}</span>
+                    <span style={styles.logBy}>{entry.by}</span>
+                    <span style={styles.logTime} title={entry.at}>{relTime(entry.at)}</span>
+                    {entry.note ? <span style={styles.logNote}>{entry.note}</span> : null}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </aside>
   )
 }
@@ -772,12 +900,113 @@ function CommentRow({ comment }: { comment: TaskComment }): JSX.Element {
   )
 }
 
+/**
+ * The roster as a chip row: one chip per known actor (the current selection
+ * highlighted), plus an optional trailing "back to pool" chip. The parent
+ * decides what a selection means (immediate reassign in the drawer, a draft
+ * pick in the create form). An empty roster degrades to a one-line hint.
+ */
+function ActorChips({
+  actors,
+  current,
+  busy = false,
+  onSelect,
+  poolLabel,
+  emptyHint,
+}: {
+  actors: string[]
+  /** The selected actor (highlighted); null = none / pool. */
+  current: string | null
+  busy?: boolean
+  onSelect(name: string | null): void
+  /** When given, a trailing chip selects null (back to the claimable pool). */
+  poolLabel?: string
+  emptyHint?: string
+}): JSX.Element {
+  if (actors.length === 0) {
+    return (
+      <div style={styles.detailEmpty}>
+        {emptyHint ?? L('暂无可指派成员——Agent 或人认领过一次就会出现在这里', 'No assignable members yet — an agent or human shows up here after claiming once.')}
+      </div>
+    )
+  }
+  return (
+    <div style={styles.actorChips}>
+      {actors.map((name) => (
+        <button
+          key={name}
+          type="button"
+          className={name === current ? 'tb-chip active' : 'tb-chip'}
+          disabled={busy}
+          onClick={() => onSelect(name)}
+        >
+          {name}
+        </button>
+      ))}
+      {poolLabel && (
+        <button type="button" className="tb-chip" disabled={busy || current === null} onClick={() => onSelect(null)}>
+          {poolLabel}
+        </button>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The roster picker that floats inside the assigned lane after a card is
+ * dropped on it: pick a name (the drop's planDrop runs with it), send the
+ * card back to the pool, or cancel (backdrop / 取消 / ESC — no request).
+ */
+function AssignPicker({
+  actors,
+  current,
+  onPick,
+  onPool,
+  onCancel,
+}: {
+  actors: string[]
+  /** The task's assignee right now (marked, still re-pickable). */
+  current: string | null
+  onPick(name: string): void
+  onPool(): void
+  onCancel(): void
+}): JSX.Element {
+  return (
+    <div style={styles.picker}>
+      <div style={styles.pickerTitle}>{L('指派给…', 'Assign to…')}</div>
+      <div style={styles.pickerList}>
+        {actors.length === 0 ? (
+          <div style={styles.pickerEmpty}>
+            {L('花名册还是空的——Agent 或人认领过一次就会出现在这里。', 'The roster is empty — an agent or human shows up here after claiming once.')}
+          </div>
+        ) : (
+          actors.map((name) => (
+            <button key={name} type="button" className="tb-picker-row" onClick={() => onPick(name)}>
+              <span style={styles.pickerName}>{name}</span>
+              {name === current && <span style={styles.pickerCurrent}>{L('当前', 'current')}</span>}
+            </button>
+          ))
+        )}
+      </div>
+      <div style={styles.pickerFoot}>
+        <button type="button" className="tb-picker-row" onClick={onPool}>
+          {L('放回待认领池', 'Back to the pool')}
+        </button>
+        <button type="button" className="tb-picker-row" style={styles.pickerCancel} onClick={onCancel}>
+          {L('取消', 'Cancel')}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 /** The new-task form, shown in the same drawer slot as the task detail. */
-function CreateForm({ state, store, onClose }: { state: TaskboardState; store: TaskboardStore; onClose(): void }): JSX.Element {
+function CreateForm({ state, store, actors, onClose }: { state: TaskboardState; store: TaskboardStore; actors: string[]; onClose(): void }): JSX.Element {
   const [title, setTitle] = useState('')
   const [detail, setDetail] = useState('')
   const [priority, setPriority] = useState<TaskPriority>('medium')
-  const [assignee, setAssignee] = useState('')
+  // No pick = into the claimable pool.
+  const [assignee, setAssignee] = useState<string | null>(null)
 
   const submit = async (): Promise<void> => {
     if (!title.trim() || state.busy) return
@@ -785,7 +1014,7 @@ function CreateForm({ state, store, onClose }: { state: TaskboardState; store: T
       title: title.trim(),
       detail,
       priority,
-      assignee: assignee.trim() ? assignee.trim() : null,
+      assignee,
     })
     // On failure the store's error strip explains it and the draft survives.
     if (ok) onClose()
@@ -824,17 +1053,14 @@ function CreateForm({ state, store, onClose }: { state: TaskboardState; store: T
             ))}
           </span>
         </div>
-        <label style={styles.field}>
-          <span style={styles.fieldLabel}>{L('指派人（留空 = 进待认领池）', 'Assignee (empty = into the pool)')}</span>
-          <input
-            className="tb-input"
-            value={assignee}
-            placeholder={L('例如 kimi', 'e.g. kimi')}
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(event) => setAssignee(event.target.value)}
+        <div style={styles.field}>
+          <span style={styles.fieldLabel}>{L('指派给（不选 = 进待认领池）', 'Assign to (no pick = into the pool)')}</span>
+          <ActorChips
+            actors={actors}
+            current={assignee}
+            onSelect={(name) => setAssignee(name === assignee ? null : name)}
           />
-        </label>
+        </div>
         <div style={styles.drawerActions}>
           <button type="submit" className="tb-btn tb-btn-primary" disabled={state.busy || !title.trim()}>
             {state.busy ? L('创建中…', 'Creating…') : L('创建任务', 'Create task')}
@@ -906,6 +1132,7 @@ const styles: Record<string, CSSProperties> = {
     overflowY: 'hidden',
   },
   column: {
+    position: 'relative', // anchors the in-lane roster picker overlay
     width: 260,
     flexShrink: 0,
     display: 'flex',
@@ -965,7 +1192,7 @@ const styles: Record<string, CSSProperties> = {
     top: 0,
     right: 0,
     bottom: 0,
-    width: 380,
+    width: 560,
     maxWidth: '92%',
     background: BG,
     borderLeft: `1px solid ${BORDER_STRONG}`,
@@ -1013,4 +1240,37 @@ const styles: Record<string, CSSProperties> = {
   logNote: { flexBasis: '100%', color: DIM, fontSize: 11, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
   commentText: { flexBasis: '100%', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
   commentComposer: { display: 'flex', flexDirection: 'column', gap: 6 },
+  tabRow: {
+    display: 'flex',
+    gap: 14,
+    borderBottom: `1px solid ${BORDER}`,
+    marginTop: -4,
+    flexShrink: 0,
+  },
+  actorChips: { display: 'flex', gap: 6, flexWrap: 'wrap' },
+  // The roster picker: floats inside the assigned lane after a drop on it
+  // (z above the panel-wide backdrop's 20, below the drawer's 21).
+  picker: {
+    position: 'absolute',
+    top: 34,
+    left: 6,
+    right: 6,
+    zIndex: 25,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    background: BG_RAISED,
+    border: `1px solid ${BORDER_STRONG}`,
+    borderRadius: 8,
+    boxShadow: '0 10px 28px rgba(0,0,0,0.18)',
+    padding: 6,
+    maxHeight: 'calc(100% - 48px)',
+  },
+  pickerTitle: { fontSize: 12, fontWeight: 600, padding: '2px 6px 4px' },
+  pickerList: { display: 'flex', flexDirection: 'column', gap: 1, overflowY: 'auto', minHeight: 0 },
+  pickerName: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  pickerCurrent: { fontSize: 10, color: ACCENT, flexShrink: 0 },
+  pickerEmpty: { color: FAINT, fontSize: 11, padding: '6px 8px', lineHeight: 1.5 },
+  pickerFoot: { display: 'flex', flexDirection: 'column', gap: 1, borderTop: `1px solid ${BORDER}`, paddingTop: 4 },
+  pickerCancel: { color: DIM },
 }

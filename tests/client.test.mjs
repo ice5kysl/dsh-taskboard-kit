@@ -187,6 +187,38 @@ await check('planDrop: drops compile into the contract op sequences', () => {
   ])
 })
 
+// --------------------------------------------------------- actor roster
+
+await check('knownActors: union of all four sources, cleaned and sorted', () => {
+  assert.equal(typeof client.knownActors, 'function')
+  const task = (over) => ({
+    id: 'T-x', title: 't', detail: '', status: 'open', priority: 'medium',
+    assignee: null, tags: [], created_by: 'human', created_at: '2026-09-20T09:00:00Z',
+    updated_at: '2026-09-20T09:00:00Z', log: [], comments: [], ...over,
+  })
+  const board = {
+    version: 1, workspace: '/work/a', next_seq: 5,
+    tasks: {
+      // assignee + created_by + log[].by + comments[].by; duplicates across
+      // sources collapse; null assignee and empty by are dropped.
+      'T-1': task({
+        id: 'T-1', assignee: 'kimi', created_by: 'human',
+        log: [{ at: '2026-09-20T09:00:00Z', by: 'kimi', event: 'claimed' }, { at: '2026-09-20T10:00:00Z', by: 'claude', event: 'started' }],
+        comments: [{ at: '2026-09-21T09:00:00Z', by: 'dsh', text: 'handoff' }],
+      }),
+      'T-2': task({
+        id: 'T-2', assignee: null, created_by: 'human',
+        log: [{ at: '2026-09-20T09:00:00Z', by: '', event: 'created' }, { at: '2026-09-20T09:01:00Z', by: 'claude', event: 'updated' }],
+        comments: [],
+      }),
+      'T-3': task({ id: 'T-3', assignee: 'agent-x', created_by: 'agent-x' }),
+    },
+  }
+  assert.deepEqual(client.knownActors(board), ['agent-x', 'claude', 'dsh', 'human', 'kimi'])
+  // An empty board has an empty roster (the UI shows the hint, not a dead input).
+  assert.deepEqual(client.knownActors({ version: 1, workspace: '/work/b', next_seq: 1, tasks: {} }), [])
+})
+
 // ------------------------------------------------------------------ done
 
 console.log(failed === 0 ? 'all checks passed' : `${failed} check(s) failed`)
