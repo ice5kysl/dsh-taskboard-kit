@@ -4,11 +4,13 @@
  *
  * Layout: a top bar (workspace, task count, refresh, cancelled toggle, new
  * task) above four swim-lane columns (待认领 / 已指派 / 进行中 / 已完成 from
- * the contract's BOARD_COLUMNS). Clicking a card opens a detail drawer that
- * is absolutely positioned INSIDE the panel (no portal — the shell's overlay
- * layer would lose the --dsw-alias-* theme tokens). The drawer carries the
- * status actions (认领 / 开始 / 完成 / 取消 / 重开), the edit row (reassign,
- * priority, title/detail) and the task's log timeline.
+ * the contract's BOARD_COLUMNS). Cards are HTML5-draggable between lanes —
+ * a drop compiles into the shared `planDrop` op sequence, never a hand-rolled
+ * status mapping. Clicking a card opens a detail drawer that is absolutely
+ * positioned INSIDE the panel (no portal — the shell's overlay layer would
+ * lose the --dsw-alias-* theme tokens). The drawer carries the status actions
+ * (认领 / 开始 / 完成 / 取消 / 重开), the edit row (reassign, priority,
+ * title/detail), the comment thread and the task's log timeline.
  *
  * It is a pure projection of the store (`useSyncExternalStore`) — every
  * action goes through `TaskboardStore`, so the model tools, the view and the
@@ -32,9 +34,11 @@ import {
   compareTasks,
   type BoardColumn,
   type Task,
+  type TaskComment,
   type TaskEvent,
   type TaskPriority,
 } from '../shared/types.ts'
+import { planDrop, type DropOp } from '../shared/dnd.ts'
 import { L } from './locale.ts'
 import type { TaskboardState, TaskboardStore } from './store.ts'
 
@@ -51,6 +55,18 @@ export interface BoardPanelProps {
 interface SessionListLike {
   current?: string
   byId?: Record<string, { cwd?: string } | undefined>
+}
+
+/** Drag-and-drop wiring the panel hands down to the lanes and their cards. */
+interface LaneDnd {
+  /** Id of the card currently being dragged (drives its translucent style). */
+  dragId: string | null
+  /** Lane under the pointer during a drag (drives the drop-target highlight). */
+  overColumn: BoardColumn | null
+  setDragId(id: string | null): void
+  setOverColumn(column: BoardColumn | null): void
+  /** A card was dropped on a lane: run the planned op sequence. */
+  onDropTask(id: string, column: BoardColumn): void
 }
 
 // ------------------------------------------------------------------ theme
@@ -96,6 +112,9 @@ const TB_CSS = `
 .tb-tag { font-size: 10px; color: ${DIM}; border: 1px solid ${BORDER}; border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
 .tb-badge { display: inline-flex; align-items: center; font-size: 10px; color: ${ACCENT}; background: ${HOVER_BG}; border-radius: 999px; padding: 1px 7px; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tb-badge-outline { display: inline-flex; align-items: center; font-size: 10px; color: ${DIM}; border: 1px dashed ${BORDER_STRONG}; border-radius: 999px; padding: 0 7px; white-space: nowrap; }
+/* Drop-target highlight rides the injected stylesheet (inline styles cannot
+   express state classes); !important beats the lane's inline background. */
+.tb-column.dragover { box-shadow: inset 0 0 0 2px ${ACCENT} !important; background: ${HOVER_BG} !important; }
 `
 
 // ------------------------------------------------------------------ helpers
@@ -224,6 +243,7 @@ const EVENT_LABELS: Record<TaskEvent, [string, string]> = {
   assigned: ['指派', 'assigned'],
   claimed: ['认领', 'claimed'],
   started: ['开始', 'started'],
+  stopped: ['停止', 'stopped'],
   done: ['完成', 'done'],
   reopened: ['重开', 'reopened'],
   cancelled: ['取消', 'cancelled'],
@@ -243,6 +263,9 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   const cwd = useSessionCwd(props)
   const rootHeightRef = useRootHeightSync()
   const [createOpen, setCreateOpen] = useState(false)
+  // HTML5 drag-and-drop: the dragged card's id + the lane under the pointer.
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [overColumn, setOverColumn] = useState<BoardColumn | null>(null)
 
   // Follow the current session's workspace.
   useEffect(() => {
@@ -274,6 +297,48 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   const closeDrawer = (): void => {
     setCreateOpen(false)
     store.select(null)
+  }
+
+  /**
+   * One drop = the shared `planDrop` op sequence, executed in order through
+   * the store (claim → store.claim, update → store.update with the patch).
+   * An empty plan is a no-op (no request); a failed step surfaces through the
+   * store's error channel and stops the sequence.
+   */
+  const runDrop = async (id: string, target: BoardColumn): Promise<void> => {
+    const task = tasks.find((row) => row.id === id)
+    if (!task) return
+    let ops: DropOp[]
+    if (target === 'assigned') {
+      // Dropping on 已指派 means delegating: ask for the name first.
+      const name = window.prompt(
+        L('指派给谁？（留空 = 放回待认领）', 'Assign to whom? (empty = back to pool)'),
+        task.assignee ?? '',
+      )
+      if (name === null) return // the prompt was cancelled: abort the drop
+      ops = planDrop(task, target, name)
+    } else {
+      ops = planDrop(task, target)
+    }
+    if (ops.length === 0) return
+    for (const op of ops) {
+      const ok = op.kind === 'claim'
+        ? await store.claim(task.id)
+        : await store.update({ id: task.id, ...op.patch })
+      if (!ok) return
+    }
+  }
+  /** DnD wiring shared by the lanes and their cards. */
+  const dnd: LaneDnd = {
+    dragId,
+    overColumn,
+    setDragId,
+    setOverColumn,
+    onDropTask(id, column) {
+      setDragId(null)
+      setOverColumn(null)
+      void runDrop(id, column)
+    },
   }
 
   if (state.status === 'loading' && !board) {
@@ -331,7 +396,15 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
       ) : (
         <div style={styles.lanes}>
           {columns.map(({ column, tasks: list }) => (
-            <ColumnView key={column} column={column} tasks={list} state={state} store={store} onCreate={() => setCreateOpen(true)} />
+            <ColumnView
+              key={column}
+              column={column}
+              tasks={list}
+              state={state}
+              store={store}
+              onCreate={() => setCreateOpen(true)}
+              dnd={dnd}
+            />
           ))}
         </div>
       )}
@@ -379,22 +452,44 @@ function TopBar({ state, store, total, onCreate }: { state: TaskboardState; stor
   )
 }
 
-/** One swim lane: header (name + count + quick-add) above its sorted cards. */
+/** One swim lane: header (name + count + quick-add) above its sorted cards.
+ *  The lane is also the drop target: dragOver highlights it (class-based,
+ *  token colors), drop compiles into a planDrop sequence by the panel. */
 function ColumnView({
   column,
   tasks,
   state,
   store,
   onCreate,
+  dnd,
 }: {
   column: BoardColumn
   tasks: Task[]
   state: TaskboardState
   store: TaskboardStore
   onCreate(): void
+  dnd: LaneDnd
 }): JSX.Element {
   return (
-    <section style={styles.column}>
+    <section
+      style={styles.column}
+      className={dnd.overColumn === column ? 'tb-column dragover' : 'tb-column'}
+      onDragOver={(event) => {
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'move'
+        if (dnd.overColumn !== column) dnd.setOverColumn(column)
+      }}
+      onDragLeave={(event) => {
+        // Moving onto a child inside the same lane is not leaving the lane.
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+        dnd.setOverColumn(null)
+      }}
+      onDrop={(event) => {
+        event.preventDefault()
+        const id = event.dataTransfer.getData('text/plain')
+        if (id) dnd.onDropTask(id, column)
+      }}
+    >
       <div style={styles.columnHead}>
         <span style={styles.columnTitle}>{columnLabel(column)}</span>
         <span style={styles.columnCount}>{tasks.length}</span>
@@ -408,7 +503,7 @@ function ColumnView({
           <div style={styles.columnEmpty}>{L('（空）', '(empty)')}</div>
         ) : (
           tasks.map((task) => (
-            <TaskCard key={task.id} task={task} selected={task.id === state.selectedId} onOpen={() => store.select(task.id)} />
+            <TaskCard key={task.id} task={task} selected={task.id === state.selectedId} onOpen={() => store.select(task.id)} dnd={dnd} />
           ))
         )}
       </div>
@@ -416,11 +511,29 @@ function ColumnView({
   )
 }
 
-/** One task card: priority dot, title, assignee badge, age, tag capsules. */
-function TaskCard({ task, selected, onOpen }: { task: Task; selected: boolean; onOpen(): void }): JSX.Element {
+/** One task card: priority dot, title, assignee badge, age, tag capsules.
+ *  Cards are the drag source: the task id rides dataTransfer, and the card
+ *  turns translucent while it is being dragged. */
+function TaskCard({ task, selected, onOpen, dnd }: { task: Task; selected: boolean; onOpen(): void; dnd: LaneDnd }): JSX.Element {
   const cancelled = task.status === 'cancelled'
+  const dragging = dnd.dragId === task.id
   return (
-    <button type="button" className={selected ? 'tb-card active' : 'tb-card'} style={cancelled ? styles.cardCancelled : undefined} onClick={onOpen}>
+    <button
+      type="button"
+      className={selected ? 'tb-card active' : 'tb-card'}
+      style={{ opacity: dragging ? 0.5 : cancelled ? 0.65 : 1 }}
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.setData('text/plain', task.id)
+        event.dataTransfer.effectAllowed = 'move'
+        dnd.setDragId(task.id)
+      }}
+      onDragEnd={() => {
+        dnd.setDragId(null)
+        dnd.setOverColumn(null)
+      }}
+      onClick={onOpen}
+    >
       <div style={styles.cardTop}>
         <span
           style={{ ...styles.dot, background: PRIORITY_COLORS[task.priority] ?? FAINT }}
@@ -457,12 +570,21 @@ function DetailDrawer({ task, state, store, onClose }: { task: Task; state: Task
   const [assigneeDraft, setAssigneeDraft] = useState(task.assignee ?? '')
   const [titleDraft, setTitleDraft] = useState(task.title)
   const [detailDraft, setDetailDraft] = useState(task.detail)
+  const [commentDraft, setCommentDraft] = useState('')
   const busy = state.busy
   const column = columnOf(task)
   const log = useMemo(() => [...task.log].sort((a, b) => a.at.localeCompare(b.at)), [task.log])
 
   const update = (patch: Parameters<TaskboardStore['update']>[0]): void => {
     void store.update(patch)
+  }
+
+  const submitComment = async (): Promise<void> => {
+    const text = commentDraft.trim()
+    if (!text || busy) return
+    // On failure the store's error strip explains it and the draft survives.
+    const ok = await store.comment({ id: task.id, text })
+    if (ok) setCommentDraft('')
   }
 
   return (
@@ -581,6 +703,38 @@ function DetailDrawer({ task, state, store, onClose }: { task: Task; state: Task
       </div>
 
       <div style={styles.drawerSection}>
+        <div style={styles.sectionTitle}>{L('评论（{n}）', 'Comments ({n})', { n: task.comments.length })}</div>
+        {task.comments.length === 0 ? (
+          <div style={styles.detailEmpty}>{L('还没有评论。', 'No comments yet.')}</div>
+        ) : (
+          <ul style={styles.logList}>
+            {task.comments.map((comment, index) => (
+              <CommentRow key={`${comment.at}-${index}`} comment={comment} />
+            ))}
+          </ul>
+        )}
+        <div style={styles.commentComposer}>
+          <textarea
+            className="tb-textarea"
+            rows={3}
+            value={commentDraft}
+            placeholder={L('写下发现、交接说明或测试反馈…', 'Findings, handoff notes or test feedback…')}
+            onChange={(event) => setCommentDraft(event.target.value)}
+          />
+          <div style={styles.drawerActions}>
+            <button
+              type="button"
+              className="tb-btn tb-btn-primary"
+              disabled={busy || !commentDraft.trim()}
+              onClick={() => void submitComment()}
+            >
+              {busy ? L('发送中…', 'Sending…') : L('发表评论', 'Comment')}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div style={styles.drawerSection}>
         <div style={styles.sectionTitle}>{L('动态（{n}）', 'Activity ({n})', { n: log.length })}</div>
         {log.length === 0 ? (
           <div style={styles.detailEmpty}>{L('（还没有动态）', '(no activity yet)')}</div>
@@ -601,6 +755,20 @@ function DetailDrawer({ task, state, store, onClose }: { task: Task; state: Task
         )}
       </div>
     </aside>
+  )
+}
+
+/** One comment in the task's discussion thread (human and agent alike). */
+function CommentRow({ comment }: { comment: TaskComment }): JSX.Element {
+  return (
+    <li style={styles.logRow}>
+      <span style={styles.logDot} />
+      <span style={styles.logMain}>
+        <span style={styles.logEvent}>{comment.by}</span>
+        <span style={styles.logTime} title={comment.at}>{relTime(comment.at)}</span>
+        <span style={styles.commentText}>{comment.text}</span>
+      </span>
+    </li>
   )
 }
 
@@ -776,7 +944,6 @@ const styles: Record<string, CSSProperties> = {
   dot: { width: 8, height: 8, borderRadius: 4, marginTop: 4, flexShrink: 0 },
   cardTitle: { flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 500, lineHeight: 1.45, overflowWrap: 'anywhere' },
   cardTitleCancelled: { textDecoration: 'line-through', color: DIM },
-  cardCancelled: { opacity: 0.65 },
   cardMeta: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, paddingLeft: 14 },
   cardAge: { marginLeft: 'auto', color: FAINT, fontSize: 10, flexShrink: 0 },
   cardTags: { display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6, paddingLeft: 14 },
@@ -844,4 +1011,6 @@ const styles: Record<string, CSSProperties> = {
   logBy: { color: DIM },
   logTime: { color: FAINT, fontSize: 10 },
   logNote: { flexBasis: '100%', color: DIM, fontSize: 11, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
+  commentText: { flexBasis: '100%', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
+  commentComposer: { display: 'flex', flexDirection: 'column', gap: 6 },
 }

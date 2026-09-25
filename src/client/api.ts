@@ -23,6 +23,7 @@ import {
   MUTATE_HEADER_VALUE,
   type BoardResponse,
   type ClaimRequest,
+  type CommentRequest,
   type CreateRequest,
   type TaskResponse,
   type UpdateRequest,
@@ -35,6 +36,7 @@ export interface BridgeClient {
   create(req: CreateRequest, signal?: AbortSignal): Promise<TaskResponse>
   claim(req: ClaimRequest, signal?: AbortSignal): Promise<TaskResponse>
   update(req: UpdateRequest, signal?: AbortSignal): Promise<TaskResponse>
+  comment(req: CommentRequest, signal?: AbortSignal): Promise<TaskResponse>
 }
 
 export interface BridgeOptions {
@@ -115,5 +117,6 @@ export function createBridgeClient(options: BridgeOptions = {}): BridgeClient {
     create: (req, signal) => request<TaskResponse>('/create', { method: 'POST', body: req, signal }),
     claim: (req, signal) => request<TaskResponse>('/claim', { method: 'POST', body: req, signal }),
     update: (req, signal) => request<TaskResponse>('/update', { method: 'POST', body: req, signal }),
+    comment: (req, signal) => request<TaskResponse>('/comment', { method: 'POST', body: req, signal }),
   }
 }

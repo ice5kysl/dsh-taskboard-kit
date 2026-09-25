@@ -22,6 +22,7 @@ export type TaskEvent =
   | 'assigned'
   | 'claimed'
   | 'started'
+  | 'stopped'
   | 'done'
   | 'reopened'
   | 'cancelled'
@@ -32,6 +33,17 @@ export interface TaskLogEntry {
   by: string
   event: TaskEvent
   note?: string
+}
+
+/**
+ * A free-form information comment on a task: findings, handoff notes for the
+ * next agent, test feedback. Comments never change the task's state — the
+ * state machine lives in `log`; the conversation lives here.
+ */
+export interface TaskComment {
+  at: string
+  by: string
+  text: string
 }
 
 export interface Task {
@@ -49,6 +61,8 @@ export interface Task {
   created_at: string
   updated_at: string
   log: TaskLogEntry[]
+  /** Information thread (findings / handoffs / test feedback). Oldest first. */
+  comments: TaskComment[]
 }
 
 export interface Board {

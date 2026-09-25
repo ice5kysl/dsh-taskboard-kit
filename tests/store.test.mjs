@@ -8,7 +8,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -18,6 +18,7 @@ const ws = await mkdtemp(join(tmpdir(), 'dsh-taskboard-store-'))
 
 const {
   StoreError,
+  addComment,
   boardFilePath,
   claimTask,
   createTask,
@@ -194,6 +195,89 @@ await check('field edits log one updated entry; a bare note leaves a trace', asy
 
   await rejectsWith(updateTask(ws, 'T-7', {}, 'kimi'), 'invalid-input')
   await rejectsWith(updateTask(ws, 'T-999', { action: 'done' }, 'kimi'), 'not-found')
+})
+
+await check('stop moves in_progress back to open (assignee kept), and only from there', async () => {
+  await createTask(ws, { title: 'pause me' }, 'human') // T-8
+  // stop from open is illegal — only in_progress tasks can go back to todo.
+  await rejectsWith(updateTask(ws, 'T-8', { action: 'stop' }, 'kimi'), 'invalid-transition')
+  await updateTask(ws, 'T-8', { action: 'start', assignee: 'kimi' }, 'kimi')
+
+  const stopped = await updateTask(ws, 'T-8', { action: 'stop' }, 'kimi')
+  assert.equal(stopped.task.status, 'open')
+  assert.equal(stopped.task.assignee, 'kimi', 'stop keeps the assignee')
+  assert.deepEqual(stopped.events, ['stopped'])
+
+  // The dnd combo: stop + unassign in one call (action lands first, then the
+  // assignee is validated against the resulting open status).
+  await updateTask(ws, 'T-8', { action: 'start' }, 'kimi')
+  const combo = await updateTask(ws, 'T-8', { action: 'stop', assignee: null }, 'human')
+  assert.equal(combo.task.status, 'open')
+  assert.equal(combo.task.assignee, null)
+  assert.deepEqual(combo.events, ['stopped', 'updated'])
+
+  // done/cancelled cannot stop either.
+  await updateTask(ws, 'T-8', { action: 'done' }, 'kimi')
+  await rejectsWith(updateTask(ws, 'T-8', { action: 'stop' }, 'kimi'), 'invalid-transition')
+})
+
+await check('addComment appends to comments, moves updated_at, and never touches the log', async () => {
+  await createTask(ws, { title: 'discuss me' }, 'human') // T-9
+  const before = await getTask(ws, 'T-9')
+  assert.deepEqual(before.comments, [])
+
+  await new Promise((resolve) => setTimeout(resolve, 5)) // let the clock move
+  const commented = await addComment(ws, 'T-9', '  发现：锁要等下一个 tick  ', 'kimi')
+  assert.equal(commented.comments.length, 1)
+  assert.equal(commented.comments[0].by, 'kimi')
+  assert.equal(commented.comments[0].text, '发现：锁要等下一个 tick', 'text is trimmed')
+  assert.ok(commented.comments[0].at >= before.created_at)
+  assert.deepEqual(commented.log, before.log, 'the lifecycle log is untouched')
+  assert.ok(commented.updated_at > before.updated_at, 'updated_at moved')
+
+  const second = await addComment(ws, 'T-9', 'test feedback: all green', 'claude')
+  assert.equal(second.comments.length, 2)
+  assert.equal((await getTask(ws, 'T-9')).comments.length, 2, 'persisted through a reload')
+
+  await rejectsWith(addComment(ws, 'T-9', '   ', 'kimi'), 'invalid-input')
+  await rejectsWith(addComment(ws, 'T-999', 'ghost', 'kimi'), 'not-found')
+})
+
+await check('loadBoard migrates legacy tasks that have no comments field', async () => {
+  const legacyWs = await mkdtemp(join(tmpdir(), 'dsh-taskboard-legacy-'))
+  try {
+    await mkdir(join(legacyWs, '.dsh'), { recursive: true })
+    const legacy = {
+      version: 1,
+      workspace: legacyWs,
+      next_seq: 2,
+      tasks: {
+        'T-1': {
+          id: 'T-1',
+          title: 'written by v0.1',
+          detail: '',
+          status: 'open',
+          assignee: null,
+          priority: 'medium',
+          tags: [],
+          created_by: 'human',
+          created_at: '2026-09-20T00:00:00.000Z',
+          updated_at: '2026-09-20T00:00:00.000Z',
+          log: [{ at: '2026-09-20T00:00:00.000Z', by: 'human', event: 'created' }],
+          // no comments field — the pre-v0.2 shape
+        },
+      },
+    }
+    await writeFile(join(legacyWs, '.dsh', 'taskboard.json'), JSON.stringify(legacy, null, 2))
+
+    const board = await loadBoard(legacyWs)
+    assert.deepEqual(board.tasks['T-1'].comments, [], 'hydrated on load')
+
+    const commented = await addComment(legacyWs, 'T-1', 'first comment on an old board', 'kimi')
+    assert.equal(commented.comments.length, 1, 'mutations work right after migration')
+  } finally {
+    await rm(legacyWs, { recursive: true, force: true })
+  }
 })
 
 await check('saveBoard → loadBoard keeps the data identical (and the file is 0600)', async () => {

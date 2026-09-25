@@ -131,9 +131,10 @@ await check('plugin identity: name + inject declare the cordis contract', () => 
   assert.deepEqual([...inject], ['tools', 'sessions'])
 })
 
-await check('registers the five taskboard model tools', () => {
+await check('registers the six taskboard model tools', () => {
   assert.deepEqual(tools.map((entry) => entry.name).sort(), [
     'taskboard_claim',
+    'taskboard_comment',
     'taskboard_create',
     'taskboard_get',
     'taskboard_list',
@@ -221,6 +222,22 @@ await check('taskboard_get renders the full task and its timeline', async () => 
   assert.ok(text.includes('· done — host face shipped'), text)
 })
 
+await check('taskboard_comment leaves a comment without touching the state', async () => {
+  const text = await tool('taskboard_comment').execute(
+    { id: 'T-2', text: 'handoff: the client face is mid-flight, api.ts is the seam', by: 'kimi' },
+    exec,
+  )
+  assert.ok(text.includes('Commented on T-2'), text)
+
+  const full = await tool('taskboard_get').execute({ id: 'T-2' }, exec)
+  assert.ok(full.includes('T-2 · open'), full, 'state untouched')
+  assert.ok(full.includes('comments:'), full)
+  assert.ok(full.includes('kimi · handoff: the client face is mid-flight'), full)
+
+  const empty = await tool('taskboard_comment').execute({ id: 'T-2', text: '   ' }, exec)
+  assert.ok(empty.includes('Invalid input'), empty)
+})
+
 // -------------------------------------------------------------- bridge http
 
 await check('bridge: GET /board from loopback answers ok:true with the board', async () => {
@@ -301,6 +318,33 @@ await check('bridge: a claim conflict stays HTTP 200 with code conflict', async 
   }))
   assert.equal(second.status, 200)
   assert.deepEqual({ ok: second.json().ok, code: second.json().code }, { ok: false, code: 'conflict' })
+})
+
+await check('bridge: POST /comment without the mutate header is 403', async () => {
+  const res = await callBridge(fakeReq({
+    method: 'POST',
+    url: '/dsh-taskboard/comment',
+    body: { cwd: ws, id: 'T-3', text: 'sneaky' },
+  }))
+  assert.equal(res.status, 403)
+  assert.equal(res.json().ok, false)
+})
+
+await check('bridge: POST /comment with the mutate header comments as human', async () => {
+  const res = await callBridge(fakeReq({
+    method: 'POST',
+    url: '/dsh-taskboard/comment',
+    headers: { 'x-taskboard': 'mutate' },
+    body: { cwd: ws, id: 'T-3', text: 'looks good from the kanban' },
+  }))
+  assert.equal(res.status, 200)
+  const body = res.json()
+  assert.equal(body.ok, true)
+  assert.equal(body.task.id, 'T-3')
+  assert.equal(body.task.comments.length, 1)
+  assert.equal(body.task.comments[0].by, 'human')
+  assert.equal(body.task.comments[0].text, 'looks good from the kanban')
+  assert.equal(body.task.status, 'in_progress', 'commenting never moves the state')
 })
 
 await check('bridge: unknown route is 404', async () => {

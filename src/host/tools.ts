@@ -19,6 +19,7 @@ import { columnOf, type Task } from '../shared/types.ts'
 import { L } from './locale.ts'
 import {
   StoreError,
+  addComment,
   claimTask,
   createTask,
   getTask,
@@ -80,6 +81,12 @@ function formatGet(task: Task): string {
   lines.push('', L('时间线：', 'timeline:'))
   for (const entry of task.log) {
     lines.push(`${entry.at} · ${entry.by} · ${entry.event}${entry.note ? ` — ${entry.note}` : ''}`)
+  }
+  if (task.comments.length > 0) {
+    lines.push('', L('留言：', 'comments:'))
+    for (const comment of task.comments) {
+      lines.push(`${comment.at} · ${comment.by} · ${comment.text}`)
+    }
   }
   return lines.join('\n')
 }
@@ -214,12 +221,13 @@ export function registerTaskboardTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'taskboard_update',
     description:
-      'Update a task you own: move it through its lifecycle (action start/done/reopen/cancel), reassign it, ' +
+      'Update a task you own: move it through its lifecycle (action start/stop/done/reopen/cancel), reassign it, ' +
       'edit title/detail/priority/tags, and attach a note to the log entry. ' +
-      'Report progress as you go — the human watches the same board in the kanban tab.',
+      'Report progress as you go — the human watches the same board in the kanban tab. ' +
+      'To leave information without changing state, use taskboard_comment instead.',
     parameters: {
       id: { type: 'string', required: true, description: 'Task id, e.g. T-1.' },
-      action: { type: 'string', enum: ['start', 'done', 'reopen', 'cancel'], description: 'start: open→in_progress; done: open|in_progress→done; reopen: done|cancelled→open; cancel: open|in_progress→cancelled.' },
+      action: { type: 'string', enum: ['start', 'stop', 'done', 'reopen', 'cancel'], description: 'start: open→in_progress; stop: in_progress→open (back to todo, assignee kept); done: open|in_progress→done; reopen: done|cancelled→open; cancel: open|in_progress→cancelled.' },
       assignee: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'New owner while open/in_progress; null unassigns back to the pool.' },
       title: { type: 'string', description: 'New title.' },
       detail: { type: 'string', description: 'New markdown body.' },
@@ -253,10 +261,37 @@ export function registerTaskboardTools(ctx: Context): void {
   }))
 
   ctx.tools.register(defineTool({
+    name: 'taskboard_comment',
+    description:
+      'Add an information comment to a task WITHOUT changing its state: implementation findings, ' +
+      'handoff notes for the next agent, or test feedback. The next agent reads them in taskboard_get.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Task id, e.g. T-1.' },
+      text: { type: 'string', required: true, description: 'The comment body (findings, handoff notes, test feedback).' },
+      by: { type: 'string', description: 'Acting identity recorded on the comment (default: TASKBOARD_ACTOR or dsh-agent).' },
+    },
+    output: TEXT_OUTPUT,
+    async execute(args, exec) {
+      try {
+        const cwd = resolveCwd(ctx, exec)
+        const task = await addComment(cwd, args.id, args.text, actorOf(args.by))
+        return L(
+          '已在 {id} 留言（共 {count} 条）：{title}',
+          'Commented on {id} ({count} comment(s) so far): {title}',
+          { id: task.id, count: task.comments.length, title: task.title },
+        )
+      } catch (error) {
+        return errorText(error)
+      }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'taskboard_get',
     description:
-      'Read ONE task in full: title, detail body, owner, priority, tags, and the complete log timeline ' +
-      '(who did what, when, with notes). taskboard_list only shows summary lines.',
+      'Read ONE task in full: title, detail body, owner, priority, tags, the complete log timeline ' +
+      '(who did what, when, with notes), and the information comments other agents left ' +
+      '(findings / handoffs / test feedback). taskboard_list only shows summary lines.',
     parameters: {
       id: { type: 'string', required: true, description: 'Task id, e.g. T-1 (from taskboard_list).' },
     },

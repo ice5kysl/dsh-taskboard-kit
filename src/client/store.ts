@@ -18,7 +18,7 @@
  */
 
 import type { Board } from '../shared/types.ts'
-import type { ClaimRequest, CreateRequest, UpdateRequest } from '../shared/bridge.ts'
+import type { ClaimRequest, CommentRequest, CreateRequest, UpdateRequest } from '../shared/bridge.ts'
 import { createBridgeClient, type BridgeClient } from './api.ts'
 
 export interface TaskboardState {
@@ -37,9 +37,10 @@ export interface TaskboardState {
   busy: boolean
 }
 
-/** Create/claim/update requests without the cwd (the store fills it in). */
+/** Create/claim/update/comment requests without the cwd (the store fills it in). */
 export type CreateInput = Omit<CreateRequest, 'cwd'>
 export type UpdateInput = Omit<UpdateRequest, 'cwd'>
+export type CommentInput = Omit<CommentRequest, 'cwd'>
 
 export interface TaskboardStore {
   getState(): TaskboardState
@@ -57,6 +58,8 @@ export interface TaskboardStore {
   claim(id: ClaimRequest['id']): Promise<boolean>
   /** Any task edit: a status action and/or field changes. */
   update(input: UpdateInput): Promise<boolean>
+  /** Add an information comment (state untouched); resolves true on success. */
+  comment(input: CommentInput): Promise<boolean>
 }
 
 export interface StoreOptions {
@@ -182,6 +185,9 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
     },
     update(input) {
       return mutate((cwd) => bridge.update({ ...input, cwd }))
+    },
+    comment(input) {
+      return mutate((cwd) => bridge.comment({ ...input, cwd }))
     },
   }
 }

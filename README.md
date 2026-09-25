@@ -8,12 +8,13 @@ One local task board per dsh workspace. Agents create, claim and progress tasks 
 
 ## What you get
 
-- **Five model tools** the agent can call in any session of the workspace:
+- **Six model tools** the agent can call in any session of the workspace:
   - `taskboard_list` — list tasks (filter by status / column / assignee)
   - `taskboard_create` — add a task, optionally delegating it to someone
   - `taskboard_claim` — atomically claim a task from the pool (exactly one winner under concurrency)
-  - `taskboard_update` — start / done / reopen / cancel, reassign, edit fields, append notes
-  - `taskboard_get` — full task detail with the event timeline
+  - `taskboard_update` — start / stop / done / reopen / cancel, reassign, edit fields, append notes
+  - `taskboard_comment` — add an information comment (findings / handoffs / test feedback) without changing state
+  - `taskboard_get` — full task detail with the event timeline and the comment thread
 - **A「看板 / Board」conversation view** in dsh web: four swimlanes (pool · assigned · in progress · done), cards with priority / assignee / age / tags, a detail drawer with the event log, and one-click claim / start / done / reopen / reassign.
 - **Session-start awareness**: the agent is told how many tasks are waiting and in progress, and a system-prompt section teaches the claim-before-work rules.
 
@@ -37,7 +38,8 @@ Each workspace gets `<workspace>/.dsh/taskboard.json`:
       "tags": ["docs"],
       "created_by": "dsh-agent",
       "created_at": "…", "updated_at": "…",
-      "log": [{ "at": "…", "by": "dsh-agent", "event": "created" }]
+      "log": [{ "at": "…", "by": "dsh-agent", "event": "created" }],
+      "comments": [{ "at": "…", "by": "kimi", "text": "handoff: …" }]  // v0.2+; older files load with []
     }
   }
 }
@@ -54,7 +56,7 @@ Because the file lives in the workspace, every harness and every human working i
 | 进行中 / in_progress | claimed or started |
 | 已完成 / done | `done` (cancelled tasks hide behind a toggle) |
 
-Transitions: `open → in_progress` (claim / start), `open|in_progress → done`, `open|in_progress → cancelled`, `done|cancelled → open` (reopen). Status names mirror the msg9 task model on purpose, so a future server-backed board keeps the same semantics.
+Transitions: `open → in_progress` (claim / start), `in_progress → open` (stop — back to todo, assignee kept), `open|in_progress → done`, `open|in_progress → cancelled`, `done|cancelled → open` (reopen). Status names mirror the msg9 task model on purpose, so a future server-backed board keeps the same semantics.
 
 ## Install
 
@@ -73,6 +75,7 @@ The board is just a file, but **never hand-edit it** — the lock and the atomic
 taskboard list                              # see the board (pool first)
 taskboard claim T-3 --by kimi               # atomic claim, stamped "kimi"
 taskboard update T-3 --action done --note "shipped" --by kimi
+taskboard comment T-3 --text "handoff: …" --by kimi   # state untouched
 taskboard create --title "…" --priority high --by claude
 ```
 

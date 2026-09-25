@@ -18,9 +18,11 @@ Agent ── taskboard_* tools ─┐
 - 存储层只留两个原语（`loadBoard` / `withBoardLock`），未来 msg9 服务端后端实现同一接口即可替换；状态名（open / in_progress / done / cancelled）刻意对齐 msg9 任务模型。
 - claim 的原子性 = 锁内判定 `status==='open' && !assignee`：N 个并发认领恰好一个成功。锁文件 `taskboard.json.lock`：`open(wx)` 排他创建 + mtime>10s 过期回收 + 持锁 pid 死亡检测。
 
-## 明确不做（v0.1）
+## 明确不做
 
-远程服务端、msg9 依赖、watcher/推送、settings 页、slash 命令、拖拽排序、markdown 渲染（detail 走 pre-wrap 纯文本，保持 client bundle 只 require react）。
+远程服务端、msg9 依赖、watcher/推送、settings 页、slash 命令、列内拖拽排序、markdown 渲染（detail 走 pre-wrap 纯文本，保持 client bundle 只 require react）。
+
+v0.2 已移出此清单：**列间拖拽**（`src/shared/dnd.ts` 的 `planDrop` 把拖放编译成 claim/update 操作序列，含为此新增的 `stop` 流转）和**任务评论**（`Task.comments`，tool/bridge/CLI/UI 四通道，只留信息不动状态机）。
 
 ## bridge 错误分层
 

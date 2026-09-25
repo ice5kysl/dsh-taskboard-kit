@@ -32,6 +32,7 @@ export const inject = ['tools', 'sessions'] as const
 export { BRIDGE_PREFIX, createTaskboardBridge, defaultBridgeDeps, isTrustedRequest } from './http.ts'
 export {
   StoreError,
+  addComment,
   boardFilePath,
   claimTask,
   createTask,
@@ -91,7 +92,7 @@ export function apply(ctx: Context): void {
   log.info('taskboard-kit loaded')
 
   registerTaskboardTools(ctx)
-  log.info('taskboard tools registered (list, create, claim, update, get)')
+  log.info('taskboard tools registered (list, create, claim, update, comment, get)')
 
   // The browser face drives the same board through the local web server. A
   // headless profile has no webServer: the tools still work, the kanban tab
@@ -127,6 +128,7 @@ export function apply(ctx: Context): void {
         '- 动手做一件事之前先占位：池里的任务用 taskboard_claim 认领；指派给你的任务用 taskboard_update（action=start）开工。\n' +
         '  认领/开工之前不要直接干活——板子存在的意义就是避免撞车；\n' +
         '- 有进展、做完、或需要留记录时，即时 taskboard_update（action=done 收尾，note 记进展）——人类在面板上实时看着；\n' +
+        '- 实现发现、交接说明、测试反馈要留给下一个接手的人时，用 taskboard_comment（不改任务状态）；接手任务前先 taskboard_get 看留言和时间线；\n' +
         '- claim 冲突 = 别人已经占了：换别的待认领任务，或向人类请示，不要硬做同一个。',
         '## Task board\n' +
         'This workspace has a shared task board (taskboard_* tools); the human watches the SAME board in the kanban tab. Rules:\n' +
@@ -134,6 +136,8 @@ export function apply(ctx: Context): void {
         '- Before working on anything, take ownership first: taskboard_claim a pool task, or taskboard_update (action=start) ' +
         'a task delegated to you. Never just start working — the board exists to prevent collisions;\n' +
         '- Report progress as it happens with taskboard_update (action=done to finish, note to log progress) — the human sees it live;\n' +
+        '- Leave implementation findings, handoff notes or test feedback with taskboard_comment (state untouched); ' +
+        'before picking up a task, taskboard_get first to read its comments and timeline;\n' +
         '- A claim conflict means someone else got there first: pick another pool task or ask the human — never work the same task anyway.',
       ),
     })

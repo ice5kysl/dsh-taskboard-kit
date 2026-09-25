@@ -154,6 +154,39 @@ await check('compareTasks: priority first, then oldest first', () => {
   assert.equal(client.compareTasks(tieA, tieA), 0)
 })
 
+// --------------------------------------------------------- drag-and-drop semantics
+
+await check('planDrop: drops compile into the contract op sequences', () => {
+  assert.equal(typeof client.planDrop, 'function')
+  const poolCard = { status: 'open', assignee: null }
+  const assignedCard = { status: 'open', assignee: 'kimi' }
+  const wipCard = { status: 'in_progress', assignee: 'kimi' }
+  const doneCard = { status: 'done', assignee: 'kimi' }
+  const cancelledCard = { status: 'cancelled', assignee: null }
+
+  // A pool card dropped on 进行中 is claimed (by the human, host-side).
+  assert.deepEqual(client.planDrop(poolCard, 'in_progress'), [{ kind: 'claim' }])
+  // A delegated card dropped on 进行中 just starts.
+  assert.deepEqual(client.planDrop(assignedCard, 'in_progress'), [{ kind: 'update', patch: { action: 'start' } }])
+  // 进行中 back to 待认领: stop (in_progress → open) and unassign, in one patch.
+  assert.deepEqual(client.planDrop(wipCard, 'pool'), [{ kind: 'update', patch: { action: 'stop', assignee: null } }])
+  // 已完成 to 已指派 with a name: reopen straight into that assignee.
+  assert.deepEqual(client.planDrop(doneCard, 'assigned', 'nova'), [{ kind: 'update', patch: { action: 'reopen', assignee: 'nova' } }])
+  // Dropping where the card already lives is a no-op — no request may fire.
+  assert.deepEqual(client.planDrop(doneCard, 'done'), [])
+  assert.deepEqual(client.planDrop(cancelledCard, 'done'), [])
+  assert.deepEqual(client.planDrop(poolCard, 'pool'), [])
+  assert.deepEqual(client.planDrop(assignedCard, 'assigned', 'kimi'), [])
+  // 已指派 with an EMPTY name means 放回待认领: same plan as a drop on pool.
+  assert.deepEqual(client.planDrop(assignedCard, 'assigned', ''), [{ kind: 'update', patch: { assignee: null } }])
+  assert.deepEqual(client.planDrop(assignedCard, 'assigned', '   '), [{ kind: 'update', patch: { assignee: null } }])
+  // A finished card dropped on 进行中 needs both halves, in order.
+  assert.deepEqual(client.planDrop(doneCard, 'in_progress'), [
+    { kind: 'update', patch: { action: 'reopen' } },
+    { kind: 'update', patch: { action: 'start' } },
+  ])
+})
+
 // ------------------------------------------------------------------ done
 
 console.log(failed === 0 ? 'all checks passed' : `${failed} check(s) failed`)

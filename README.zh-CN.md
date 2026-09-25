@@ -8,12 +8,13 @@
 
 ## 包含什么
 
-- **5 个 model tools**，Agent 在该 workspace 的任何会话里都能调用：
+- **6 个 model tools**，Agent 在该 workspace 的任何会话里都能调用：
   - `taskboard_list` — 列出任务（按状态 / 列 / 负责人过滤）
   - `taskboard_create` — 新建任务，可选直接指派给谁
   - `taskboard_claim` — 从待认领池原子认领（并发下恰好一人成功）
-  - `taskboard_update` — 开始 / 完成 / 重开 / 取消、改派、改字段、附注
-  - `taskboard_get` — 任务全文 + 事件时间线
+  - `taskboard_update` — 开始 / 暂停 / 完成 / 重开 / 取消、改派、改字段、附注
+  - `taskboard_comment` — 给任务留言（实现发现 / 交接说明 / 测试反馈），不改任务状态
+  - `taskboard_get` — 任务全文 + 事件时间线 + 留言串
 - **「看板」会话页签**：四条泳道（待认领 · 已指派 · 进行中 · 已完成），卡片带优先级 / 负责人 / 存留时长 / 标签，详情抽屉里有事件流水，一键认领 / 开始 / 完成 / 重开 / 改派。
 - **会话开始感知**：Agent 会被告知有几条待认领、几条进行中；系统提示词里写入了「先认领再动手」的协作规则。
 
@@ -32,7 +33,7 @@
 | 进行中 | 已认领或已开始 |
 | 已完成 | `done`（已取消的任务默认折叠，toggle 可显示） |
 
-流转：`open → in_progress`（claim / start）、`open|in_progress → done`、`open|in_progress → cancelled`、`done|cancelled → open`（reopen）。状态名刻意对齐 msg9 任务模型，未来接服务端看板时语义不变。
+流转：`open → in_progress`（claim / start）、`in_progress → open`（stop——回到待办，保留负责人）、`open|in_progress → done`、`open|in_progress → cancelled`、`done|cancelled → open`（reopen）。状态名刻意对齐 msg9 任务模型，未来接服务端看板时语义不变。
 
 ## 安装
 
@@ -51,6 +52,7 @@ dsh plugin --profile web add dsh-taskboard-kit
 taskboard list                              # 看板（待认领在前）
 taskboard claim T-3 --by kimi               # 原子认领，log 记 "kimi"
 taskboard update T-3 --action done --note "搞定了" --by kimi
+taskboard comment T-3 --text "交接：…" --by kimi      # 不改任务状态
 taskboard create --title "…" --priority high --by claude
 ```
 

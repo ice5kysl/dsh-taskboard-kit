@@ -11,8 +11,9 @@
  *   taskboard get <id>
  *   taskboard create --title T [--detail D] [--assignee A] [--priority high|medium|low] [--tags a,b]
  *   taskboard claim <id>
- *   taskboard update <id> [--action start|done|reopen|cancel] [--assignee A|none]
+ *   taskboard update <id> [--action start|stop|done|reopen|cancel] [--assignee A|none]
  *                         [--title T] [--detail D] [--priority P] [--tags a,b] [--note N]
+ *   taskboard comment <id> --text TEXT
  *   taskboard path
  *
  * Global flags: --cwd DIR (default: pwd) · --by NAME (default: $TASKBOARD_ACTOR
@@ -26,7 +27,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const lib = await import(join(dirname(fileURLToPath(import.meta.url)), '..', 'lib', 'index.js'))
-const { StoreError, boardFilePath, claimTask, createTask, getTask, listTasks, updateTask } = lib
+const { StoreError, addComment, boardFilePath, claimTask, createTask, getTask, listTasks, updateTask } = lib
 
 const EXIT = { ok: 0, error: 1, invalid: 2, conflict: 3 }
 
@@ -67,7 +68,10 @@ function full(task) {
   const log = task.log.length
     ? `\n\nlog:\n${task.log.map((e) => `  ${e.at} · ${e.event} · ${e.by}${e.note ? ` · ${e.note}` : ''}`).join('\n')}`
     : ''
-  return `${head}${detail}${log}`
+  const comments = task.comments?.length
+    ? `\n\ncomments:\n${task.comments.map((c) => `  ${c.at} · ${c.by} · ${c.text}`).join('\n')}`
+    : ''
+  return `${head}${detail}${log}${comments}`
 }
 
 function print(value, asJson) {
@@ -143,9 +147,18 @@ async function main() {
       print(asJson ? task : `updated ${line(task)}  (${events.join(', ')})`, asJson)
       return EXIT.ok
     }
+    case 'comment': {
+      if (typeof flags.text !== 'string') {
+        console.error('comment: --text is required')
+        return EXIT.invalid
+      }
+      const task = await addComment(cwd, rest[0], flags.text, by)
+      print(asJson ? task : `commented ${task.id} · by ${by}`, asJson)
+      return EXIT.ok
+    }
     default: {
       console.error(command ? `taskboard: unknown command "${command}"` : 'taskboard: a command is required')
-      console.error('commands: list | get <id> | create --title T | claim <id> | update <id> [--action …] | path  (try --help-style flags: --cwd --by --json)')
+      console.error('commands: list | get <id> | create --title T | claim <id> | update <id> [--action …] | comment <id> --text T | path  (try --help-style flags: --cwd --by --json)')
       return EXIT.error
     }
   }

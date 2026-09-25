@@ -12,6 +12,7 @@
  *   POST /dsh-taskboard/create   CreateRequest → TaskResponse
  *   POST /dsh-taskboard/claim    ClaimRequest  → TaskResponse
  *   POST /dsh-taskboard/update   UpdateRequest → TaskResponse
+ *   POST /dsh-taskboard/comment  CommentRequest → TaskResponse
  *
  * Browser mutations are always attributed to the actor `human`. Domain
  * failures (conflict / not-found / invalid-input / invalid-transition) come
@@ -30,6 +31,7 @@ import {
   MUTATE_HEADER,
   MUTATE_HEADER_VALUE,
   type ClaimRequest,
+  type CommentRequest,
   type CreateRequest,
   type ErrorCode,
   type UpdateRequest,
@@ -37,6 +39,7 @@ import {
 import type { Board, Task } from '../shared/types.ts'
 import {
   StoreError,
+  addComment,
   claimTask,
   createTask,
   loadBoard,
@@ -54,6 +57,7 @@ export interface TaskboardBridgeDeps {
   createTask: typeof createTask
   claimTask: typeof claimTask
   updateTask: typeof updateTask
+  addComment: typeof addComment
   log(message: string): void
 }
 
@@ -68,6 +72,7 @@ export function defaultBridgeDeps(ctx: Context): TaskboardBridgeDeps {
     createTask,
     claimTask,
     updateTask,
+    addComment,
     log: (message) => {
       try {
         ctx.logger('taskboard-kit:http').info(message)
@@ -294,6 +299,14 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
         ...(request.tags !== undefined ? { tags: request.tags } : {}),
         ...(request.note !== undefined ? { note: request.note } : {}),
       }, HUMAN_ACTOR)).task)
+    }
+
+    if (method === 'POST' && path === `${BRIDGE_PREFIX}/comment`) {
+      requireMutateHeader(req)
+      const body = await readJsonBody(req)
+      const cwd = requireCwd(body)
+      const request = body as unknown as CommentRequest
+      return runDomain(res, () => deps.addComment(cwd, request.id, request.text, HUMAN_ACTOR))
     }
 
     return fail(res, 404, 'not-found', `no route for ${method} ${path}`)

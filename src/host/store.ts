@@ -74,6 +74,12 @@ export async function loadBoard(cwd: string): Promise<Board> {
   if (!parsed || parsed.version !== 1) {
     throw new StoreError('internal', `unsupported taskboard version in ${file} (expected 1)`)
   }
+  // Schema drift normalization (version stays 1 for added fields): boards
+  // written before v0.2 have no comments array — hydrate it in place so every
+  // later reader can treat it as always present.
+  for (const task of Object.values(parsed.tasks ?? {})) {
+    if (!Array.isArray(task.comments)) task.comments = []
+  }
   return parsed
 }
 
@@ -177,7 +183,7 @@ async function isStaleLock(lockPath: string): Promise<boolean> {
 
 const PRIORITIES: readonly TaskPriority[] = ['high', 'medium', 'low']
 const STATUSES: readonly TaskStatus[] = ['open', 'in_progress', 'done', 'cancelled']
-const ACTIONS: readonly UpdateAction[] = ['start', 'done', 'reopen', 'cancel']
+const ACTIONS: readonly UpdateAction[] = ['start', 'stop', 'done', 'reopen', 'cancel']
 
 function requireId(id: unknown): string {
   if (typeof id !== 'string' || id.trim() === '') {
@@ -280,6 +286,7 @@ export async function createTask(cwd: string, input: CreateTaskInput, by: string
       created_at: now,
       updated_at: now,
       log,
+      comments: [],
     }
     board.tasks[id] = task
     await saveBoard(cwd, board)
@@ -326,6 +333,8 @@ export interface UpdateTaskPatch {
 /**
  * Status transitions by action:
  *   start:  open → in_progress ('started')
+ *   stop:   in_progress → open ('stopped', assignee kept — the kanban's
+ *           "back to todo" drag; combine with assignee:null to also unassign)
  *   done:   open | in_progress → done ('done')
  *   reopen: done | cancelled → open ('reopened', assignee kept)
  *   cancel: open | in_progress → cancelled ('cancelled')
@@ -356,6 +365,7 @@ export async function updateTask(
     if (action) {
       const event = transitionOf(task, action)
       task.status = action === 'start' ? 'in_progress'
+        : action === 'stop' ? 'open'
         : action === 'done' ? 'done'
         : action === 'reopen' ? 'open'
         : 'cancelled'
@@ -411,6 +421,7 @@ export async function updateTask(
 function transitionOf(task: Task, action: UpdateAction): TaskEvent {
   const legal =
     (action === 'start' && task.status === 'open')
+    || (action === 'stop' && task.status === 'in_progress')
     || (action === 'done' && (task.status === 'open' || task.status === 'in_progress'))
     || (action === 'reopen' && (task.status === 'done' || task.status === 'cancelled'))
     || (action === 'cancel' && (task.status === 'open' || task.status === 'in_progress'))
@@ -418,9 +429,32 @@ function transitionOf(task: Task, action: UpdateAction): TaskEvent {
     throw new StoreError('invalid-transition', `${task.id} is ${task.status}; action "${action}" is not allowed now`)
   }
   return action === 'start' ? 'started'
+    : action === 'stop' ? 'stopped'
     : action === 'done' ? 'done'
     : action === 'reopen' ? 'reopened'
     : 'cancelled'
+}
+
+/**
+ * Add an information comment WITHOUT touching the state machine: the log is
+ * for lifecycle events, comments are the conversation (findings, handoff
+ * notes, test feedback). Only `updated_at` moves.
+ */
+export async function addComment(cwd: string, id: string, text: string, by: string): Promise<Task> {
+  const taskId = requireId(id)
+  if (typeof text !== 'string' || text.trim() === '') {
+    throw new StoreError('invalid-input', 'comment text is required and must be a non-empty string')
+  }
+  const body = text.trim()
+  return withBoardLock(cwd, async () => {
+    const board = await loadBoard(cwd)
+    const task = mustTask(board, taskId)
+    const now = new Date().toISOString()
+    task.comments.push({ at: now, by, text: body })
+    task.updated_at = now
+    await saveBoard(cwd, board)
+    return task
+  })
 }
 
 export async function getTask(cwd: string, id: string): Promise<Task> {

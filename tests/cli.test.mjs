@@ -72,5 +72,27 @@ const missing = await cliFails('get', 'T-99')
 assert.equal(missing.code, 2)
 ok('unknown id exits 2 (not found)')
 
+const commented = JSON.parse(await cli('comment', 'T-1', '--text', '交接：CLI 路径验证完毕', '--json'))
+assert.equal(commented.comments.length, 1)
+assert.equal(commented.comments[0].by, 'kimi')
+assert.equal(commented.comments[0].text, '交接：CLI 路径验证完毕')
+assert.equal(commented.status, 'done', 'commenting never moves the state')
+assert.equal(commented.log.filter((e) => e.event === 'done').length, 1, 'log untouched')
+ok('comment appends to comments (and stays out of the log)')
+
+const plain = await cli('comment', 'T-1', '--text', 'second note')
+assert.match(plain, /^commented T-1 · by kimi$/)
+ok('plain output renders "commented T-1 · by kimi"')
+
+const shown = await cli('get', 'T-1')
+assert.match(shown, /comments:/)
+assert.match(shown, /交接：CLI 路径验证完毕/)
+ok('get shows the comment thread')
+
+const noText = await cliFails('comment', 'T-1')
+assert.equal(noText.code, 2)
+assert.match(noText.stderr, /--text is required/)
+ok('comment without --text exits 2')
+
 await rm(ws, { recursive: true, force: true })
 console.log(`all checks passed (${checks})`)

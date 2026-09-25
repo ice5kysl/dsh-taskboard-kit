@@ -11,6 +11,7 @@
  *   POST /dsh-taskboard/create   CreateRequest → TaskResponse
  *   POST /dsh-taskboard/claim    ClaimRequest  → TaskResponse (conflict → ok:false, code 'conflict')
  *   POST /dsh-taskboard/update   UpdateRequest → TaskResponse
+ *   POST /dsh-taskboard/comment  CommentRequest → TaskResponse
  *
  * The browser's mutations are always attributed to actor `human`; the host
  * stamps `by` itself — the request bodies carry no actor field.
@@ -41,7 +42,7 @@ export interface ClaimRequest {
   id: string
 }
 
-export type UpdateAction = 'start' | 'done' | 'reopen' | 'cancel'
+export type UpdateAction = 'start' | 'stop' | 'done' | 'reopen' | 'cancel'
 
 export interface UpdateRequest {
   cwd: string
@@ -53,6 +54,13 @@ export interface UpdateRequest {
   priority?: TaskPriority
   tags?: string[]
   note?: string
+}
+
+/** Add an information comment; the task's state is untouched. */
+export interface CommentRequest {
+  cwd: string
+  id: string
+  text: string
 }
 
 export type ErrorCode = 'invalid-input' | 'not-found' | 'conflict' | 'invalid-transition' | 'forbidden' | 'internal'
