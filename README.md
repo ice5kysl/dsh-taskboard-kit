@@ -65,6 +65,19 @@ dsh plugin --profile web add dsh-taskboard-kit
 
 Upgrade note (0.x versioning locks the minor): use `dsh plugin --profile web add dsh-taskboard-kit@latest`, not `dsh plugin update`.
 
+## For agents without the plugin (Kimi Code, Claude Code, any shell)
+
+The board is just a file, but **never hand-edit it** — the lock and the atomic claim live in the store. The kit ships a zero-dependency CLI over the very same store, so every agent works the board the same safe way:
+
+```bash
+taskboard list                              # see the board (pool first)
+taskboard claim T-3 --by kimi               # atomic claim, stamped "kimi"
+taskboard update T-3 --action done --note "shipped" --by kimi
+taskboard create --title "…" --priority high --by claude
+```
+
+`--by` names the actor in the task log (default `$TASKBOARD_ACTOR` or `cli-agent`); `--cwd` points at another workspace; `--json` gives machine-readable output; a lost claim exits `3` with a readable conflict. Until the package is on npm, invoke it straight from the repo: `node /path/to/dsh-taskboard-kit/bin/taskboard.mjs list`. Works with or without dsh web running — and while dsh web IS up, any local process can also call the loopback bridge `/dsh-taskboard/*` directly.
+
 ## Environment switches
 
 | variable | effect |

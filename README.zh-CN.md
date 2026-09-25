@@ -43,6 +43,19 @@ dsh plugin --profile web add dsh-taskboard-kit
 
 升级注意（0.x 版本锁 minor）：用 `dsh plugin --profile web add dsh-taskboard-kit@latest`，不要用 `dsh plugin update`。
 
+## 给没有插件的 Agent 用（Kimi Code、Claude Code、任何 shell）
+
+板就是一个文件，但**绝不要手改它**——锁和原子认领都在 store 里。kit 自带一个零依赖 CLI，封装的正是同一个 store，让每个 Agent 用同一个安全入口操作：
+
+```bash
+taskboard list                              # 看板（待认领在前）
+taskboard claim T-3 --by kimi               # 原子认领，log 记 "kimi"
+taskboard update T-3 --action done --note "搞定了" --by kimi
+taskboard create --title "…" --priority high --by claude
+```
+
+`--by` 指定 log 里的操作者（默认 `$TASKBOARD_ACTOR` 或 `cli-agent`）；`--cwd` 指向别的 workspace；`--json` 输出机器可读结果；认领失败退出码 `3` 并给出可读的冲突原因。包还没上 npm 之前，直接从仓库调用：`node /path/to/dsh-taskboard-kit/bin/taskboard.mjs list`。dsh web 跑不跑都能用；web 在跑时，本机进程也可以直接调回环 bridge `/dsh-taskboard/*`。
+
 ## 环境开关
 
 | 变量 | 作用 |
