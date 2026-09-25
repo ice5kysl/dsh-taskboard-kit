@@ -1,0 +1,847 @@
+/**
+ * The taskboard kanban view, registered as a「看板」session view tab next to
+ * 对话 | 轨迹 | 文件 | 消息 (`conversation.view`, order 40).
+ *
+ * Layout: a top bar (workspace, task count, refresh, cancelled toggle, new
+ * task) above four swim-lane columns (待认领 / 已指派 / 进行中 / 已完成 from
+ * the contract's BOARD_COLUMNS). Clicking a card opens a detail drawer that
+ * is absolutely positioned INSIDE the panel (no portal — the shell's overlay
+ * layer would lose the --dsw-alias-* theme tokens). The drawer carries the
+ * status actions (认领 / 开始 / 完成 / 取消 / 重开), the edit row (reassign,
+ * priority, title/detail) and the task's log timeline.
+ *
+ * It is a pure projection of the store (`useSyncExternalStore`) — every
+ * action goes through `TaskboardStore`, so the model tools, the view and the
+ * tests share one implementation of "load / create / claim / update".
+ * Colors ride the shell's design tokens; interactive states are class-based
+ * (TB_CSS is injected once per panel), no emoji glyphs anywhere.
+ *
+ * The root-height sync (`useRootHeightSync`) is the same host workaround the
+ * msg9 panel ships: dsh web wraps the view body in an overflow-y:auto scroll
+ * container, so height:100% resolves to nothing — we pin the root to the
+ * scroll box's pixel height instead, which is what makes the per-column
+ * vertical scroll and the in-panel drawer work at all.
+ *
+ * @module dsh-taskboard-kit/client-panel
+ */
+
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
+import {
+  BOARD_COLUMNS,
+  columnOf,
+  compareTasks,
+  type BoardColumn,
+  type Task,
+  type TaskEvent,
+  type TaskPriority,
+} from '../shared/types.ts'
+import { L } from './locale.ts'
+import type { TaskboardState, TaskboardStore } from './store.ts'
+
+/** Props handed to the view: injected store + the standard slot shares. */
+export interface BoardPanelProps {
+  /** The page-wide store (injected). */
+  store: TaskboardStore
+  /** Leave the view (unused by conversation.view; kept for compatibility). */
+  onBack?: () => void
+  /** Current session list state; the view follows the selected session. */
+  useSessions?: (selector: (state: SessionListLike) => unknown) => unknown
+}
+
+interface SessionListLike {
+  current?: string
+  byId?: Record<string, { cwd?: string } | undefined>
+}
+
+// ------------------------------------------------------------------ theme
+
+const FG = 'var(--dsw-alias-label-primary, #1f2328)'
+const DIM = 'var(--dsw-alias-label-secondary, #6b7280)'
+const FAINT = 'var(--dsw-alias-label-dimmed, #9ca3af)'
+const BG = 'var(--dsw-alias-bg-layer-2, #ffffff)'
+const BG_SUNK = 'var(--dsw-alias-bg-layer-1, #f5f7fa)'
+const BG_RAISED = 'var(--dsw-alias-bg-layer-3, #ffffff)'
+const BORDER = 'var(--dsw-alias-border-l1, rgba(28,35,51,0.12))'
+const BORDER_STRONG = 'var(--dsw-alias-border-l2, rgba(28,35,51,0.20))'
+const ACCENT = 'var(--dsw-alias-brand-primary, #2d66f7)'
+const DANGER = 'var(--dsw-alias-state-error-primary, #dc2626)'
+const HOVER_BG = 'var(--dsw-alias-interactive-bg-hover, rgba(28,35,51,0.06))'
+/** Semantic amber for the medium priority dot — readable in both themes. */
+const AMBER = '#d97706'
+
+const PRIORITY_COLORS: Record<TaskPriority, string> = { high: DANGER, medium: AMBER, low: FAINT }
+
+/** Interactive-state rules for the tb-* classes used across the panel. */
+const TB_CSS = `
+.tb-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid ${BORDER_STRONG}; border-radius: 8px; background: transparent; color: inherit; padding: 5px 10px; font-size: 12px; font-family: inherit; line-height: 1.4; cursor: pointer; }
+.tb-btn:hover { background: ${HOVER_BG}; }
+.tb-btn:disabled { opacity: 0.55; cursor: default; }
+.tb-btn:disabled:hover { background: transparent; }
+.tb-btn-primary { background: ${ACCENT}; border-color: transparent; color: #fff; font-weight: 500; }
+.tb-btn-primary:hover { background: ${ACCENT}; opacity: 0.88; }
+.tb-btn-primary:disabled:hover { background: ${ACCENT}; opacity: 0.55; }
+.tb-btn-danger { color: ${DANGER}; }
+.tb-iconbtn { display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: 6px; background: transparent; color: ${DIM}; padding: 4px 6px; font-size: 13px; font-family: inherit; line-height: 1; cursor: pointer; }
+.tb-iconbtn:hover { background: ${HOVER_BG}; color: ${FG}; }
+.tb-input, .tb-textarea { width: 100%; box-sizing: border-box; border: 1px solid ${BORDER_STRONG}; border-radius: 8px; background: ${BG}; color: inherit; padding: 6px 9px; font-size: 12.5px; font-family: inherit; line-height: 1.5; }
+.tb-input::placeholder, .tb-textarea::placeholder { color: ${DIM}; opacity: 0.7; }
+.tb-input:focus, .tb-textarea:focus { outline: none; border-color: ${ACCENT}; box-shadow: 0 0 0 3px rgba(45,102,247,0.18); }
+.tb-textarea { resize: vertical; }
+.tb-card { display: block; width: 100%; box-sizing: border-box; text-align: left; border: 1px solid ${BORDER}; border-radius: 8px; background: ${BG_RAISED}; color: inherit; padding: 8px 10px; font-family: inherit; cursor: pointer; }
+.tb-card:hover { border-color: ${ACCENT}; }
+.tb-card.active { border-color: ${ACCENT}; box-shadow: 0 0 0 1px ${ACCENT}; }
+.tb-chip { border: 1px solid ${BORDER}; border-radius: 999px; background: transparent; color: ${DIM}; padding: 3px 11px; font-size: 11px; font-family: inherit; cursor: pointer; }
+.tb-chip:hover { color: ${FG}; border-color: ${BORDER_STRONG}; }
+.tb-chip.active { background: ${HOVER_BG}; color: ${ACCENT}; border-color: ${ACCENT}; font-weight: 600; }
+.tb-tag { font-size: 10px; color: ${DIM}; border: 1px solid ${BORDER}; border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
+.tb-badge { display: inline-flex; align-items: center; font-size: 10px; color: ${ACCENT}; background: ${HOVER_BG}; border-radius: 999px; padding: 1px 7px; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tb-badge-outline { display: inline-flex; align-items: center; font-size: 10px; color: ${DIM}; border: 1px dashed ${BORDER_STRONG}; border-radius: 999px; padding: 0 7px; white-space: nowrap; }
+`
+
+// ------------------------------------------------------------------ helpers
+
+/** 从 root 向上找第一个 computed overflowY 为 auto/scroll 的祖先。
+ *  不写死宿主的 class 名，宿主改版也能活；找不到返回 null。
+ *  computed 可注入，测试用纯对象链驱动（导出以便测试）。 */
+export function findScrollParent(
+  node: { parentElement: Element | null },
+  computed: (el: Element) => { overflowY: string },
+): Element | null {
+  for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+    const overflowY = computed(parent).overflowY
+    if (overflowY === 'auto' || overflowY === 'scroll') return parent
+  }
+  return null
+}
+
+/** dsh web 把面板包在一个 overflow-y:auto 的滚动容器里——root 的 height:100%
+ *  解析不到有效高度，面板按内容撑开后被宿主整体滚走（泳道滚动和抽屉定位全坏）。
+ *  修：找到那个祖先，用 ResizeObserver + window resize + 宿主滚动把可用高度
+ *  同步成 root 的 px 高度。返回 callback ref：卸载时自动清理。 */
+function useRootHeightSync(): (node: HTMLDivElement | null) => void {
+  const cleanupRef = useRef<(() => void) | null>(null)
+  return useCallback((node: HTMLDivElement | null) => {
+    cleanupRef.current?.()
+    cleanupRef.current = null
+    if (!node || typeof getComputedStyle !== 'function' || typeof window === 'undefined') return
+    const found = findScrollParent(node, (el) => getComputedStyle(el))
+    if (!found) return
+    const box = found as HTMLElement
+    const sync = (): void => {
+      const rootTop = node.getBoundingClientRect().top
+      const offsetInBox = rootTop - box.getBoundingClientRect().top + box.scrollTop
+      const roomInBox = box.clientHeight - Math.max(0, offsetInBox)
+      const roomInView = window.innerHeight - rootTop
+      const height = Math.max(200, Math.min(roomInBox, roomInView))
+      node.style.flex = '0 0 auto'
+      node.style.height = `${height}px`
+      node.style.maxHeight = `${height}px`
+    }
+    sync()
+    let observer: ResizeObserver | undefined
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(sync)
+      observer.observe(box)
+    }
+    window.addEventListener('resize', sync)
+    box.addEventListener('scroll', sync, { passive: true })
+    cleanupRef.current = () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', sync)
+      box.removeEventListener('scroll', sync)
+    }
+  }, [])
+}
+
+/** Read the selected session's directory out of the standard slot share. */
+function useSessionCwd(props: BoardPanelProps): string | undefined {
+  const selector = props.useSessions
+  const read = useCallback((state: SessionListLike): unknown => {
+    const current = state?.current
+    if (!current) return undefined
+    return state?.byId?.[current]?.cwd
+  }, [])
+  // `useSessions` is itself a hook when the host provides one: keep the call
+  // unconditional in shape (no early return above it) so hook order stays
+  // stable; the host keeps this prop stable for the panel's lifetime.
+  const value = typeof selector === 'function' ? selector(read) : undefined
+  return typeof value === 'string' ? value : undefined
+}
+
+/** `/very/long/workspace/path` → `workspace/path` (the last two segments). */
+function shortPath(cwd: string): string {
+  const parts = cwd.split('/').filter(Boolean)
+  return parts.slice(-2).join('/') || cwd
+}
+
+/** Card age badge: 5m / 3h / 2d since creation. */
+function ageText(iso: string): string {
+  const at = Date.parse(iso)
+  if (Number.isNaN(at)) return ''
+  const minutes = Math.max(0, Math.floor((Date.now() - at) / 60_000))
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 48) return `${hours}h`
+  return `${Math.floor(hours / 24)}d`
+}
+
+/** Log timeline timestamp: 刚刚 / 5 分钟前 / 3h ago … */
+function relTime(iso: string): string {
+  const at = Date.parse(iso)
+  if (Number.isNaN(at)) return iso
+  const minutes = Math.max(0, Math.floor((Date.now() - at) / 60_000))
+  if (minutes < 1) return L('刚刚', 'just now')
+  if (minutes < 60) return L('{n} 分钟前', '{n}m ago', { n: minutes })
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return L('{n} 小时前', '{n}h ago', { n: hours })
+  return L('{n} 天前', '{n}d ago', { n: Math.floor(hours / 24) })
+}
+
+function columnLabel(column: BoardColumn): string {
+  switch (column) {
+    case 'pool': return L('待认领', 'Pool')
+    case 'assigned': return L('已指派', 'Assigned')
+    case 'in_progress': return L('进行中', 'In progress')
+    case 'done': return L('已完成', 'Done')
+  }
+}
+
+function statusLabel(task: Task): string {
+  if (task.status === 'cancelled') return L('已取消', 'Cancelled')
+  return columnLabel(columnOf(task))
+}
+
+function priorityLabel(priority: TaskPriority): string {
+  switch (priority) {
+    case 'high': return L('高', 'high')
+    case 'medium': return L('中', 'medium')
+    case 'low': return L('低', 'low')
+  }
+}
+
+const EVENT_LABELS: Record<TaskEvent, [string, string]> = {
+  created: ['创建', 'created'],
+  assigned: ['指派', 'assigned'],
+  claimed: ['认领', 'claimed'],
+  started: ['开始', 'started'],
+  done: ['完成', 'done'],
+  reopened: ['重开', 'reopened'],
+  cancelled: ['取消', 'cancelled'],
+  updated: ['更新', 'updated'],
+}
+
+function eventLabel(event: TaskEvent): string {
+  const pair = EVENT_LABELS[event]
+  return pair ? L(pair[0], pair[1]) : event
+}
+
+// ------------------------------------------------------------------ panel
+
+export function BoardPanel(props: BoardPanelProps): JSX.Element {
+  const { store } = props
+  const state = useSyncExternalStore(store.subscribe, store.getState, store.getState)
+  const cwd = useSessionCwd(props)
+  const rootHeightRef = useRootHeightSync()
+  const [createOpen, setCreateOpen] = useState(false)
+
+  // Follow the current session's workspace.
+  useEffect(() => {
+    store.setCwd(cwd ?? null)
+  }, [store, cwd])
+
+  // First paint / returning to the tab: make sure the board is fresh.
+  useEffect(() => {
+    void store.refresh()
+  }, [store])
+
+  const board = state.board
+  const tasks = useMemo(() => (board ? Object.values(board.tasks) : []), [board])
+  const columns = useMemo(
+    () =>
+      BOARD_COLUMNS.map((column) => {
+        let list = tasks.filter((task) => columnOf(task) === column)
+        // Cancelled tasks land in the done column but hide behind the toggle.
+        if (column === 'done' && !state.showCancelled) {
+          list = list.filter((task) => task.status !== 'cancelled')
+        }
+        return { column, tasks: [...list].sort(compareTasks) }
+      }),
+    [tasks, state.showCancelled],
+  )
+  const selectedId = state.selectedId
+  const selected: Task | null = selectedId && board ? board.tasks[selectedId] ?? null : null
+  const drawerOpen = createOpen || selected !== null
+  const closeDrawer = (): void => {
+    setCreateOpen(false)
+    store.select(null)
+  }
+
+  if (state.status === 'loading' && !board) {
+    return (
+      <div style={styles.root} ref={rootHeightRef}>
+        <style>{TB_CSS}</style>
+        <div style={styles.center}>
+          <p style={styles.centerText}>{L('正在加载看板…', 'Loading the board…')}</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (state.status === 'error' && !board) {
+    return (
+      <div style={styles.root} ref={rootHeightRef}>
+        <style>{TB_CSS}</style>
+        <div style={styles.center}>
+          <p style={styles.errorText}>{L('无法读取看板：{error}', 'Cannot read the board: {error}', { error: state.error ?? '?' })}</p>
+          <button type="button" className="tb-btn tb-btn-primary" onClick={() => void store.refresh()}>
+            {L('重试', 'Retry')}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div style={styles.root} ref={rootHeightRef}>
+      <style>{TB_CSS}</style>
+      <TopBar state={state} store={store} total={tasks.length} onCreate={() => setCreateOpen(true)} />
+      {state.error && (
+        <div style={styles.noticeError}>
+          <span style={styles.noticeText}>{state.error}</span>
+          <button type="button" className="tb-iconbtn" onClick={() => store.clearError()} title={L('关闭', 'Dismiss')}>
+            ×
+          </button>
+        </div>
+      )}
+      {!state.cwd ? (
+        <div style={styles.center}>
+          <p style={styles.centerText}>
+            {L('没有选中的会话。打开一个会话后，这里显示它所在 workspace 的看板。', 'No session selected. Open a session to see its workspace board here.')}
+          </p>
+        </div>
+      ) : tasks.length === 0 ? (
+        <div style={styles.center}>
+          <p style={styles.centerText}>
+            {L('还没有任务——让 Agent 用 taskboard_create 建一个，或点 + 新建。', 'No tasks yet — ask the agent to run taskboard_create, or hit + to create one.')}
+          </p>
+          <button type="button" className="tb-btn tb-btn-primary" onClick={() => setCreateOpen(true)}>
+            {L('+ 新建任务', '+ New task')}
+          </button>
+        </div>
+      ) : (
+        <div style={styles.lanes}>
+          {columns.map(({ column, tasks: list }) => (
+            <ColumnView key={column} column={column} tasks={list} state={state} store={store} onCreate={() => setCreateOpen(true)} />
+          ))}
+        </div>
+      )}
+      {drawerOpen && (
+        <>
+          <div style={styles.backdrop} onClick={closeDrawer} />
+          {createOpen ? (
+            <CreateForm state={state} store={store} onClose={() => setCreateOpen(false)} />
+          ) : (
+            selected && <DetailDrawer key={selected.id} task={selected} state={state} store={store} onClose={() => store.select(null)} />
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+/** Top bar: title, workspace, count, refresh, cancelled toggle, new task. */
+function TopBar({ state, store, total, onCreate }: { state: TaskboardState; store: TaskboardStore; total: number; onCreate(): void }): JSX.Element {
+  return (
+    <header style={styles.topbar}>
+      <span style={styles.topbarTitle}>{L('看板', 'Board')}</span>
+      {state.cwd && (
+        <span style={styles.topbarPath} title={state.cwd}>
+          {shortPath(state.cwd)}
+        </span>
+      )}
+      <span style={styles.topbarCount}>{L('{n} 个任务', '{n} tasks', { n: total })}</span>
+      <span style={styles.topbarSpacer} />
+      <button
+        type="button"
+        className={state.showCancelled ? 'tb-chip active' : 'tb-chip'}
+        onClick={() => store.setShowCancelled(!state.showCancelled)}
+        title={L('在完成列里显示已取消的任务', 'Show cancelled tasks in the done column')}
+      >
+        {L('显示已取消', 'Show cancelled')}
+      </button>
+      <button type="button" className="tb-iconbtn" onClick={() => void store.refresh()} title={L('刷新', 'Refresh')}>
+        ↻
+      </button>
+      <button type="button" className="tb-btn tb-btn-primary" onClick={onCreate}>
+        {L('+ 新建任务', '+ New task')}
+      </button>
+    </header>
+  )
+}
+
+/** One swim lane: header (name + count + quick-add) above its sorted cards. */
+function ColumnView({
+  column,
+  tasks,
+  state,
+  store,
+  onCreate,
+}: {
+  column: BoardColumn
+  tasks: Task[]
+  state: TaskboardState
+  store: TaskboardStore
+  onCreate(): void
+}): JSX.Element {
+  return (
+    <section style={styles.column}>
+      <div style={styles.columnHead}>
+        <span style={styles.columnTitle}>{columnLabel(column)}</span>
+        <span style={styles.columnCount}>{tasks.length}</span>
+        <span style={styles.topbarSpacer} />
+        <button type="button" className="tb-iconbtn" onClick={onCreate} title={L('新建任务', 'New task')}>
+          +
+        </button>
+      </div>
+      <div style={styles.columnBody}>
+        {tasks.length === 0 ? (
+          <div style={styles.columnEmpty}>{L('（空）', '(empty)')}</div>
+        ) : (
+          tasks.map((task) => (
+            <TaskCard key={task.id} task={task} selected={task.id === state.selectedId} onOpen={() => store.select(task.id)} />
+          ))
+        )}
+      </div>
+    </section>
+  )
+}
+
+/** One task card: priority dot, title, assignee badge, age, tag capsules. */
+function TaskCard({ task, selected, onOpen }: { task: Task; selected: boolean; onOpen(): void }): JSX.Element {
+  const cancelled = task.status === 'cancelled'
+  return (
+    <button type="button" className={selected ? 'tb-card active' : 'tb-card'} style={cancelled ? styles.cardCancelled : undefined} onClick={onOpen}>
+      <div style={styles.cardTop}>
+        <span
+          style={{ ...styles.dot, background: PRIORITY_COLORS[task.priority] ?? FAINT }}
+          title={L('优先级：{p}', 'Priority: {p}', { p: priorityLabel(task.priority) })}
+        />
+        <span style={{ ...styles.cardTitle, ...(cancelled ? styles.cardTitleCancelled : {}) }}>{task.title}</span>
+      </div>
+      <div style={styles.cardMeta}>
+        {task.assignee ? (
+          <span className="tb-badge" title={task.assignee}>{task.assignee}</span>
+        ) : (
+          <span className="tb-badge-outline">{L('待认领', 'unclaimed')}</span>
+        )}
+        <span style={styles.cardAge} title={task.created_at}>{ageText(task.created_at)}</span>
+      </div>
+      {task.tags.length > 0 && (
+        <div style={styles.cardTags}>
+          {task.tags.slice(0, 3).map((tag) => (
+            <span key={tag} className="tb-tag">{tag}</span>
+          ))}
+          {task.tags.length > 3 && <span className="tb-tag">+{task.tags.length - 3}</span>}
+        </div>
+      )}
+    </button>
+  )
+}
+
+/**
+ * The in-panel detail drawer (absolute, no portal). Keyed by task id at the
+ * call site, so the edit drafts reset when the selection changes — but
+ * survive background refreshes of the same task.
+ */
+function DetailDrawer({ task, state, store, onClose }: { task: Task; state: TaskboardState; store: TaskboardStore; onClose(): void }): JSX.Element {
+  const [assigneeDraft, setAssigneeDraft] = useState(task.assignee ?? '')
+  const [titleDraft, setTitleDraft] = useState(task.title)
+  const [detailDraft, setDetailDraft] = useState(task.detail)
+  const busy = state.busy
+  const column = columnOf(task)
+  const log = useMemo(() => [...task.log].sort((a, b) => a.at.localeCompare(b.at)), [task.log])
+
+  const update = (patch: Parameters<TaskboardStore['update']>[0]): void => {
+    void store.update(patch)
+  }
+
+  return (
+    <aside style={styles.drawer}>
+      <div style={styles.drawerHead}>
+        <span style={styles.drawerTitle}>{task.title}</span>
+        <button type="button" className="tb-iconbtn" onClick={onClose} title={L('关闭', 'Close')}>
+          ×
+        </button>
+      </div>
+      <div style={styles.drawerMeta}>
+        <span>{task.id}</span>
+        <span>{statusLabel(task)}</span>
+        <span>{L('优先级 {p}', 'priority {p}', { p: priorityLabel(task.priority) })}</span>
+        <span>{task.assignee ?? L('待认领', 'unclaimed')}</span>
+      </div>
+      <div style={styles.drawerMeta}>
+        <span>{L('由 {by} 创建', 'created by {by}', { by: task.created_by })}</span>
+        <span>{relTime(task.created_at)}</span>
+      </div>
+
+      <div style={styles.drawerActions}>
+        {column === 'pool' && (
+          <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => void store.claim(task.id)}>
+            {L('认领', 'Claim')}
+          </button>
+        )}
+        {column === 'assigned' && (
+          <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => update({ id: task.id, action: 'start' })}>
+            {L('开始', 'Start')}
+          </button>
+        )}
+        {column === 'in_progress' && (
+          <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => update({ id: task.id, action: 'done' })}>
+            {L('完成', 'Done')}
+          </button>
+        )}
+        {column === 'done' && (
+          <button type="button" className="tb-btn" disabled={busy} onClick={() => update({ id: task.id, action: 'reopen' })}>
+            {L('重开', 'Reopen')}
+          </button>
+        )}
+        {column !== 'done' && (
+          <button type="button" className="tb-btn tb-btn-danger" disabled={busy} onClick={() => update({ id: task.id, action: 'cancel' })}>
+            {L('取消', 'Cancel')}
+          </button>
+        )}
+      </div>
+
+      <div style={styles.drawerSection}>
+        <div style={styles.sectionTitle}>{L('描述', 'Details')}</div>
+        {task.detail ? (
+          <div style={styles.detailBody}>{task.detail}</div>
+        ) : (
+          <div style={styles.detailEmpty}>{L('（没有描述）', '(no description)')}</div>
+        )}
+      </div>
+
+      <div style={styles.drawerSection}>
+        <div style={styles.sectionTitle}>{L('编辑', 'Edit')}</div>
+        <label style={styles.field}>
+          <span style={styles.fieldLabel}>{L('改派（留空 = 放回待认领池）', 'Reassign (empty = back to the pool)')}</span>
+          <span style={styles.fieldRow}>
+            <input
+              className="tb-input"
+              value={assigneeDraft}
+              placeholder={L('指派人，例如 kimi', 'assignee, e.g. kimi')}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(event) => setAssigneeDraft(event.target.value)}
+            />
+            <button
+              type="button"
+              className="tb-btn"
+              disabled={busy || assigneeDraft.trim() === (task.assignee ?? '')}
+              onClick={() => update({ id: task.id, assignee: assigneeDraft.trim() ? assigneeDraft.trim() : null })}
+            >
+              {L('改派', 'Reassign')}
+            </button>
+          </span>
+        </label>
+        <div style={styles.field}>
+          <span style={styles.fieldLabel}>{L('优先级', 'Priority')}</span>
+          <span style={styles.fieldRow}>
+            {(['high', 'medium', 'low'] as const).map((priority) => (
+              <button
+                key={priority}
+                type="button"
+                className={task.priority === priority ? 'tb-chip active' : 'tb-chip'}
+                disabled={busy}
+                onClick={() => update({ id: task.id, priority })}
+              >
+                {priorityLabel(priority)}
+              </button>
+            ))}
+          </span>
+        </div>
+        <label style={styles.field}>
+          <span style={styles.fieldLabel}>{L('标题', 'Title')}</span>
+          <input className="tb-input" value={titleDraft} onChange={(event) => setTitleDraft(event.target.value)} />
+        </label>
+        <label style={styles.field}>
+          <span style={styles.fieldLabel}>{L('描述', 'Details')}</span>
+          <textarea className="tb-textarea" rows={5} value={detailDraft} onChange={(event) => setDetailDraft(event.target.value)} />
+        </label>
+        <div style={styles.drawerActions}>
+          <button
+            type="button"
+            className="tb-btn tb-btn-primary"
+            disabled={busy || !titleDraft.trim() || (titleDraft.trim() === task.title && detailDraft === task.detail)}
+            onClick={() => update({ id: task.id, title: titleDraft.trim(), detail: detailDraft })}
+          >
+            {L('保存修改', 'Save changes')}
+          </button>
+        </div>
+      </div>
+
+      <div style={styles.drawerSection}>
+        <div style={styles.sectionTitle}>{L('动态（{n}）', 'Activity ({n})', { n: log.length })}</div>
+        {log.length === 0 ? (
+          <div style={styles.detailEmpty}>{L('（还没有动态）', '(no activity yet)')}</div>
+        ) : (
+          <ul style={styles.logList}>
+            {log.map((entry, index) => (
+              <li key={`${entry.at}-${index}`} style={styles.logRow}>
+                <span style={styles.logDot} />
+                <span style={styles.logMain}>
+                  <span style={styles.logEvent}>{eventLabel(entry.event)}</span>
+                  <span style={styles.logBy}>{entry.by}</span>
+                  <span style={styles.logTime} title={entry.at}>{relTime(entry.at)}</span>
+                  {entry.note ? <span style={styles.logNote}>{entry.note}</span> : null}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </aside>
+  )
+}
+
+/** The new-task form, shown in the same drawer slot as the task detail. */
+function CreateForm({ state, store, onClose }: { state: TaskboardState; store: TaskboardStore; onClose(): void }): JSX.Element {
+  const [title, setTitle] = useState('')
+  const [detail, setDetail] = useState('')
+  const [priority, setPriority] = useState<TaskPriority>('medium')
+  const [assignee, setAssignee] = useState('')
+
+  const submit = async (): Promise<void> => {
+    if (!title.trim() || state.busy) return
+    const ok = await store.create({
+      title: title.trim(),
+      detail,
+      priority,
+      assignee: assignee.trim() ? assignee.trim() : null,
+    })
+    // On failure the store's error strip explains it and the draft survives.
+    if (ok) onClose()
+  }
+
+  return (
+    <aside style={styles.drawer}>
+      <div style={styles.drawerHead}>
+        <span style={styles.drawerTitle}>{L('新建任务', 'New task')}</span>
+        <button type="button" className="tb-iconbtn" onClick={onClose} title={L('关闭', 'Close')}>
+          ×
+        </button>
+      </div>
+      <form
+        style={styles.createForm}
+        onSubmit={(event) => {
+          event.preventDefault()
+          void submit()
+        }}
+      >
+        <label style={styles.field}>
+          <span style={styles.fieldLabel}>{L('标题（必填）', 'Title (required)')}</span>
+          <input className="tb-input" value={title} autoFocus onChange={(event) => setTitle(event.target.value)} />
+        </label>
+        <label style={styles.field}>
+          <span style={styles.fieldLabel}>{L('描述', 'Details')}</span>
+          <textarea className="tb-textarea" rows={6} value={detail} onChange={(event) => setDetail(event.target.value)} />
+        </label>
+        <div style={styles.field}>
+          <span style={styles.fieldLabel}>{L('优先级', 'Priority')}</span>
+          <span style={styles.fieldRow}>
+            {(['high', 'medium', 'low'] as const).map((value) => (
+              <button key={value} type="button" className={priority === value ? 'tb-chip active' : 'tb-chip'} onClick={() => setPriority(value)}>
+                {priorityLabel(value)}
+              </button>
+            ))}
+          </span>
+        </div>
+        <label style={styles.field}>
+          <span style={styles.fieldLabel}>{L('指派人（留空 = 进待认领池）', 'Assignee (empty = into the pool)')}</span>
+          <input
+            className="tb-input"
+            value={assignee}
+            placeholder={L('例如 kimi', 'e.g. kimi')}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => setAssignee(event.target.value)}
+          />
+        </label>
+        <div style={styles.drawerActions}>
+          <button type="submit" className="tb-btn tb-btn-primary" disabled={state.busy || !title.trim()}>
+            {state.busy ? L('创建中…', 'Creating…') : L('创建任务', 'Create task')}
+          </button>
+          <button type="button" className="tb-btn" onClick={onClose}>
+            {L('取消', 'Cancel')}
+          </button>
+        </div>
+      </form>
+    </aside>
+  )
+}
+
+// ------------------------------------------------------------------ styles
+
+const styles: Record<string, CSSProperties> = {
+  root: {
+    position: 'relative',
+    display: 'flex',
+    flexDirection: 'column',
+    flex: 1,
+    height: '100%',
+    minHeight: 0,
+    overflow: 'hidden',
+    color: FG,
+    background: BG,
+    fontSize: 13,
+  },
+  topbar: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '10px 14px',
+    borderBottom: `1px solid ${BORDER}`,
+    flexShrink: 0,
+  },
+  topbarTitle: { fontSize: 14, fontWeight: 600 },
+  topbarPath: {
+    color: DIM,
+    fontSize: 11,
+    maxWidth: 260,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  topbarCount: { color: DIM, fontSize: 11, flexShrink: 0 },
+  topbarSpacer: { flex: 1 },
+  noticeError: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    margin: '8px 14px 0',
+    padding: '5px 6px 5px 12px',
+    borderRadius: 8,
+    background: 'rgba(220,38,38,0.12)',
+    color: DANGER,
+    fontSize: 12,
+    flexShrink: 0,
+  },
+  noticeText: { minWidth: 0, overflowWrap: 'anywhere' },
+  lanes: {
+    flex: 1,
+    minHeight: 0,
+    display: 'flex',
+    gap: 10,
+    padding: 12,
+    overflowX: 'auto',
+    overflowY: 'hidden',
+  },
+  column: {
+    width: 260,
+    flexShrink: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    minHeight: 0,
+    background: BG_SUNK,
+    borderRadius: 8,
+  },
+  columnHead: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '8px 10px 4px',
+    flexShrink: 0,
+  },
+  columnTitle: { fontSize: 12, fontWeight: 600 },
+  columnCount: {
+    fontSize: 10,
+    color: DIM,
+    border: `1px solid ${BORDER}`,
+    borderRadius: 999,
+    padding: '0 7px',
+  },
+  columnBody: {
+    flex: 1,
+    minHeight: 0,
+    overflowY: 'auto',
+    overflowX: 'hidden',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    padding: 8,
+  },
+  columnEmpty: { color: FAINT, fontSize: 11, textAlign: 'center', padding: '14px 0' },
+  cardTop: { display: 'flex', alignItems: 'flex-start', gap: 6, minWidth: 0 },
+  dot: { width: 8, height: 8, borderRadius: 4, marginTop: 4, flexShrink: 0 },
+  cardTitle: { flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 500, lineHeight: 1.45, overflowWrap: 'anywhere' },
+  cardTitleCancelled: { textDecoration: 'line-through', color: DIM },
+  cardCancelled: { opacity: 0.65 },
+  cardMeta: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, paddingLeft: 14 },
+  cardAge: { marginLeft: 'auto', color: FAINT, fontSize: 10, flexShrink: 0 },
+  cardTags: { display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6, paddingLeft: 14 },
+  center: {
+    margin: 'auto',
+    padding: 24,
+    maxWidth: 520,
+    textAlign: 'center',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+    alignItems: 'center',
+  },
+  centerText: { color: DIM, fontSize: 12, lineHeight: 1.6, margin: 0 },
+  errorText: { color: DANGER, fontSize: 12, lineHeight: 1.6, margin: 0, whiteSpace: 'pre-wrap' },
+  backdrop: { position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.18)', zIndex: 20 },
+  drawer: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: 380,
+    maxWidth: '92%',
+    background: BG,
+    borderLeft: `1px solid ${BORDER_STRONG}`,
+    boxShadow: '-8px 0 24px rgba(0,0,0,0.12)',
+    zIndex: 21,
+    overflowY: 'auto',
+    overflowX: 'hidden',
+    padding: 14,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+    boxSizing: 'border-box',
+  },
+  drawerHead: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
+  drawerTitle: { fontSize: 14, fontWeight: 600, lineHeight: 1.45, overflowWrap: 'anywhere' },
+  drawerMeta: { display: 'flex', flexWrap: 'wrap', gap: '2px 10px', color: DIM, fontSize: 11 },
+  drawerActions: { display: 'flex', gap: 6, flexWrap: 'wrap' },
+  drawerSection: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    borderTop: `1px solid ${BORDER}`,
+    paddingTop: 10,
+  },
+  sectionTitle: { fontSize: 11, fontWeight: 600, color: DIM },
+  detailBody: {
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    fontSize: 12.5,
+    lineHeight: 1.65,
+    maxWidth: '70ch',
+  },
+  detailEmpty: { color: FAINT, fontSize: 11 },
+  field: { display: 'flex', flexDirection: 'column', gap: 3 },
+  fieldRow: { display: 'flex', alignItems: 'center', gap: 6 },
+  fieldLabel: { color: DIM, fontSize: 10 },
+  createForm: { display: 'flex', flexDirection: 'column', gap: 10 },
+  logList: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6 },
+  logRow: { display: 'flex', gap: 8, alignItems: 'flex-start' },
+  logDot: { width: 6, height: 6, borderRadius: 3, background: BORDER_STRONG, marginTop: 5, flexShrink: 0 },
+  logMain: { display: 'flex', flexWrap: 'wrap', gap: '1px 8px', alignItems: 'baseline', minWidth: 0, fontSize: 11.5 },
+  logEvent: { fontWeight: 600 },
+  logBy: { color: DIM },
+  logTime: { color: FAINT, fontSize: 10 },
+  logNote: { flexBasis: '100%', color: DIM, fontSize: 11, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
+}
