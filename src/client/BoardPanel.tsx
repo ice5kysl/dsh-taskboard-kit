@@ -7,8 +7,9 @@
  * from the contract's BOARD_COLUMNS); 已关闭 renders collapsed as a narrow
  * vertical strip on the right edge until clicked (store.showClosed). The「?
  * 指南」top-bar button opens a centered in-panel guide overlay — what the
- * board is, how humans drive it, and copyable templates for getting kimi /
- * Claude Code on board (guide.ts). Cards carry a priority dot and a 价值度
+ * board is, how humans drive it, copyable templates for getting kimi /
+ * Claude Code on board, and self-monitoring hook configs so those agents
+ * check the board unprompted (guide.ts). Cards carry a priority dot and a 价值度
  * badge (◆½…◆8), and are HTML5-draggable between lanes — a drop compiles
  * into the shared `planDrop` op sequence, never a hand-rolled status mapping;
  * a drop on 已指派 opens the lane's roster picker (no prompt, no typing — the
@@ -48,7 +49,7 @@ import {
 } from '../shared/types.ts'
 import { planDrop, type DropOp } from '../shared/dnd.ts'
 import { knownActors } from './actors.ts'
-import { conventionSnippet, dispatchSnippet } from './guide.ts'
+import { conventionSnippet, dispatchSnippet, hookSnippetClaude, hookSnippetKimi } from './guide.ts'
 import { L } from './locale.ts'
 import type { TaskboardState, TaskboardStore } from './store.ts'
 
@@ -1332,6 +1333,23 @@ function GuideOverlay({ cli, cwd, boardFile, onClose }: { cli: string | null; cw
             </ul>
             <SnippetBlock label={L('约定模板（存为 AGENTS.md）', 'Convention template (save as AGENTS.md)')} text={conventionSnippet(cli, cwd)} />
             <SnippetBlock label={L('派活模板（msg9 / 粘贴）', 'Dispatch template (msg9 / paste)')} text={dispatchSnippet(cli, cwd)} />
+          </section>
+
+          <section style={styles.guideSection}>
+            <div style={styles.guideH}>{L('自监控 hook（不用 msg9 催）', 'Self-monitoring hooks (no msg9 nudging needed)')}</div>
+            <ul style={styles.guideList}>
+              <li>
+                {L('SessionStart = 会话开始自动查板；UserPromptSubmit = 每次发消息顺带查。没有指派时静默不打扰。', 'SessionStart checks the board when a session starts; UserPromptSubmit re-checks on every message. Silent when nothing is assigned — no nagging.')}
+              </li>
+              <li>
+                {L('没板的项目零打扰：命令自带 [ -f .dsh/taskboard.json ] 守卫。', 'Projects without a board stay untouched: the command is guarded by [ -f .dsh/taskboard.json ].')}
+              </li>
+              <li>
+                {L('改完配置后开新会话生效。', 'Takes effect in a new session after the config change.')}
+              </li>
+            </ul>
+            <SnippetBlock label={L('kimi-code（追加到 ~/.kimi-code/config.toml）', 'kimi-code (append to ~/.kimi-code/config.toml)')} text={hookSnippetKimi(cli)} />
+            <SnippetBlock label={L('Claude Code（合并进 ~/.claude/settings.json）', 'Claude Code (merge into ~/.claude/settings.json)')} text={hookSnippetClaude(cli)} />
           </section>
         </div>
       </div>

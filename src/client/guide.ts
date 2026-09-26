@@ -2,8 +2,10 @@
  * Copy templates of the guide overlay — pure functions so the panel, the
  * tests and any future surface interpolate the same text.
  *
- * Both templates teach an external agent (kimi / Claude Code) how to join
- * this workspace's board: never edit the JSON by hand, always drive the CLI.
+ * The first two teach an external agent (kimi / Claude Code) how to join this
+ * workspace's board: never edit the JSON by hand, always drive the CLI. The
+ * hook snippets go one step further — the agent checks the board on its own
+ * (SessionStart / UserPromptSubmit) without anyone mailing it first.
  * `cli` is the absolute path the host reports; when it is unknown the
  * templates degrade to a placeholder the user can search-replace once.
  *
@@ -57,5 +59,50 @@ export function dispatchSnippet(cli: string | null, cwd: string): string {
 3) Flow: claim pool tasks first; start tasks assigned to you; when done submit + comment a handoff; reviewers approve/reject (a reject must come with a comment)
 4) Your name = <name> (use it for both --by and assignee)
 5) Your first task: T-__ (or pick one yourself from the claimable pool)`,
+  )
+}
+
+/**
+ * The self-monitoring hook command (one shared shape for both harnesses):
+ * guarded by the board file so board-less projects stay untouched, and
+ * silent when the board has nothing assigned to this actor — SessionStart
+ * and UserPromptSubmit inject stdout into the agent's context, so noise is
+ * the enemy. The echo stays Chinese in every locale: it is a prompt for the
+ * agent on the other side, not UI prose.
+ */
+function hookCommand(bin: string, name: string): string {
+  return `[ -f .dsh/taskboard.json ] && { OUT=$(node ${bin} list --cwd "$PWD" --assignee ${name} 2>/dev/null); [ -n "$OUT" ] && [ "$OUT" != "(board is empty)" ] && echo "任务看板 · 指派给 ${name}：" && echo "$OUT"; } || true`
+}
+
+/** kimi-code hooks (append to ~/.kimi-code/config.toml): two TOML blocks. */
+export function hookSnippetKimi(cli: string | null): string {
+  const bin = cli ?? CLI_FALLBACK
+  const command = hookCommand(bin, 'kimi')
+  return `${L('# 追加到 ~/.kimi-code/config.toml —— 任务看板自监控（名字 = kimi）', '# Append to ~/.kimi-code/config.toml — task board self-monitoring (name = kimi)')}
+[[hooks]]
+event = "SessionStart"
+command = '${command}'
+timeout = 10
+
+[[hooks]]
+event = "UserPromptSubmit"
+command = '${command}'
+timeout = 10`
+}
+
+/** Claude Code hooks (merge into ~/.claude/settings.json). Serialized with
+ *  JSON.stringify so the embedded shell command's quotes are always escaped
+ *  correctly — never hand-write the escaping. */
+export function hookSnippetClaude(cli: string | null): string {
+  const command = hookCommand(cli ?? CLI_FALLBACK, 'claude')
+  return JSON.stringify(
+    {
+      hooks: {
+        SessionStart: [{ hooks: [{ type: 'command', command }] }],
+        UserPromptSubmit: [{ hooks: [{ type: 'command', command }] }],
+      },
+    },
+    null,
+    2,
   )
 }

@@ -267,6 +267,31 @@ await check('guide snippets: interpolate cli/cwd, degrade on a null cli', () => 
   assert.ok(dispFallback.includes('<taskboard 插件目录>/bin/taskboard.mjs'), 'null cli degrades to the placeholder')
 })
 
+await check('guide hook snippets: guarded, assignee-tagged, parseable', () => {
+  assert.equal(typeof client.hookSnippetKimi, 'function')
+  assert.equal(typeof client.hookSnippetClaude, 'function')
+
+  const kimi = client.hookSnippetKimi('/a/bin/taskboard.mjs')
+  assert.ok(kimi.includes('/a/bin/taskboard.mjs'), 'cli path interpolated')
+  assert.ok(kimi.includes('[ -f .dsh/taskboard.json ]'), 'board-file guard present')
+  assert.ok(kimi.includes('--assignee kimi'), 'assignee kimi in the command')
+  assert.equal(kimi.match(/\[\[hooks\]\]/g).length, 2, 'two [[hooks]] blocks (SessionStart + UserPromptSubmit)')
+  assert.ok(kimi.includes('event = "SessionStart"'))
+  assert.ok(kimi.includes('event = "UserPromptSubmit"'))
+  assert.ok(kimi.includes('--cwd "$PWD"'), 'hook runs against the session project dir')
+  assert.ok(client.hookSnippetKimi(null).includes('<taskboard 插件目录>/bin/taskboard.mjs'), 'null cli degrades to the placeholder')
+
+  const claude = client.hookSnippetClaude('/a/bin/taskboard.mjs')
+  const parsed = JSON.parse(claude) // must be valid JSON (quotes escaped by construction)
+  assert.equal(parsed.hooks.SessionStart[0].hooks[0].type, 'command')
+  assert.ok(parsed.hooks.SessionStart[0].hooks[0].command.includes('/a/bin/taskboard.mjs'), 'cli path in the SessionStart command')
+  assert.ok(parsed.hooks.SessionStart[0].hooks[0].command.includes('[ -f .dsh/taskboard.json ]'), 'board-file guard in SessionStart')
+  assert.ok(parsed.hooks.SessionStart[0].hooks[0].command.includes('--assignee claude'), 'assignee claude in SessionStart')
+  assert.ok(parsed.hooks.UserPromptSubmit[0].hooks[0].command.includes('--assignee claude'), 'UserPromptSubmit carries the same command in full')
+  assert.equal(parsed.hooks.UserPromptSubmit[0].hooks[0].command, parsed.hooks.SessionStart[0].hooks[0].command, 'both events carry the full identical command (no "ditto" shorthand)')
+  assert.ok(client.hookSnippetClaude(null).includes('插件目录'), 'null cli degrades to the placeholder')
+})
+
 // ------------------------------------------------------------------ done
 
 console.log(failed === 0 ? 'all checks passed' : `${failed} check(s) failed`)

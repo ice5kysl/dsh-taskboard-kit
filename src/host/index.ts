@@ -3,9 +3,10 @@
  *
  * Two faces, one board:
  *
- *   • host  — the taskboard_* model tools and the `/dsh-taskboard/*` bridge
- *             the browser kanban calls (this package), plus a session-start
- *             notice when the board has work waiting;
+ *   • host  — the taskboard_* model tools, the `/dsh-taskboard/*` bridge the
+ *             browser kanban calls, a session-start notice when the board has
+ *             work waiting, and an fs.watch board-change watcher that pushes
+ *             changes into live sessions (context only, never a wakeup);
  *   • web   — the kanban tab itself (see `src/client`).
  *
  * Model: **one board per dsh workspace**, its only source of truth the JSON
@@ -19,8 +20,9 @@ import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { BRIDGE_PREFIX, createTaskboardBridge, defaultBridgeDeps } from './http.ts'
 import { L } from './locale.ts'
-import { listTasks } from './store.ts'
+import { listTasks, loadBoard } from './store.ts'
 import { registerTaskboardTools } from './tools.ts'
+import { createBoardWatcher } from './watch.ts'
 import { resolveCwd } from './workspace.ts'
 
 export const name = 'taskboard-kit'
@@ -46,6 +48,7 @@ export {
 export { resolveCwd } from './workspace.ts'
 export { L } from './locale.ts'
 export { TASK_VALUES } from '../shared/types.ts'
+export { createBoardWatcher, diffBoards } from './watch.ts'
 
 /** The slice of `@deepseek-ai/dsh-host-webserver` this plugin uses. */
 interface WebServerLike {
@@ -76,6 +79,12 @@ interface AgentLike {
 
 interface SessionStartPayload {
   agent: AgentLike
+}
+
+/** The slice of the agents service the board watcher consumes. */
+interface AgentsLike {
+  get(id: string): AgentLike | undefined
+  list(): AgentLike[]
 }
 
 /** Build the plugin notice dsh's agent contract expects (UserMessage). */
@@ -132,7 +141,8 @@ export function apply(ctx: Context): void {
         '（打回时用 taskboard_comment 写明原因）；被打回（回到 in_progress）改完再 submit；\n' +
         '- 进展/完成即时 taskboard_update（note 记进展）；实现发现、交接说明、测试反馈用 taskboard_comment（不改状态），' +
         '接手任务前先 taskboard_get 看留言和时间线；\n' +
-        '- 不要的任务用 action=close（旧名 cancel 是它的别名）；claim 冲突 = 别人已经占了：换别的待认领任务，或向人类请示，不要硬做同一个。',
+        '- 不要的任务用 action=close（旧名 cancel 是它的别名）；claim 冲突 = 别人已经占了：换别的待认领任务，或向人类请示，不要硬做同一个。\n' +
+        '- 看板变化（新指派给你的任务、审核结果、新留言）会自动通知你，无需轮询。',
         '## Task board\n' +
         'This workspace has a shared task board (taskboard_* tools); the human watches the SAME board in the kanban tab. Rules:\n' +
         '- At session start, call taskboard_list: check the claimable pool (column=pool), tasks delegated to you, work in progress, and the review queue (column=review);\n' +
@@ -143,7 +153,8 @@ export function apply(ctx: Context): void {
         '- Report progress as it happens with taskboard_update (note to log progress); leave findings, handoff notes or test feedback ' +
         'with taskboard_comment (state untouched); before picking up a task, taskboard_get first to read its comments and timeline;\n' +
         '- Close unwanted tasks with action=close (cancel is its legacy alias); a claim conflict means someone else got there first: ' +
-        'pick another pool task or ask the human — never work the same task anyway.',
+        'pick another pool task or ask the human — never work the same task anyway.\n' +
+        '- Board changes (tasks assigned to you, review verdicts, new comments) are pushed to you automatically — no polling needed.',
       ),
     })
     log.info('taskboard rules added to the system prompt')
@@ -177,4 +188,36 @@ export function apply(ctx: Context): void {
       ))
     })().catch((error) => log.info(`session-start board notice failed: ${(error as Error)?.message ?? String(error)}`))
   })
+
+  // The board-change watcher: one fs.watch per live session's .dsh/ directory,
+  // diffs on change, and context-only notices merged under a per-workspace
+  // storm window. TASKBOARD_WATCH=0 disables the whole thing (tools and the
+  // bridge keep working either way).
+  ctx.inject(['agents'], (child) => {
+    const agents = (child as unknown as { agents?: AgentsLike }).agents
+    if (!agents) return
+    if (process.env.TASKBOARD_WATCH === '0') return
+    const watcher = createBoardWatcher({
+      loadBoard,
+      resolveAgents: () => agents.list().map((agent) => ({ id: agent.id, cwd: cwdOfAgentSession(child, agent.id) })),
+      injectNotice: (agentId, text) => {
+        const agent = agents.get(agentId)
+        agent?.inject(pluginNotice(randomUUID(), text, text.split('\n')[1] ?? 'board change'))
+      },
+      log: (message) => log.info(message),
+    })
+    child.effect(() => watcher.start(), 'taskboard-kit: board watcher')
+    log.info('taskboard board watcher started (fs.watch on live sessions\' boards)')
+  })
+}
+
+/** The session's cwd, or undefined — the watcher must NOT inherit the
+ * process-cwd fallback resolveCwd applies (that would watch the wrong board). */
+function cwdOfAgentSession(ctx: Context, agentId: string): string | undefined {
+  try {
+    const sessions = (ctx as unknown as { sessions?: { get(id: string): { header?: { cwd?: string } } | undefined } }).sessions
+    return sessions?.get(agentId)?.header?.cwd
+  } catch {
+    return undefined
+  }
 }

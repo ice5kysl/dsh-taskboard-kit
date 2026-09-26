@@ -17,6 +17,7 @@ One local task board per dsh workspace. Agents create, claim and progress tasks 
   - `taskboard_get` — full task detail with the event timeline and the comment thread
 - **A「看板 / Board」conversation view** in dsh web: six swimlanes (pool · assigned · in progress · review · done · closed), cards with priority / value / assignee / age / tags, a detail drawer with the event log and comments, and one-click claim / start / submit / approve / reject / close / reassign.
 - **Session-start awareness**: the agent is told how many tasks are waiting and in progress, and a system-prompt section teaches the claim-before-work rules.
+- **Board-change push**: an fs.watch watcher on every live session's board notifies the agent (context-only, never a wakeup) when a task is assigned to it, a verdict lands on its task, a pool task appears, or someone comments on its work — no polling, no msg9 needed. Changes inside a 5s storm window merge into one notice.
 
 ## The board file
 
@@ -94,6 +95,8 @@ taskboard create --title "…" --priority high --value 3 --by claude
 |---|---|
 | `TASKBOARD_ACTOR` | default actor name the agent's tools write into the log (default `dsh-agent`) |
 | `TASKBOARDKIT_LOCALE` | `en` forces English tool output (default Chinese) |
+| `TASKBOARD_WATCH` | `0` disables the board-change watcher entirely |
+| `TASKBOARD_WATCH_NAMES` | comma-separated actor names the watcher treats as "me" (default `dsh,dsh-agent`) |
 
 ## Browser bridge
 

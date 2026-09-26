@@ -61,6 +61,10 @@ apply({
         },
       })
     }
+    if (dep === 'agents') {
+      // No live agents in this harness: the board watcher stays off, tools unaffected.
+      return callback({})
+    }
     throw new Error(`unexpected soft dependency: ${dep}`)
   },
   on: (name, listener) => {
