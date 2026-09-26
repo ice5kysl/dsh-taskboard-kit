@@ -251,13 +251,14 @@ await check('guide snippets: interpolate cli/cwd, degrade on a null cli', () => 
   assert.equal(typeof client.conventionSnippet, 'function')
   assert.equal(typeof client.dispatchSnippet, 'function')
 
-  const conv = client.conventionSnippet('/a/bin/taskboard.mjs', '/w')
+  const conv = client.conventionSnippet('/a/bin/taskboard.mjs')
   assert.ok(conv.includes('/a/bin/taskboard.mjs'), 'cli path interpolated')
-  assert.ok(conv.includes('--cwd /w'), 'cwd interpolated')
+  assert.ok(conv.includes('--cwd "$PWD"'), 'convention is portable across projects via $PWD')
+  assert.ok(!conv.includes('--cwd /'), 'no frozen absolute cwd baked into the convention template')
 
-  const fallback = client.conventionSnippet(null, '/w')
+  const fallback = client.conventionSnippet(null)
   assert.ok(fallback.includes('<taskboard 插件目录>/bin/taskboard.mjs'), 'null cli degrades to the placeholder')
-  assert.ok(fallback.includes('--cwd /w'), 'cwd still interpolated')
+  assert.ok(fallback.includes('--cwd "$PWD"'), 'still portable without a cli path')
 
   const disp = client.dispatchSnippet('/a/bin/taskboard.mjs', '/w')
   assert.ok(disp.includes('assignee'), 'dispatch teaches the assignee lookup')
@@ -265,6 +266,14 @@ await check('guide snippets: interpolate cli/cwd, degrade on a null cli', () => 
   assert.ok(disp.includes('/a/bin/taskboard.mjs'), 'cli path interpolated')
   const dispFallback = client.dispatchSnippet(null, '/w')
   assert.ok(dispFallback.includes('<taskboard 插件目录>/bin/taskboard.mjs'), 'null cli degrades to the placeholder')
+})
+
+await check('guideProjectDir: the board file location wins over the detected cwd', () => {
+  assert.equal(typeof client.guideProjectDir, 'function')
+  assert.equal(client.guideProjectDir('/proj/x/.dsh/taskboard.json', '/elsewhere'), '/proj/x', 'board_file is authoritative')
+  assert.equal(client.guideProjectDir(null, '/session/cwd'), '/session/cwd', 'cwd is the fallback')
+  assert.equal(client.guideProjectDir(null, null), '<workspace>', 'last-resort placeholder')
+  assert.equal(client.guideProjectDir('/odd/path/board.json', '/w'), '/w', 'unrecognized board_file shape falls back to cwd')
 })
 
 await check('guide hook snippets: guarded, assignee-tagged, parseable', () => {

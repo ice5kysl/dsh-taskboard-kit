@@ -18,27 +18,45 @@ import { L } from './locale.ts'
  *  string is deliberately locale-independent: it is a path, not prose. */
 export const CLI_FALLBACK = '<taskboard 插件目录>/bin/taskboard.mjs'
 
-/** The AGENTS.md convention template (方式 A: the workspace convention file). */
-export function conventionSnippet(cli: string | null, cwd: string): string {
+/**
+ * The project directory the guide's snippets name. The board file's location
+ * (reported by the host, which resolved it server-side) is authoritative; the
+ * session cwd detected in the browser is only a fallback, so the snippets
+ * always describe the project whose board is actually on screen.
+ */
+export function guideProjectDir(boardFile: string | null, cwd: string | null): string {
+  const suffix = '/.dsh/taskboard.json'
+  if (boardFile?.endsWith(suffix)) return boardFile.slice(0, -suffix.length)
+  if (boardFile) {
+    const cut = boardFile.lastIndexOf('/.dsh/')
+    if (cut > 0) return boardFile.slice(0, cut)
+  }
+  return cwd ?? '<workspace>'
+}
+
+/** The AGENTS.md convention template (方式 A: the workspace convention file).
+ *  Commands run from the project root, so `$PWD` keeps the file portable —
+ *  the same text works verbatim in every project. */
+export function conventionSnippet(cli: string | null): string {
   const bin = cli ?? CLI_FALLBACK
   return L(
     `## 任务看板（所有 Agent 必读）
 本目录有一块共享任务看板，唯一真实来源是 .dsh/taskboard.json。不要手改 JSON，统一用 CLI：
 TB=${bin}
-node $TB list --cwd ${cwd} --assignee <你的名字>   # 会话开始先查指派给你的任务
-node $TB claim <id> --cwd ${cwd} --by <你的名字>   # 认领（原子，失败退出码 3 = 已被抢）
-node $TB update <id> --cwd ${cwd} --action start|stop|submit|done --by <你的名字>
-node $TB update <id> --cwd ${cwd} --action approve|reject --note "审核意见" --by <你的名字>
-node $TB comment <id> --cwd ${cwd} --text "…" --by <你的名字>
+node $TB list --cwd "$PWD" --assignee <你的名字>   # 会话开始先查指派给你的任务
+node $TB claim <id> --cwd "$PWD" --by <你的名字>   # 认领（原子，失败退出码 3 = 已被抢）
+node $TB update <id> --cwd "$PWD" --action start|stop|submit|done --by <你的名字>
+node $TB update <id> --cwd "$PWD" --action approve|reject --note "审核意见" --by <你的名字>
+node $TB comment <id> --cwd "$PWD" --text "…" --by <你的名字>
 约定：做完 submit 并 comment 交接；打回必须 comment 原因；价值度 --value 1/2|1|2|3|5|8；你的名字 = harness 名（kimi/claude/dsh）。`,
     `## Task board (required reading for every agent)
 This directory has a shared task board; the single source of truth is .dsh/taskboard.json. Never edit the JSON by hand — always use the CLI:
 TB=${bin}
-node $TB list --cwd ${cwd} --assignee <your-name>   # at session start, check the tasks assigned to you
-node $TB claim <id> --cwd ${cwd} --by <your-name>   # claim (atomic; exit code 3 = already taken)
-node $TB update <id> --cwd ${cwd} --action start|stop|submit|done --by <your-name>
-node $TB update <id> --cwd ${cwd} --action approve|reject --note "review note" --by <your-name>
-node $TB comment <id> --cwd ${cwd} --text "…" --by <your-name>
+node $TB list --cwd "$PWD" --assignee <your-name>   # at session start, check the tasks assigned to you
+node $TB claim <id> --cwd "$PWD" --by <your-name>   # claim (atomic; exit code 3 = already taken)
+node $TB update <id> --cwd "$PWD" --action start|stop|submit|done --by <your-name>
+node $TB update <id> --cwd "$PWD" --action approve|reject --note "review note" --by <your-name>
+node $TB comment <id> --cwd "$PWD" --text "…" --by <your-name>
 Rules: when done, submit and comment a handoff; a reject must come with a comment; value --value 1/2|1|2|3|5|8; your name = your harness name (kimi/claude/dsh).`,
   )
 }

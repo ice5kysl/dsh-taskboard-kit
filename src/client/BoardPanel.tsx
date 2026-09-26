@@ -49,7 +49,7 @@ import {
 } from '../shared/types.ts'
 import { planDrop, type DropOp } from '../shared/dnd.ts'
 import { knownActors } from './actors.ts'
-import { conventionSnippet, dispatchSnippet, hookSnippetClaude, hookSnippetKimi } from './guide.ts'
+import { conventionSnippet, dispatchSnippet, guideProjectDir, hookSnippetClaude, hookSnippetKimi } from './guide.ts'
 import { L } from './locale.ts'
 import type { TaskboardState, TaskboardStore } from './store.ts'
 
@@ -508,7 +508,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
       {guideOpen && (
         <GuideOverlay
           cli={state.cli}
-          cwd={state.cwd ?? '<workspace>'}
+          cwd={guideProjectDir(state.boardFile, state.cwd)}
           boardFile={state.boardFile}
           onClose={() => setGuideOpen(false)}
         />
@@ -1318,7 +1318,7 @@ function GuideOverlay({ cli, cwd, boardFile, onClose }: { cli: string | null; cw
               <li>
                 <strong>{L('方式 A · 工作区约定文件（最省心）', 'A · Workspace convention file (easiest)')}</strong>
                 <br />
-                {L('把下面的「约定模板」存成 workspace 根目录的 AGENTS.md——他们每次会话开始都会读到。', 'Save the convention template below as AGENTS.md in the workspace root — they read it at the start of every session.')}
+                {L('把下面的「约定模板」存成 workspace 根目录的 AGENTS.md——他们每次会话开始都会读到。模板里的目录一律用 $PWD，任何项目原样可用，不用改。', 'Save the convention template below as AGENTS.md in the workspace root — they read it at the start of every session. Paths use $PWD, so the file works verbatim in any project.')}
               </li>
               <li>
                 <strong>{L('方式 B · msg9 邮件派活', 'B · Dispatch over msg9 mail')}</strong>
@@ -1331,7 +1331,7 @@ function GuideOverlay({ cli, cwd, boardFile, onClose }: { cli: string | null; cw
                 {L('复制「派活模板」，粘进他们会话的输入框即可。', 'Copy the dispatch template and paste it into their session input.')}
               </li>
             </ul>
-            <SnippetBlock label={L('约定模板（存为 AGENTS.md）', 'Convention template (save as AGENTS.md)')} text={conventionSnippet(cli, cwd)} />
+            <SnippetBlock label={L('约定模板（存为 AGENTS.md）', 'Convention template (save as AGENTS.md)')} text={conventionSnippet(cli)} />
             <SnippetBlock label={L('派活模板（msg9 / 粘贴）', 'Dispatch template (msg9 / paste)')} text={dispatchSnippet(cli, cwd)} />
           </section>
 
