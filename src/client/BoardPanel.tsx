@@ -9,15 +9,16 @@
  * 指南」top-bar button opens a centered in-panel guide overlay — what the
  * board is, how humans drive it, copyable templates for getting kimi /
  * Claude Code on board, and self-monitoring hook configs so those agents
- * check the board unprompted (guide.ts). Cards carry a priority dot and a 价值度
- * badge (◆½…◆8), and are HTML5-draggable between lanes — a drop compiles
- * into the shared `planDrop` op sequence, never a hand-rolled status mapping;
- * a drop on 已指派 opens the lane's roster picker (no prompt, no typing — the
- * roster comes from the board itself, see actors.ts). Clicking a card opens a
- * 560px detail drawer that is absolutely positioned INSIDE the panel (no
- * portal — the shell's overlay layer would lose the --dsw-alias-* theme
- * tokens), tabbed into 详情 (read-only until 编辑 is hit), 评论 (the thread +
- * composer) and 动态 (the log timeline).
+ * check the board unprompted (guide.ts). Cards carry a ref (#N), a priority
+ * dot and a 价值度 badge (◆½…◆8), and are HTML5-draggable between lanes — a
+ * drop compiles into the shared `planDrop` op sequence, never a hand-rolled
+ * status mapping; a drop on 已指派 opens the lane's roster picker (no prompt,
+ * no typing — the roster comes from the board itself, see actors.ts).
+ * Clicking a card opens a 560px detail drawer that is absolutely positioned
+ * INSIDE the panel (no portal — the shell's overlay layer would lose the
+ * --dsw-alias-* theme tokens), tabbed into 详情 (read-only until 编辑 is hit;
+ * the detail renders as sanitized markdown, markdown.ts), 评论 (same markdown
+ * pipeline) and 动态 (the log timeline).
  *
  * It is a pure projection of the store (`useSyncExternalStore`) — every
  * action goes through `TaskboardStore`, so the model tools, the view and the
@@ -51,6 +52,7 @@ import { planDrop, type DropOp } from '../shared/dnd.ts'
 import { knownActors } from './actors.ts'
 import { conventionSnippet, dispatchSnippet, guideProjectDir, hookSnippetClaude, hookSnippetKimi } from './guide.ts'
 import { L } from './locale.ts'
+import { renderMarkdown } from './markdown.ts'
 import type { TaskboardState, TaskboardStore } from './store.ts'
 
 /** Props handed to the view: injected store + the standard slot shares. */
@@ -137,6 +139,19 @@ const TB_CSS = `
 .tb-tab { border: none; border-bottom: 2px solid transparent; background: transparent; color: ${DIM}; padding: 6px 2px; font-size: 12px; font-family: inherit; cursor: pointer; }
 .tb-tab:hover { color: ${FG}; }
 .tb-tab.active { color: ${ACCENT}; border-bottom-color: ${ACCENT}; font-weight: 600; }
+/* Rendered markdown (drawer detail + comments): compact, both themes. */
+.tb-md { overflow-wrap: break-word; min-width: 0; }
+.tb-md h1, .tb-md h2, .tb-md h3, .tb-md h4, .tb-md h5, .tb-md h6 { margin: 0.7em 0 0.35em; line-height: 1.35; font-weight: 600; }
+.tb-md h1 { font-size: 16px; } .tb-md h2 { font-size: 14.5px; } .tb-md h3 { font-size: 13.5px; } .tb-md h4, .tb-md h5, .tb-md h6 { font-size: 12.5px; }
+.tb-md p { margin: 0.4em 0; }
+.tb-md ul, .tb-md ol { margin: 0.3em 0; padding-left: 1.35em; }
+.tb-md li { margin: 0.12em 0; }
+.tb-md a { color: ${ACCENT}; text-decoration: none; }
+.tb-md a:hover { text-decoration: underline; }
+.tb-md code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; background: ${HOVER_BG}; padding: 1px 5px; border-radius: 5px; }
+.tb-md pre { background: ${BG_SUNK}; border: 1px solid ${BORDER}; border-radius: 8px; padding: 9px 11px; overflow-x: auto; margin: 0.5em 0; line-height: 1.6; tab-size: 2; }
+.tb-md pre code { background: transparent; padding: 0; display: block; white-space: pre; }
+.tb-md blockquote { margin: 0.5em 0; padding: 2px 12px; border-left: 3px solid ${ACCENT}; color: ${DIM}; border-radius: 0 6px 6px 0; }
 `
 
 // ------------------------------------------------------------------ helpers
@@ -261,6 +276,12 @@ function statusLabel(task: Task): string {
 /** 0.5 renders as ½, everything else as its plain number. */
 function valueText(value: TaskValue): string {
   return value === 0.5 ? '½' : String(value)
+}
+
+/** Card/drawer shorthand: T-3 → #3; ids of any other shape display verbatim. */
+export function taskRef(id: string): string {
+  const digits = /^T-(\d+)$/.exec(id)?.[1]
+  return digits ? `#${digits}` : id
 }
 
 function priorityLabel(priority: TaskPriority): string {
@@ -677,6 +698,9 @@ function TaskCard({ task, selected, onOpen, dnd }: { task: Task; selected: boole
             ◆{valueText(task.value)}
           </span>
         )}
+        <span style={styles.cardRef} title={task.id}>
+          {taskRef(task.id)}
+        </span>
         <span style={styles.cardTitle}>{task.title}</span>
       </div>
       <div style={styles.cardMeta}>
@@ -779,6 +803,9 @@ function DetailDrawer({ task, state, store, actors, onClose }: { task: Task; sta
   return (
     <aside style={styles.drawer}>
       <div style={styles.drawerHead}>
+        <span style={styles.drawerRef} title={task.id}>
+          {taskRef(task.id)}
+        </span>
         <span style={styles.drawerTitle}>{task.title}</span>
         {tab === 'detail' && !editing && (
           <button type="button" className="tb-btn" onClick={startEdit}>
@@ -888,7 +915,9 @@ function DetailDrawer({ task, state, store, actors, onClose }: { task: Task; sta
           <div style={styles.drawerSection}>
             <div style={styles.sectionTitle}>{L('描述', 'Description')}</div>
             {task.detail ? (
-              <div style={styles.detailBody}>{task.detail}</div>
+              // Rendered markdown (XSS-safe — markdown.ts escapes first); the
+              // read-only default stays read-only, just no longer raw text.
+              <div className="tb-md" style={styles.detailBody} dangerouslySetInnerHTML={{ __html: renderMarkdown(task.detail) }} />
             ) : (
               <div style={styles.detailEmpty}>{L('（没有描述）', '(no description)')}</div>
             )}
@@ -1011,7 +1040,8 @@ function DetailDrawer({ task, state, store, actors, onClose }: { task: Task; sta
   )
 }
 
-/** One comment in the task's discussion thread (human and agent alike). */
+/** One comment in the task's discussion thread (human and agent alike).
+ *  The text renders as sanitized markdown, same pipeline as the detail. */
 function CommentRow({ comment }: { comment: TaskComment }): JSX.Element {
   return (
     <li style={styles.logRow}>
@@ -1019,7 +1049,7 @@ function CommentRow({ comment }: { comment: TaskComment }): JSX.Element {
       <span style={styles.logMain}>
         <span style={styles.logEvent}>{comment.by}</span>
         <span style={styles.logTime} title={comment.at}>{relTime(comment.at)}</span>
-        <span style={styles.commentText}>{comment.text}</span>
+        <span className="tb-md" style={styles.commentText} dangerouslySetInnerHTML={{ __html: renderMarkdown(comment.text) }} />
       </span>
     </li>
   )
@@ -1478,6 +1508,7 @@ const styles: Record<string, CSSProperties> = {
     padding: '0 5px',
     whiteSpace: 'nowrap',
   },
+  cardRef: { flexShrink: 0, fontSize: 10.5, color: FAINT, marginTop: 2, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
   cardMeta: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, paddingLeft: 14 },
   cardAge: { marginLeft: 'auto', color: FAINT, fontSize: 10, flexShrink: 0 },
   cardTags: { display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6, paddingLeft: 14 },
@@ -1514,7 +1545,8 @@ const styles: Record<string, CSSProperties> = {
     boxSizing: 'border-box',
   },
   drawerHead: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
-  drawerTitle: { fontSize: 14, fontWeight: 600, lineHeight: 1.45, overflowWrap: 'anywhere' },
+  drawerRef: { fontSize: 13, fontWeight: 600, color: FAINT, marginTop: 1, flexShrink: 0 },
+  drawerTitle: { flex: 1, minWidth: 0, fontSize: 14, fontWeight: 600, lineHeight: 1.45, overflowWrap: 'anywhere' },
   drawerMeta: { display: 'flex', flexWrap: 'wrap', gap: '2px 10px', color: DIM, fontSize: 11 },
   drawerActions: { display: 'flex', gap: 6, flexWrap: 'wrap' },
   drawerSection: {

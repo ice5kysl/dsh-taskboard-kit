@@ -5,7 +5,7 @@
  * registered after the shipped chat (0), trajectory (10), files (20) and the
  * msg9 messages tab (30), so the session header reads
  * 对话 | 轨迹 | 文件 | 消息 | 看板. While active, the session body is the
- * four-lane kanban of the current session's workspace.
+ * six-lane kanban of the current session's workspace.
  *
  * The page-wide store keeps the board fresh with a low-frequency poll of
  * `/dsh-taskboard/board` (15s, only while the page is visible).
@@ -31,6 +31,7 @@ export const TASKBOARD_VIEW_ID = 'taskboard'
 // by another client plugin): the store, the components, the bridge, and the
 // shared board math.
 export { BoardPanel } from './BoardPanel.tsx'
+export { taskRef } from './BoardPanel.tsx'
 export { createBridgeClient } from './api.ts'
 export { createTaskboardStore, getTaskboardStore } from './store.ts'
 export { columnOf, compareTasks } from '../shared/types.ts'
@@ -38,6 +39,7 @@ export { planDrop } from '../shared/dnd.ts'
 export type { DropOp } from '../shared/dnd.ts'
 export { knownActors } from './actors.ts'
 export { conventionSnippet, dispatchSnippet, guideProjectDir, hookSnippetClaude, hookSnippetKimi } from './guide.ts'
+export { renderMarkdown } from './markdown.ts'
 export { L } from './locale.ts'
 export type { BridgeClient } from './api.ts'
 export type { TaskboardState, TaskboardStore, StoreOptions } from './store.ts'

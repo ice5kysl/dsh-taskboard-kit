@@ -301,6 +301,52 @@ await check('guide hook snippets: guarded, assignee-tagged, parseable', () => {
   assert.ok(client.hookSnippetClaude(null).includes('插件目录'), 'null cli degrades to the placeholder')
 })
 
+// --------------------------------------------------------- markdown + refs
+
+await check('renderMarkdown: real structure for the common syntax', () => {
+  const md = client.renderMarkdown
+  assert.equal(typeof md, 'function')
+
+  // Blocks.
+  assert.ok(md('## 标题').startsWith('<h2>'), 'heading renders')
+  assert.ok(md('- a\n- b').includes('<ul><li>a</li><li>b</li></ul>'), 'bullet list renders')
+  assert.ok(md('1. a\n2. b').includes('<ol><li>a</li><li>b</li></ol>'), 'numbered list renders')
+  assert.ok(md('> wise\n> words').includes('<blockquote>wise<br>words</blockquote>'), 'quote renders')
+  assert.ok(md('one\ntwo\n\nthree').includes('one<br>two</p><p>three'), 'single newline = break, blank line = new paragraph')
+  const fenced = md('```\nconst a = 1 < 2\n```')
+  assert.ok(fenced.includes('<pre><code>const a = 1 &lt; 2</code></pre>'), 'fenced code renders escaped verbatim')
+
+  // Inline.
+  assert.ok(md('**b**').includes('<strong>b</strong>'), 'bold')
+  assert.ok(md('*i*').includes('<em>i</em>'), 'italic')
+  assert.ok(md('`x<y`').includes('<code>x&lt;y</code>'), 'inline code is escaped')
+  const link = md('[site](https://example.com/a?x=1&y=2)')
+  assert.ok(link.includes('<a href="https://example.com/a?x=1&amp;y=2"'), 'http(s) link renders, & escaped in href')
+  assert.ok(link.includes('target="_blank"') && link.includes('rel="noopener noreferrer"'), 'links externalize safely')
+  assert.ok(md('` **not bold** `').includes('**not bold**'), 'markup inside inline code stays literal')
+})
+
+await check('renderMarkdown: multi-source input cannot inject anything', () => {
+  const md = client.renderMarkdown
+  assert.ok(!md('<script>alert(1)</script>').includes('<script>'), 'raw html is escaped')
+  assert.ok(!md('<img src=x onerror=alert(1)>').includes('<img'), 'img onerror never becomes a tag')
+  assert.ok(!md('[click](javascript:alert(1))').includes('<a'), 'javascript: urls stay literal text')
+  assert.ok(!md('[click](vbscript:x)').includes('<a'), 'vbscript: urls stay literal text')
+  assert.ok(!md('[click](data:text/html,<b>)').includes('<a'), 'data: urls stay literal text')
+  const breakout = md('[x](https://a.b/"onmouseover="alert(1)")')
+  assert.ok(!breakout.includes('onmouseover="alert(1)"'), 'attribute breakout is neutralized by escaping')
+  // An unclosed fence just renders to the end of input — never throws.
+  assert.ok(md('```\nnever closed').includes('<pre><code>never closed</code></pre>'))
+})
+
+await check('taskRef: T-N shows as #N, anything else verbatim', () => {
+  assert.equal(typeof client.taskRef, 'function')
+  assert.equal(client.taskRef('T-3'), '#3')
+  assert.equal(client.taskRef('T-12'), '#12')
+  assert.equal(client.taskRef('abc'), 'abc')
+  assert.equal(client.taskRef('T-x'), 'T-x')
+})
+
 // ------------------------------------------------------------------ done
 
 console.log(failed === 0 ? 'all checks passed' : `${failed} check(s) failed`)
