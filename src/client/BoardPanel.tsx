@@ -666,9 +666,10 @@ function ClosedStrip({ count, dnd, onExpand }: { count: number; dnd: LaneDnd; on
   )
 }
 
-/** One task card: priority dot, value badge, title, assignee badge, age, tags.
- *  Cards are the drag source: the task id rides dataTransfer, and the card
- *  turns translucent while it is being dragged. */
+/** One task card: a compact meta row (priority dot · value badge · #N ref at
+ *  the right end), then the full-width title row, then assignee badge, age,
+ *  tags. Cards are the drag source: the task id rides dataTransfer, and the
+ *  card turns translucent while it is being dragged. */
 function TaskCard({ task, selected, onOpen, dnd }: { task: Task; selected: boolean; onOpen(): void; dnd: LaneDnd }): JSX.Element {
   const dragging = dnd.dragId === task.id
   return (
@@ -688,6 +689,8 @@ function TaskCard({ task, selected, onOpen, dnd }: { task: Task; selected: boole
       }}
       onClick={onOpen}
     >
+      {/* Meta row: priority dot + value badge + #N ref (right end). The title
+          gets its own full-width row below — nothing squeezes it anymore. */}
       <div style={styles.cardTop}>
         <span
           style={{ ...styles.dot, background: PRIORITY_COLORS[task.priority] ?? FAINT }}
@@ -701,8 +704,8 @@ function TaskCard({ task, selected, onOpen, dnd }: { task: Task; selected: boole
         <span style={styles.cardRef} title={task.id}>
           {taskRef(task.id)}
         </span>
-        <span style={styles.cardTitle}>{task.title}</span>
       </div>
+      <div style={styles.cardTitle}>{task.title}</div>
       <div style={styles.cardMeta}>
         {task.assignee ? (
           <span className="tb-badge" title={task.assignee}>{task.assignee}</span>
@@ -1494,24 +1497,35 @@ const styles: Record<string, CSSProperties> = {
     fontFamily: 'inherit',
   },
   closedStripText: { writingMode: 'vertical-rl', fontSize: 11, color: DIM, letterSpacing: 1, whiteSpace: 'nowrap' },
-  cardTop: { display: 'flex', alignItems: 'flex-start', gap: 6, minWidth: 0 },
-  dot: { width: 8, height: 8, borderRadius: 4, marginTop: 4, flexShrink: 0 },
-  cardTitle: { flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 500, lineHeight: 1.45, overflowWrap: 'anywhere' },
+  // Meta row of a card: one compact line (dot · value · #N at the right end).
+  cardTop: { display: 'flex', alignItems: 'center', gap: 6 },
+  dot: { width: 8, height: 8, borderRadius: 4, flexShrink: 0 },
+  // The title is its own full-width row below the meta row, clamped to 2 lines.
+  cardTitle: {
+    fontSize: 12.5,
+    fontWeight: 500,
+    lineHeight: 1.45,
+    overflowWrap: 'anywhere',
+    marginTop: 4,
+    display: '-webkit-box',
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: 'vertical',
+    overflow: 'hidden',
+  },
   valueBadge: {
     flexShrink: 0,
     fontSize: 10,
     lineHeight: '14px',
-    marginTop: 1,
     color: FAINT,
     border: `1px solid ${FAINT}`,
     borderRadius: 999,
     padding: '0 5px',
     whiteSpace: 'nowrap',
   },
-  cardRef: { flexShrink: 0, fontSize: 10.5, color: FAINT, marginTop: 2, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
-  cardMeta: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, paddingLeft: 14 },
+  cardRef: { flexShrink: 0, marginLeft: 'auto', fontSize: 10.5, color: FAINT, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+  cardMeta: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 },
   cardAge: { marginLeft: 'auto', color: FAINT, fontSize: 10, flexShrink: 0 },
-  cardTags: { display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6, paddingLeft: 14 },
+  cardTags: { display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 },
   center: {
     margin: 'auto',
     padding: 24,
