@@ -99,12 +99,14 @@ const DANGER = 'var(--dsw-alias-state-error-primary, #dc2626)'
 const HOVER_BG = 'var(--dsw-alias-interactive-bg-hover, rgba(28,35,51,0.06))'
 /**
  * dsh 的 brand-primary 是单色反色系（亮主题=近黑、暗主题=近白）：拿它当填充
- * 再配死白字，暗色下就是白块+白字。壳层原生主按钮 = button-primary-fill
- * 填充 + label-primary-foreground 文字 + button-primary-hover 悬停（照抄
- * shell 自带 settings-models 的 primaryButton 配方）。
+ * 暗色下就是一块近白块（实证翻车一次）。壳层自己的蓝色主按钮（输入框发送键）
+ * 实证计算值 = link 令牌（亮 #4176e6→shell 文案写作 #2d66f7 系 / 暗 #679efe），
+ * 配套：字 = label-primary-foreground（亮 #fff / 暗 #0f1115），悬停 =
+ * button-info-hover（亮 #679efe / 暗 #4176e6——shell 令牌表里没有 link-hover，
+ * info 按钮对的 fill 恰好恒等于 link，hover 即它的配对）。
  */
-const PRIMARY_FILL = 'var(--dsw-alias-button-primary-fill, var(--dsw-alias-brand-primary, #2d66f7))'
-const PRIMARY_FILL_HOVER = 'var(--dsw-alias-button-primary-hover, var(--dsw-alias-brand-primary, #2d66f7))'
+const PRIMARY_FILL = 'var(--dsw-alias-link, #2d66f7)'
+const PRIMARY_FILL_HOVER = 'var(--dsw-alias-button-info-hover, #5686fe)'
 const ON_PRIMARY = 'var(--dsw-alias-label-primary-foreground, #ffffff)'
 /** Text-level accents (links, badges, active chip/tab text) stay blue in both
  *  themes — brand-primary would read as near-white text in dark mode. */

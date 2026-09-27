@@ -351,12 +351,13 @@ await check('taskRef: T-N shows as #N, anything else verbatim', () => {
 
 // --------------------------------------------------------- theme tokens
 
-await check('theme: the primary button rides the shell button tokens (no white block in dark mode)', () => {
+await check('theme: the primary button rides the shell link tokens (no white block in dark mode)', () => {
   // dsh dark theme resolves --dsw-alias-brand-primary to a NEAR-WHITE
-  // monochrome fill (the shell's inverted primary) — pairing it with a
-  // hardcoded #fff text was the "white block" bug. The fix is the shell's
-  // own button recipe: button-primary-fill + label-primary-foreground +
-  // button-primary-hover.
+  // monochrome fill — using it as a button fill was the "white block" bug
+  // (twice: once with #fff text, once via button-primary-fill which aliases
+  // brand-primary). The shell's own blue primary button (the composer send
+  // key) measures to --dsw-alias-link in both themes; the pairing is
+  // label-primary-foreground text and button-info-hover for the hover.
   // The loading view still injects TB_CSS, so no bridge is needed.
   const store = client.createTaskboardStore({ bridge: { board: async () => ({ ok: false, error: 'x' }) }, pollMs: 10 ** 9 })
   const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
@@ -364,13 +365,14 @@ await check('theme: the primary button rides the shell button tokens (no white b
   assert.ok(css.includes('.tb-btn-primary'), 'primary rule injected with the panel')
 
   const primary = (css.match(/\.tb-btn-primary \{([^}]*)\}/) ?? [])[1] ?? ''
-  assert.ok(primary.includes('var(--dsw-alias-button-primary-fill'), 'fill = shell primary-button token')
-  assert.ok(primary.includes('var(--dsw-alias-label-primary-foreground'), 'text = shell on-fill token (dark text on the dark-theme fill)')
+  assert.ok(primary.includes('background:var(--dsw-alias-link') || primary.includes('background: var(--dsw-alias-link'), 'fill = the link token (blue in BOTH themes)')
+  assert.ok(primary.includes('var(--dsw-alias-label-primary-foreground'), 'text = shell on-fill token')
+  assert.ok(!primary.includes('button-primary-fill'), 'no button-primary-fill (aliases brand-primary = near-white in dark)')
   assert.ok(!/background:\s*(#fff|#ffffff|white)\b/i.test(primary), 'no hardcoded white background on the primary button')
   assert.ok(!/color:\s*(#fff|#ffffff|white)\b/i.test(primary), 'no hardcoded white text on the primary button')
 
   const hover = (css.match(/\.tb-btn-primary:hover \{([^}]*)\}/) ?? [])[1] ?? ''
-  assert.ok(hover.includes('var(--dsw-alias-button-primary-hover'), 'hover = shell primary-hover token')
+  assert.ok(hover.includes('var(--dsw-alias-button-info-hover'), 'hover = the link-paired info-hover token')
 
   // No tb-* rule may hardcode a white/light background (var() fallbacks for
   // pre-token shells are the sanctioned exception and live inside var()).
