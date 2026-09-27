@@ -97,10 +97,27 @@ const BORDER_STRONG = 'var(--dsw-alias-border-l2, rgba(28,35,51,0.20))'
 const ACCENT = 'var(--dsw-alias-brand-primary, #2d66f7)'
 const DANGER = 'var(--dsw-alias-state-error-primary, #dc2626)'
 const HOVER_BG = 'var(--dsw-alias-interactive-bg-hover, rgba(28,35,51,0.06))'
-/** Semantic amber for the medium priority dot — readable in both themes. */
-const AMBER = '#d97706'
+/**
+ * dsh 的 brand-primary 是单色反色系（亮主题=近黑、暗主题=近白）：拿它当填充
+ * 再配死白字，暗色下就是白块+白字。壳层原生主按钮 = button-primary-fill
+ * 填充 + label-primary-foreground 文字 + button-primary-hover 悬停（照抄
+ * shell 自带 settings-models 的 primaryButton 配方）。
+ */
+const PRIMARY_FILL = 'var(--dsw-alias-button-primary-fill, var(--dsw-alias-brand-primary, #2d66f7))'
+const PRIMARY_FILL_HOVER = 'var(--dsw-alias-button-primary-hover, var(--dsw-alias-brand-primary, #2d66f7))'
+const ON_PRIMARY = 'var(--dsw-alias-label-primary-foreground, #ffffff)'
+/** Text-level accents (links, badges, active chip/tab text) stay blue in both
+ *  themes — brand-primary would read as near-white text in dark mode. */
+const LINK = 'var(--dsw-alias-link, #2d66f7)'
+const WARN = 'var(--dsw-alias-state-warn-primary, #d97706)'
+const FOCUS_HALO = 'var(--dsw-alias-interactive-bg-hover-accent, rgba(45,102,247,0.18))'
+const DANGER_BG = 'var(--dsw-alias-interactive-bg-hover-danger, rgba(220,38,38,0.12))'
+const MASK = 'var(--dsw-alias-bg-mask-1, rgba(0,0,0,0.28))'
+/* 保留的硬编码只有三处 box-shadow 的 rgba(0,0,0,…)——shell 令牌体系没有阴影
+   令牌（已核对 dsh-client-ui-theme 全量 dump），alpha 黑两主题下都成立。
+   var() 里的浅色兜底（#ffffff/#2d66f7 等）只服务没有令牌体系的旧 shell。 */
 
-const PRIORITY_COLORS: Record<TaskPriority, string> = { high: DANGER, medium: AMBER, low: FAINT }
+const PRIORITY_COLORS: Record<TaskPriority, string> = { high: DANGER, medium: WARN, low: FAINT }
 
 /** Interactive-state rules for the tb-* classes used across the panel. */
 const TB_CSS = `
@@ -108,24 +125,26 @@ const TB_CSS = `
 .tb-btn:hover { background: ${HOVER_BG}; }
 .tb-btn:disabled { opacity: 0.55; cursor: default; }
 .tb-btn:disabled:hover { background: transparent; }
-.tb-btn-primary { background: ${ACCENT}; border-color: transparent; color: #fff; font-weight: 500; }
-.tb-btn-primary:hover { background: ${ACCENT}; opacity: 0.88; }
-.tb-btn-primary:disabled:hover { background: ${ACCENT}; opacity: 0.55; }
+/* Shell-native primary button: monochrome fill (near-black in light, near-white
+   in dark) with the on-fill text token — readable and native in BOTH themes. */
+.tb-btn-primary { background: ${PRIMARY_FILL}; border-color: transparent; color: ${ON_PRIMARY}; font-weight: 500; }
+.tb-btn-primary:hover { background: ${PRIMARY_FILL_HOVER}; }
+.tb-btn-primary:disabled:hover { background: ${PRIMARY_FILL}; }
 .tb-btn-danger { color: ${DANGER}; }
 .tb-iconbtn { display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: 6px; background: transparent; color: ${DIM}; padding: 4px 6px; font-size: 13px; font-family: inherit; line-height: 1; cursor: pointer; }
 .tb-iconbtn:hover { background: ${HOVER_BG}; color: ${FG}; }
 .tb-input, .tb-textarea { width: 100%; box-sizing: border-box; border: 1px solid ${BORDER_STRONG}; border-radius: 8px; background: ${BG}; color: inherit; padding: 6px 9px; font-size: 12.5px; font-family: inherit; line-height: 1.5; }
 .tb-input::placeholder, .tb-textarea::placeholder { color: ${DIM}; opacity: 0.7; }
-.tb-input:focus, .tb-textarea:focus { outline: none; border-color: ${ACCENT}; box-shadow: 0 0 0 3px rgba(45,102,247,0.18); }
+.tb-input:focus, .tb-textarea:focus { outline: none; border-color: ${LINK}; box-shadow: 0 0 0 3px ${FOCUS_HALO}; }
 .tb-textarea { resize: vertical; }
 .tb-card { display: block; width: 100%; box-sizing: border-box; text-align: left; border: 1px solid ${BORDER}; border-radius: 8px; background: ${BG_RAISED}; color: inherit; padding: 8px 10px; font-family: inherit; cursor: pointer; }
 .tb-card:hover { border-color: ${ACCENT}; }
 .tb-card.active { border-color: ${ACCENT}; box-shadow: 0 0 0 1px ${ACCENT}; }
 .tb-chip { border: 1px solid ${BORDER}; border-radius: 999px; background: transparent; color: ${DIM}; padding: 3px 11px; font-size: 11px; font-family: inherit; cursor: pointer; }
 .tb-chip:hover { color: ${FG}; border-color: ${BORDER_STRONG}; }
-.tb-chip.active { background: ${HOVER_BG}; color: ${ACCENT}; border-color: ${ACCENT}; font-weight: 600; }
+.tb-chip.active { background: ${HOVER_BG}; color: ${LINK}; border-color: ${LINK}; font-weight: 600; }
 .tb-tag { font-size: 10px; color: ${DIM}; border: 1px solid ${BORDER}; border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
-.tb-badge { display: inline-flex; align-items: center; font-size: 10px; color: ${ACCENT}; background: ${HOVER_BG}; border-radius: 999px; padding: 1px 7px; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tb-badge { display: inline-flex; align-items: center; font-size: 10px; color: ${LINK}; background: ${HOVER_BG}; border-radius: 999px; padding: 1px 7px; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tb-badge-outline { display: inline-flex; align-items: center; font-size: 10px; color: ${DIM}; border: 1px dashed ${BORDER_STRONG}; border-radius: 999px; padding: 0 7px; white-space: nowrap; }
 /* Drop-target highlight rides the injected stylesheet (inline styles cannot
    express state classes); !important beats the lane's inline background. */
@@ -138,7 +157,7 @@ const TB_CSS = `
 /* Drawer tab strip. */
 .tb-tab { border: none; border-bottom: 2px solid transparent; background: transparent; color: ${DIM}; padding: 6px 2px; font-size: 12px; font-family: inherit; cursor: pointer; }
 .tb-tab:hover { color: ${FG}; }
-.tb-tab.active { color: ${ACCENT}; border-bottom-color: ${ACCENT}; font-weight: 600; }
+.tb-tab.active { color: ${LINK}; border-bottom-color: ${LINK}; font-weight: 600; }
 /* Rendered markdown (drawer detail + comments): compact, both themes. */
 .tb-md { overflow-wrap: break-word; min-width: 0; }
 .tb-md h1, .tb-md h2, .tb-md h3, .tb-md h4, .tb-md h5, .tb-md h6 { margin: 0.7em 0 0.35em; line-height: 1.35; font-weight: 600; }
@@ -146,7 +165,7 @@ const TB_CSS = `
 .tb-md p { margin: 0.4em 0; }
 .tb-md ul, .tb-md ol { margin: 0.3em 0; padding-left: 1.35em; }
 .tb-md li { margin: 0.12em 0; }
-.tb-md a { color: ${ACCENT}; text-decoration: none; }
+.tb-md a { color: ${LINK}; text-decoration: none; }
 .tb-md a:hover { text-decoration: underline; }
 .tb-md code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; background: ${HOVER_BG}; padding: 1px 5px; border-radius: 5px; }
 .tb-md pre { background: ${BG_SUNK}; border: 1px solid ${BORDER}; border-radius: 8px; padding: 9px 11px; overflow-x: auto; margin: 0.5em 0; line-height: 1.6; tab-size: 2; }
@@ -1432,7 +1451,7 @@ const styles: Record<string, CSSProperties> = {
     margin: '8px 14px 0',
     padding: '5px 6px 5px 12px',
     borderRadius: 8,
-    background: 'rgba(220,38,38,0.12)',
+    background: DANGER_BG,
     color: DANGER,
     fontSize: 12,
     flexShrink: 0,
@@ -1538,7 +1557,7 @@ const styles: Record<string, CSSProperties> = {
   },
   centerText: { color: DIM, fontSize: 12, lineHeight: 1.6, margin: 0 },
   errorText: { color: DANGER, fontSize: 12, lineHeight: 1.6, margin: 0, whiteSpace: 'pre-wrap' },
-  backdrop: { position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.18)', zIndex: 20 },
+  backdrop: { position: 'absolute', inset: 0, background: MASK, zIndex: 20 },
   drawer: {
     position: 'absolute',
     top: 0,
@@ -1622,13 +1641,13 @@ const styles: Record<string, CSSProperties> = {
   pickerTitle: { fontSize: 12, fontWeight: 600, padding: '2px 6px 4px' },
   pickerList: { display: 'flex', flexDirection: 'column', gap: 1, overflowY: 'auto', minHeight: 0 },
   pickerName: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  pickerCurrent: { fontSize: 10, color: ACCENT, flexShrink: 0 },
+  pickerCurrent: { fontSize: 10, color: LINK, flexShrink: 0 },
   pickerEmpty: { color: FAINT, fontSize: 11, padding: '6px 8px', lineHeight: 1.5 },
   pickerFoot: { display: 'flex', flexDirection: 'column', gap: 1, borderTop: `1px solid ${BORDER}`, paddingTop: 4 },
   pickerCancel: { color: DIM },
   // The guide overlay: centered card above everything else in the panel
   // (backdrop z 30, card z 31 — the drawer sits at 21, the roster picker 25).
-  guideBackdrop: { position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.28)', zIndex: 30 },
+  guideBackdrop: { position: 'absolute', inset: 0, background: MASK, zIndex: 30 },
   guideCard: {
     position: 'absolute',
     top: '50%',
