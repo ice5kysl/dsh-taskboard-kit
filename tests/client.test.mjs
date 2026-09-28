@@ -342,6 +342,49 @@ await check('renderMarkdown: real structure for the common syntax', () => {
   assert.ok(md('` **not bold** `').includes('**not bold**'), 'markup inside inline code stays literal')
 })
 
+await check('renderMarkdown: GFM tables render as real tables (not raw pipes)', () => {
+  const md = client.renderMarkdown
+
+  const table = md('| 来源 | 事项 |\n|---|----|\n| dsh@kimi.ice | 迁移卡在 PUT |\n| dsh@mum.ice | playbook 修正 |')
+  assert.ok(table.includes('<div class="tb-table-wrap"><table>'), 'table rides the horizontal-scroll wrapper')
+  assert.ok(table.includes('<thead><tr><th>来源</th><th>事项</th></tr></thead>'), 'header row becomes th cells')
+  assert.ok(
+    table.includes('<tbody><tr><td>dsh@kimi.ice</td><td>迁移卡在 PUT</td></tr><tr><td>dsh@mum.ice</td><td>playbook 修正</td></tr></tbody>'),
+    'body rows become td cells',
+  )
+  assert.ok(!table.includes('|---|'), 'the delimiter row never leaks as text')
+
+  // Outer pipes are optional, spacing is irrelevant.
+  assert.ok(md('a | b\n--- | ---\n1 | 2').includes('<tbody><tr><td>1</td><td>2</td></tr></tbody>'), 'table without outer pipes')
+  // A paragraph immediately above a table does not swallow the header row.
+  assert.ok(
+    md('待办如下：\n| a | b |\n|---|---|\n| 1 | 2 |').startsWith('<p>待办如下：</p><div class="tb-table-wrap">'),
+    'table directly under a paragraph still opens a table',
+  )
+  // Column alignment from the delimiter row.
+  const aligned = md('| a | b | c |\n|:--|--:|:-:|\n| 1 | 2 | 3 |')
+  assert.ok(aligned.includes('<th style="text-align:left">a</th>'), 'left align')
+  assert.ok(aligned.includes('<th style="text-align:right">b</th>'), 'right align')
+  assert.ok(aligned.includes('<th style="text-align:center">c</th>'), 'center align')
+  assert.ok(aligned.includes('<td style="text-align:center">3</td>'), 'body cells inherit the column align')
+  // Ragged rows are normalized to the header width.
+  assert.ok(md('| a | b |\n|---|---|\n| 1 |').includes('<tr><td>1</td><td></td></tr>'), 'short row is padded')
+  assert.ok(md('| a | b |\n|---|---|\n| 1 | 2 | 3 |').includes('<tr><td>1</td><td>2</td></tr>'), 'long row is clipped')
+  // Header-only table (no body rows).
+  const empty = md('| a | b |\n|---|---|')
+  assert.ok(empty.includes('</thead></table>') && !empty.includes('<tbody>'), 'header-only table has no tbody')
+  // A bare delimiter row is a paragraph, not a table (`---` alone is a break).
+  assert.ok(md('|---|').includes('<p>|---|</p>'), 'delimiter row without a header stays text')
+  assert.ok(md('---').includes('<hr>'), 'thematic break renders')
+  // Inline formatting still works inside cells.
+  assert.ok(md('| **b** | `x<y` |\n|---|---|').includes('<th><strong>b</strong></th><th><code>x&lt;y</code></th>'), 'cells keep inline rules')
+  // Escaped pipes and pipes inside code spans do not split cells.
+  assert.ok(md('| a \\| b | c |\n|---|---|').includes('<th>a | b</th><th>c</th>'), 'escaped pipe stays in the cell')
+  assert.ok(md('| `a|b` | c |\n|---|---|').includes('<th><code>a|b</code></th><th>c</th>'), 'pipe inside inline code does not split')
+  // Cells are escaped exactly like paragraphs — no tag injection through a table.
+  assert.ok(!md('| <img src=x onerror=alert(1)> | b |\n|---|---|').includes('<img'), 'table cells cannot inject html')
+})
+
 await check('renderMarkdown: multi-source input cannot inject anything', () => {
   const md = client.renderMarkdown
   assert.ok(!md('<script>alert(1)</script>').includes('<script>'), 'raw html is escaped')
@@ -391,6 +434,13 @@ await check('theme: the primary button rides the shell link tokens (no white blo
   // No tb-* rule may hardcode a white/light background (var() fallbacks for
   // pre-token shells are the sanctioned exception and live inside var()).
   assert.ok(!/\.tb-[a-z-]+[^{]*\{[^}]*background:\s*(#fff|#ffffff|white)\b/i.test(css), 'no tb-* rule hardcodes a white background')
+
+  // Markdown tables need the stylesheet: the renderer emits .tb-table-wrap /
+  // table / th / td, and without rules the cells would render unstyled.
+  for (const selector of ['.tb-md .tb-table-wrap {', '.tb-md table {', '.tb-md th, .tb-md td {', '.tb-md th {', '.tb-md hr {']) {
+    assert.ok(css.includes(selector), `css carries ${selector}`)
+  }
+  assert.ok(/\.tb-md \.tb-table-wrap \{[^}]*overflow-x:\s*auto/.test(css), 'tables scroll sideways instead of stretching the drawer')
 })
 
 // --------------------------------------------------------- mini board (composer side)

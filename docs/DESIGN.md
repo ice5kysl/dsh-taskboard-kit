@@ -20,9 +20,11 @@ Agent ── taskboard_* tools ─┐
 
 ## 明确不做
 
-远程服务端、msg9 依赖、watcher/推送、settings 页、slash 命令、列内拖拽排序、markdown 渲染（detail 走 pre-wrap 纯文本，保持 client bundle 只 require react）。
+远程服务端、msg9 依赖、watcher/推送、settings 页、slash 命令、列内拖拽排序。
 
 v0.2 已移出此清单：**列间拖拽**（`src/shared/dnd.ts` 的 `planDrop` 把拖放编译成 claim/update 操作序列，含为此新增的 `stop` 流转）和**任务评论**（`Task.comments`，tool/bridge/CLI/UI 四通道，只留信息不动状态机）。
+
+v0.5.1 已移出此清单：**markdown 渲染**——`src/client/markdown.ts` 是一个零依赖 mini renderer（先转义、只注入自己造的标签，链接限 http/https，bundle 仍只 require react），detail 与评论共用；随后补上了 **GFM 表格**（表头 + `|---|` 分隔行 + `:--`/`--:` 列对齐，单元格沿用同一套 escape-first inline 规则，`\|` 与 code span 内的竖线不切列）和 `---` 分隔线，表格样式（`.tb-table-wrap` 横向滚动 + th/td 边框）放在 `TB_CSS` 的 `.tb-md` 段内，两套主题都吃 token。
 
 ## bridge 错误分层
 

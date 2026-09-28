@@ -104,6 +104,12 @@ export const TB_CSS = `
 .tb-md pre { background: ${BG_SUNK}; border: 1px solid ${BORDER}; border-radius: 8px; padding: 9px 11px; overflow-x: auto; margin: 0.5em 0; line-height: 1.6; tab-size: 2; }
 .tb-md pre code { background: transparent; padding: 0; display: block; white-space: pre; }
 .tb-md blockquote { margin: 0.5em 0; padding: 2px 12px; border-left: 3px solid ${ACCENT}; color: ${DIM}; border-radius: 0 6px 6px 0; }
+.tb-md hr { border: none; border-top: 1px solid ${BORDER}; margin: 0.8em 0; }
+/* GFM tables scroll sideways instead of stretching the drawer. */
+.tb-md .tb-table-wrap { overflow-x: auto; margin: 0.55em 0; }
+.tb-md table { border-collapse: collapse; font-size: 12px; line-height: 1.5; }
+.tb-md th, .tb-md td { border: 1px solid ${BORDER}; padding: 4px 9px; text-align: left; vertical-align: top; }
+.tb-md th { background: ${BG_SUNK}; font-weight: 600; white-space: nowrap; }
 /* Mini board (status-bar entry + right drawer): stats-row pill, section drop
    targets, compact rows. */
 .tb-mini-sec.dragover { box-shadow: inset 0 0 0 1.5px ${ACCENT} !important; background: ${HOVER_BG} !important; }

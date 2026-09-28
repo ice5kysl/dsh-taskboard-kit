@@ -12,7 +12,8 @@
  *   3. the only markup produced afterwards is ours: links (http/https only —
  *      javascript: and friends render as literal text), bold, italic;
  *   4. block level: paragraphs (single newline = <br>), # headings, -/* and
- *      1. lists, ``` fenced code, > quotes.
+ *      1. lists, ``` fenced code, > quotes, --- thematic breaks, and GFM
+ *      tables (header row + |---| delimiter row + body rows).
  *
  * The result is a sanitized HTML string for dangerouslySetInnerHTML — every
  * byte of user input has passed through escapeHtml exactly once, and every
@@ -58,6 +59,57 @@ function inline(raw: string): string {
   return text
 }
 
+/** Text alignment of one table column, derived from its `:---:` delimiter. */
+type ColumnAlign = '' | 'left' | 'center' | 'right'
+
+/** `---`, `:---`, `---:`, `:---:` — one delimiter-row cell. */
+const DELIMITER_CELL = /^:?-+:?$/
+
+/**
+ * Split one table row into trimmed cells. Pipes are separators unless they are
+ * escaped (`\|`) or sit inside a `` `code span` `` — the raw source is still
+ * unescaped here, so this runs before inline() (which does the escaping).
+ */
+function splitTableRow(line: string): string[] {
+  let row = line.trim()
+  if (row.startsWith('|')) row = row.slice(1)
+  if (row.endsWith('|') && !row.endsWith('\\|')) row = row.slice(0, -1)
+  const cells: string[] = []
+  let cell = ''
+  let inCode = false
+  for (let n = 0; n < row.length; n += 1) {
+    const char = row[n] ?? ''
+    if (char === '\\' && row[n + 1] === '|') {
+      cell += '|'
+      n += 1
+      continue
+    }
+    if (char === '`') {
+      inCode = !inCode
+      cell += char
+      continue
+    }
+    if (char === '|' && !inCode) {
+      cells.push(cell.trim())
+      cell = ''
+      continue
+    }
+    cell += char
+  }
+  cells.push(cell.trim())
+  return cells
+}
+
+/**
+ * The alignment row of a GFM table: every cell is dashes with optional colons.
+ * A pipe is mandatory — a lone `---` is a thematic break, not a table.
+ */
+function isDelimiterRow(line: string): boolean {
+  if (!line.includes('|')) return false
+  const cells = splitTableRow(line)
+  return cells.length > 0 && cells.every((cell) => DELIMITER_CELL.test(cell))
+}
+
 /** Render markdown source to a sanitized HTML string. */
 export function renderMarkdown(source: string): string {
   const lines = source.replace(/\r\n?/g, '\n').split('\n')
@@ -70,8 +122,13 @@ export function renderMarkdown(source: string): string {
   const isOl = (line: string): boolean => /^\s*\d+\.\s+/.test(line)
   const isQuote = (line: string): boolean => /^>\s?/.test(line)
   const isHeading = (line: string): boolean => /^#{1,6}\s+/.test(line)
-  const isBlockStart = (line: string): boolean =>
-    isFence(line) || isHeading(line) || isUl(line) || isOl(line) || isQuote(line)
+  const isHr = (line: string): boolean => /^\s{0,3}(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/.test(line)
+  /** A header row sitting right on top of a delimiter row opens a table. */
+  const isTableHeader = (n: number): boolean => at(n).includes('|') && isDelimiterRow(at(n + 1))
+  const isBlockStart = (n: number): boolean => {
+    const line = at(n)
+    return isFence(line) || isHeading(line) || isHr(line) || isUl(line) || isOl(line) || isQuote(line) || isTableHeader(n)
+  }
 
   while (i < lines.length) {
     const line = at(i)
@@ -94,6 +151,42 @@ export function renderMarkdown(source: string): string {
       const level = (heading[1] ?? '#').length
       out.push(`<h${level}>${inline(heading[2] ?? '')}</h${level}>`)
       i += 1
+      continue
+    }
+
+    // Thematic break — checked before lists because `- - -` also looks like a
+    // bullet (GFM resolves the three-or-more rule as a break).
+    if (isHr(line)) {
+      out.push('<hr>')
+      i += 1
+      continue
+    }
+
+    // GFM table: header row, delimiter row, then body rows until a blank line
+    // or the start of another block. Cells go through inline() like any other
+    // text, so escaping rules (and XSS safety) are exactly the paragraph ones.
+    if (isTableHeader(i)) {
+      const head = splitTableRow(line)
+      const align: ColumnAlign[] = splitTableRow(at(i + 1)).map((cell) =>
+        cell.startsWith(':') && cell.endsWith(':') ? 'center' : cell.endsWith(':') ? 'right' : cell.startsWith(':') ? 'left' : '',
+      )
+      i += 2
+      const cell = (tag: 'th' | 'td', text: string, column: number): string => {
+        const style = align[column] ? ` style="text-align:${align[column]}"` : ''
+        return `<${tag}${style}>${inline(text)}</${tag}>`
+      }
+      const row = (tag: 'th' | 'td', cells: string[]): string =>
+        `<tr>${head.map((_, column) => cell(tag, cells[column] ?? '', column)).join('')}</tr>`
+      const body: string[] = []
+      while (i < lines.length && at(i).trim() !== '' && at(i).includes('|') && !isBlockStart(i)) {
+        body.push(row('td', splitTableRow(at(i))))
+        i += 1
+      }
+      out.push(
+        `<div class="tb-table-wrap"><table><thead>${row('th', head)}</thead>` +
+          (body.length > 0 ? `<tbody>${body.join('')}</tbody>` : '') +
+          '</table></div>',
+      )
       continue
     }
 
@@ -134,7 +227,7 @@ export function renderMarkdown(source: string): string {
 
     // Paragraph: until a blank line or the start of another block.
     const para: string[] = []
-    while (i < lines.length && at(i).trim() !== '' && !isBlockStart(at(i))) {
+    while (i < lines.length && at(i).trim() !== '' && !isBlockStart(i)) {
       para.push(at(i))
       i += 1
     }
