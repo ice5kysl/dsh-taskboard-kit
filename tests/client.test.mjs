@@ -466,10 +466,16 @@ await check('mini board: entry button badge and the six-block drawer', async () 
   assert.ok(open.includes('unclaimed'), 'pool row carries the outline badge')
   assert.ok(open.includes('draggable'), 'rows are draggable (planDrop pipeline)')
 
-  // A row click opens the layer-2 detail drawer (shared DetailDrawer).
+  // A row click opens the layer-2 detail drawer (shared DetailDrawer),
+  // visibly offset from the board drawer: narrower (520 vs 560) and floated
+  // 12px off the top and bottom, so the lower layer's left edge + corners
+  // peek out while both right edges stay flush with the frame.
   store.select('T-3')
   const layered = renderToStaticMarkup(React.createElement(client.MiniBoardDrawer, { store }))
   assert.ok(layered.includes('wip one') && layered.includes('>Details<'), 'layer 2 stacks the detail drawer over the sheet')
+  assert.ok(layered.includes('width:560px'), 'board drawer widened to 560')
+  assert.ok(layered.includes('width:520px'), 'detail layer is narrower')
+  assert.ok(layered.includes('top:12px') && layered.includes('bottom:12px'), 'detail layer floats off top and bottom')
 })
 
 await check('runPlanOps: executes the plan in order and stops at the first failure', async () => {

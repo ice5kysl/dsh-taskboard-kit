@@ -43,7 +43,7 @@ import { L } from './locale.ts'
 import { AssignPicker, DetailDrawer } from './BoardPanel.tsx'
 import type { TaskboardStore } from './store.ts'
 import { getTaskboardStore } from './store.ts'
-import { BG, BORDER, BORDER_STRONG, DIM, FAINT, FG, LINK, ON_PRIMARY, PRIORITY_COLORS, TB_CSS } from './theme.ts'
+import { BG, BG_RAISED, BORDER, BORDER_STRONG, DIM, FAINT, FG, LINK, ON_PRIMARY, PRIORITY_COLORS, TB_CSS } from './theme.ts'
 import { columnLabel, openTaskCount, priorityLabel, runPlanOps, taskRef, useSessionCwd, valueText, type SessionListLike } from './view.ts'
 
 /** Props handed by the slot: the injected store + the standard session share.
@@ -458,8 +458,10 @@ const styles: Record<string, CSSProperties> = {
   catcher: { position: 'absolute', inset: 0 },
   drawer: {
     position: 'relative', // paints above the absolute catcher
-    width: 400,
-    maxWidth: '100vw',
+    width: 560,
+    // Never wider than ~45% of the conversation area (vw ≈ 会话区 + 侧栏，
+    // 这个近似足够): long task titles get the room, narrow windows stay sane.
+    maxWidth: 'min(560px, 45vw)',
     height: '100%',
     display: 'flex',
     flexDirection: 'column',
@@ -522,16 +524,23 @@ const styles: Record<string, CSSProperties> = {
   },
   miniClosedHint: { fontSize: 10, color: FAINT },
   miniPicker: { top: 26, left: 4, right: 4 },
-  // Layer 2: the shared DetailDrawer stacked over the drawer — same right
-  // edge, a touch wider, with its own shadow so the layer reads as stacked.
+  // Layer 2: the shared DetailDrawer stacked over the drawer. Both layers keep
+  // the right edge flush to the frame; the stack reads through the OFFSETS —
+  // the detail is 40px narrower (its left edge exposes a strip of the board
+  // drawer) and floats 12px off the top and bottom (the board drawer's
+  // corners peek out). Its own full border + raised bg (layer-3 over the
+  // drawer's layer-2) keep the two layers legible in BOTH themes.
   detailOverlay: {
-    top: 0,
+    top: 12,
     left: 'auto',
     right: 0,
-    bottom: 0,
-    width: 420,
-    maxWidth: '100vw',
+    bottom: 12,
+    width: 520,
+    maxWidth: 'min(520px, calc(45vw - 40px))',
+    background: BG_RAISED,
+    border: `1px solid ${BORDER_STRONG}`,
+    borderRadius: '10px 0 0 10px',
     zIndex: 2,
-    boxShadow: '-16px 0 48px rgba(0,0,0,0.28)',
+    boxShadow: '-24px 0 64px rgba(15,18,26,0.42)',
   },
 }
