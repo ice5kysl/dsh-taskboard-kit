@@ -85,6 +85,8 @@ export interface BoardPanelProps {
   onBack?: () => void
   /** Current session list state; the view follows the selected session. */
   useSessions?: (selector: (state: SessionListLike) => unknown) => unknown
+  /** Current session identity (0.1.7 session-scoped standard prop). */
+  sessionId?: string
   /** Open the guide overlay on first render (tests drive the open state). */
   initialGuideOpen?: boolean
 }

@@ -3,14 +3,14 @@
  *
  * Two slot surfaces, one shared store:
  *
- *  1. `conversation.composer.dock` (list/session) — the entry. The shipped
- *     stats pills (「3 轮 73 步 · 262 tok/s · …」) occupy this dock as the
- *     order-0 entry id 'stats' — a CENTERED row whose right end is empty.
- *     We add a zero-height anchor right after it and float a quiet pill
- *     button up into the row's right end (absolute against our own anchor —
- *     no host class names, no measuring). Being resident in the composer,
- *     this button is also what drives `store.setCwd` from the session share
- *     when the 看板 tab never opens.
+ *  1. `conversation.composer.dock` (list/session) — the entry. The 0.1.7
+ *     dock is a compact CENTERED flex row (the shipped stats pills as the
+ *     order-0 entry 'stats' plus the host's own context meter), so we render
+ *     a zero-size static anchor and let the absolute pill resolve against
+ *     the composer's sticky seat: the pill hugs the composer's right edge,
+ *     glued to the stats band. Being resident in the composer, this button
+ *     is also what drives `store.setCwd` from the session share when the
+ *     看板 tab never opens.
  *  2. `shell.overlay` (list/root) — the drawer: a full-height right-edge
  *     side drawer over the whole frame. The layer is portal'd to body,
  *     outside the --dsw-alias-* token scope (they're defined on
@@ -57,6 +57,8 @@ import { columnLabel, openTaskCount, priorityLabel, runPlanOps, taskRef, useSess
 export interface MiniBoardProps {
   store?: TaskboardStore
   useSessions?: (selector: (state: SessionListLike) => unknown) => unknown
+  /** Current session identity (0.1.7 session-scoped standard prop). */
+  sessionId?: string
   /** Open the layer-2 detail for this task on first render (tests drive it). */
   initialSelectedId?: string
 }
@@ -71,11 +73,11 @@ interface MiniDnd {
 }
 
 /**
- * The entry: a quiet pill floated into the stats row's empty right end.
- * The dock renders the shipped stats row (order 0, centered) then us — a
- * zero-height full-width anchor; the pill is absolutely positioned against
- * it, up into the row. Nothing blocks the pills: the row's right end is
- * empty space (its content is centered).
+ * The entry: a quiet pill hugging the composer's right edge. The dock renders
+ * the shipped stats row (order 0) and the host's context meter in one compact
+ * centered band; our zero-size static anchor leaves that band untouched while
+ * the absolute pill resolves against the composer's sticky seat — right edge,
+ * glued to the stats band's line.
  */
 export function MiniBoardButton(props: MiniBoardProps): JSX.Element {
   const store = props.store ?? getTaskboardStore()
@@ -438,26 +440,28 @@ function ClosedRow({ count, dnd, onExpand }: { count: number; dnd: MiniDnd; onEx
 // ------------------------------------------------------------------ styles
 
 const styles: Record<string, CSSProperties> = {
-  // Zero-height anchor right after the stats row in the composer dock; the
-  // pill floats UP into the row's empty right end. Same width cap as the row.
+  // Zero-size STATIC anchor in the composer dock. The 0.1.7 dock is a compact
+  // CENTERED flex row (stats pills + the context meter as the row's own last
+  // item) — the old "float into the row's empty right end" trick landed the
+  // pill mid-row. Static + zero-size keeps the dock's layout untouched, and
+  // the absolute pill resolves against the composer's sticky seat (the
+  // full-width positioned ancestor), hugging the composer's right edge.
   dockAnchor: {
-    position: 'relative',
-    width: '100%',
-    maxWidth: 'var(--dsh-chat-content-width)',
+    position: 'static',
+    width: 0,
     height: 0,
     overflow: 'visible',
-    margin: '0 auto',
     fontSize: 'var(--dsh-content-font-size-secondary, 12px)',
     lineHeight: '20px',
-    zIndex: 5,
   },
-  // The pill: right end of the stats row (the row's content is centered, so
-  // the right end is empty space). bottom:1 floats it up off the anchor line
-  // into the row band.
+  // The pill: right edge of the composer (the seat is sticky to the viewport
+  // bottom, so bottom stays glued to the stats band no matter how tall the
+  // input grows). right clearance matches the dock's own side padding.
   entryPill: {
     position: 'absolute',
     right: 'calc(var(--dsh-composer-side-clearance, 0px) + 16px)',
-    bottom: 1,
+    bottom: 4,
+    zIndex: 5,
   },
   entryIcon: { fontSize: 13, lineHeight: 1 },
   entryCount: { color: DIM, fontVariantNumeric: 'tabular-nums' },

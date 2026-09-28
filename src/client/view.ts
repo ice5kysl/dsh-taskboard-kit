@@ -15,19 +15,27 @@ import type { TaskboardStore } from './store.ts'
 
 /** The session-list slot share (host-provided hook argument shape). */
 export interface SessionListLike {
+  /** Selection INSIDE the list state — legacy (≤0.1.6) only. 0.1.7 moved the
+   *  selection out of the Controller ("view selection remains outside"): the
+   *  list state carries only ids/byId, and session-scoped slots receive the
+   *  current session as the `sessionId` standard prop instead. */
   current?: string
   byId?: Record<string, { cwd?: string } | undefined>
 }
 
-/** Read the selected session's directory out of the standard slot share.
- *  Shared by the board tab and the composer-side mini board entry. */
-export function useSessionCwd(props: { useSessions?: (selector: (state: SessionListLike) => unknown) => unknown }): string | undefined {
+/** Read the selected session's directory out of the standard slot shares.
+ *  0.1.7 hands the current session to session-scoped slots as the `sessionId`
+ *  prop; older hosts kept it in the list state's `current`. Prefer the prop,
+ *  fall back to the legacy field. Shared by the board tab and the
+ *  composer-side mini board entry. */
+export function useSessionCwd(props: { sessionId?: string; useSessions?: (selector: (state: SessionListLike) => unknown) => unknown }): string | undefined {
+  const scopedId = typeof props.sessionId === 'string' && props.sessionId ? props.sessionId : undefined
   const selector = props.useSessions
   const read = useCallback((state: SessionListLike): unknown => {
-    const current = state?.current
-    if (!current) return undefined
-    return state?.byId?.[current]?.cwd
-  }, [])
+    const id = scopedId ?? state?.current
+    if (!id) return undefined
+    return state?.byId?.[id]?.cwd
+  }, [scopedId])
   // `useSessions` is itself a hook when the host provides one: keep the call
   // unconditional in shape (no early return above it) so hook order stays
   // stable; the host keeps this prop stable for the lifetime of the surface.
