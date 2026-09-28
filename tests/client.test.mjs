@@ -96,7 +96,7 @@ await check('apply(): the「看板」conversation view tab is registered', () =>
   }
   client.apply(ctx)
 
-  assert.deepEqual([...new Set(injections)].sort(), ['conversation.input.overlay', 'conversation.input.right', 'conversation.view'])
+  assert.deepEqual([...new Set(injections)].sort(), ['conversation.composer.dock', 'conversation.view', 'shell.overlay'])
 
   // The「看板」view tab sits after 对话 | 轨迹 | 文件 | 消息 (order 40).
   const view = registrations.find((row) => row.options.name === 'conversation.view')
@@ -106,13 +106,14 @@ await check('apply(): the「看板」conversation view tab is registered', () =>
   assert.equal(view.options.label(), 'Board')
   assert.equal(typeof view.component, 'function')
 
-  // The composer entry + floating mini board drawer.
-  const entry = registrations.find((row) => row.options.name === 'conversation.input.right')
-  assert.ok(entry, 'the composer entry button is registered')
+  // The status-bar entry pill (composer.dock, beside the shipped stats row)
+  // and the full-height right drawer (shell.overlay).
+  const entry = registrations.find((row) => row.options.name === 'conversation.composer.dock')
+  assert.ok(entry, 'the status-bar entry is registered into composer.dock')
   assert.equal(entry.options.id, 'taskboard-mini-entry')
   assert.equal(typeof entry.component, 'function')
-  const mini = registrations.find((row) => row.options.name === 'conversation.input.overlay')
-  assert.ok(mini, 'the mini board drawer is registered into the composer overlay')
+  const mini = registrations.find((row) => row.options.name === 'shell.overlay')
+  assert.ok(mini, 'the mini board drawer is registered into shell.overlay')
   assert.equal(mini.options.id, 'taskboard-mini')
   assert.equal(typeof mini.component, 'function')
 
@@ -436,18 +437,23 @@ await check('mini board: entry button badge and the six-block drawer', async () 
   store.setCwd('/work/a')
   await store.refresh()
 
-  // Entry button: badge = the four open-lane tasks.
+  // Entry pill: quiet stats-row look, count as a dim suffix (no loud badge).
   const button = renderToStaticMarkup(React.createElement(client.MiniBoardButton, { store }))
-  assert.ok(button.includes('>4</span>'), 'badge shows the open-task count')
-  assert.ok(button.includes('Task board'), 'button carries the title')
+  assert.ok(button.includes('tb-mini-entry'), 'the pill rides the quiet entry class')
+  assert.ok(button.includes('Board'), 'button label')
+  assert.ok(button.includes('· 4'), 'open-task count as a pill suffix')
+  assert.ok(button.includes('data-composer-stats') === false, 'we never impersonate the stats row')
 
   // Drawer closed → the overlay renders nothing at all.
-  const closed = renderToStaticMarkup(React.createElement(client.MiniBoardOverlay, { store }))
+  const closed = renderToStaticMarkup(React.createElement(client.MiniBoardDrawer, { store }))
   assert.equal(closed, '', 'overlay is null while closed')
 
-  // Drawer open: five expanded blocks + the collapsed closed row.
+  // Drawer open: full-height right drawer, five expanded blocks + the
+  // collapsed closed row.
   store.setMiniOpen(true)
-  const open = renderToStaticMarkup(React.createElement(client.MiniBoardOverlay, { store }))
+  const open = renderToStaticMarkup(React.createElement(client.MiniBoardDrawer, { store }))
+  assert.ok(open.includes('position:fixed'), 'frame-wide backdrop')
+  assert.ok(open.includes('height:100%'), 'full-height drawer')
   for (const label of ['Pool', 'Assigned', 'In progress', 'In review', 'Done']) {
     assert.ok(open.includes(`>${label}<`), `block: ${label}`)
   }
@@ -462,9 +468,8 @@ await check('mini board: entry button badge and the six-block drawer', async () 
 
   // A row click opens the layer-2 detail drawer (shared DetailDrawer).
   store.select('T-3')
-  const layered = renderToStaticMarkup(React.createElement(client.MiniBoardOverlay, { store }))
+  const layered = renderToStaticMarkup(React.createElement(client.MiniBoardDrawer, { store }))
   assert.ok(layered.includes('wip one') && layered.includes('>Details<'), 'layer 2 stacks the detail drawer over the sheet')
-  assert.ok(layered.includes('z-index:41') || layered.includes('zIndex:41') || layered.includes('z-index: 41'), 'layer 2 sits above the sheet')
 })
 
 await check('runPlanOps: executes the plan in order and stops at the first failure', async () => {

@@ -8,14 +8,14 @@
  *     tab (30), so the session header reads 对话 | 轨迹 | 文件 | 消息 | 看板.
  *     While active, the session body is the six-lane kanban of the current
  *     session's workspace.
- *  2. `conversation.input.right` (list/session) — a quiet ▤ button before the
- *     composer submit action, badged with the open-task count. Its residency
- *     in the composer is also what drives the store's cwd tracking when the
- *     看板 tab is never opened.
- *  3. `conversation.input.overlay` (list/session) — the mini board drawer:
- *     six status blocks floating above the composer card, planDrop drag
- *     between blocks, the roster picker on 已指派 drops, and the shared
- *     DetailDrawer stacked as layer 2 (MiniBoard.tsx).
+ *  2. `conversation.composer.dock` (list/session) — the entry: a quiet pill
+ *     floated into the right end of the shipped stats row (「3 轮 73 步 ·
+ *     262 tok/s · …」is this dock's order-0 entry 'stats', a centered row).
+ *     Its residency in the composer is also what drives the store's cwd
+ *     tracking when the 看板 tab is never opened.
+ *  3. `shell.overlay` (list/root) — the mini board drawer: a full-height
+ *     right-edge side drawer over the frame. The layer portals to body, so
+ *     the drawer re-inherits the theme tokens itself (MiniBoard.tsx).
  *
  * The page-wide store keeps the board fresh with a low-frequency poll of
  * `/dsh-taskboard/board` (15s, only while the page is visible).
@@ -29,7 +29,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { BoardPanel } from './BoardPanel.tsx'
 import { L } from './locale.ts'
-import { MiniBoardButton, MiniBoardOverlay } from './MiniBoard.tsx'
+import { MiniBoardButton, MiniBoardDrawer } from './MiniBoard.tsx'
 import { getTaskboardStore } from './store.ts'
 
 export const name = 'taskboard-kit'
@@ -46,7 +46,7 @@ export const MINI_OVERLAY_ID = 'taskboard-mini'
 // shared board math.
 export { BoardPanel } from './BoardPanel.tsx'
 export { taskRef } from './BoardPanel.tsx'
-export { MiniBoardButton, MiniBoardOverlay } from './MiniBoard.tsx'
+export { MiniBoardButton, MiniBoardDrawer } from './MiniBoard.tsx'
 export { createBridgeClient } from './api.ts'
 export { createTaskboardStore, getTaskboardStore } from './store.ts'
 export { columnOf, compareTasks } from '../shared/types.ts'
@@ -93,11 +93,11 @@ export function apply(raw: Context): void {
     BoardPanel,
   ))
 
-  // The composer entry: a small ▤ button with the open-task badge, sitting
-  // before the submit action (input.right = "compact controls").
-  ctx.slots.inject('conversation.input.right', () => ctx.slots.register(
+  // The status-bar entry: a quiet pill at the stats row's right end
+  // (composer.dock's shipped order-0 entry is the stats pills row).
+  ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register(
     {
-      name: 'conversation.input.right',
+      name: 'conversation.composer.dock',
       id: MINI_ENTRY_ID,
       order: 40,
       label: () => L('看板', 'Board'),
@@ -106,20 +106,19 @@ export function apply(raw: Context): void {
     MiniBoardButton,
   ))
 
-  // The mini board drawer: the overlay slot's entries float inside the
-  // composer card (a zero-height absolute anchor at its top edge), which is
-  // exactly where the sheet rises from.
-  ctx.slots.inject('conversation.input.overlay', () => ctx.slots.register(
+  // The mini board drawer: shell.overlay is the frame-wide floating layer
+  // (portal'd to body; the drawer re-inherits theme tokens itself).
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register(
     {
-      name: 'conversation.input.overlay',
+      name: 'shell.overlay',
       id: MINI_OVERLAY_ID,
       order: 40,
       label: () => L('看板', 'Board'),
       inject: () => ({ store }),
     },
-    MiniBoardOverlay,
+    MiniBoardDrawer,
   ))
 
-  log.info('taskboard-kit browser face ready (conversation view + composer mini board)')
+  log.info('taskboard-kit browser face ready (conversation view + status-bar mini board)')
 }
 

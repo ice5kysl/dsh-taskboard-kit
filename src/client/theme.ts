@@ -28,6 +28,7 @@ import type { TaskPriority } from '../shared/types.ts'
 
 export const FG = 'var(--dsw-alias-label-primary, #1f2328)'
 export const DIM = 'var(--dsw-alias-label-secondary, #6b7280)'
+export const TERTIARY = 'var(--dsw-alias-label-tertiary, #8a919c)'
 export const FAINT = 'var(--dsw-alias-label-dimmed, #9ca3af)'
 export const BG = 'var(--dsw-alias-bg-layer-2, #ffffff)'
 export const BG_SUNK = 'var(--dsw-alias-bg-layer-1, #f5f7fa)'
@@ -103,10 +104,15 @@ export const TB_CSS = `
 .tb-md pre { background: ${BG_SUNK}; border: 1px solid ${BORDER}; border-radius: 8px; padding: 9px 11px; overflow-x: auto; margin: 0.5em 0; line-height: 1.6; tab-size: 2; }
 .tb-md pre code { background: transparent; padding: 0; display: block; white-space: pre; }
 .tb-md blockquote { margin: 0.5em 0; padding: 2px 12px; border-left: 3px solid ${ACCENT}; color: ${DIM}; border-radius: 0 6px 6px 0; }
-/* Mini board (composer-side drawer): section drop targets and rows. */
+/* Mini board (status-bar entry + right drawer): stats-row pill, section drop
+   targets, compact rows. */
 .tb-mini-sec.dragover { box-shadow: inset 0 0 0 1.5px ${ACCENT} !important; background: ${HOVER_BG} !important; }
 .tb-mini-row { display: flex; width: 100%; box-sizing: border-box; align-items: center; gap: 6px; border: none; border-radius: 6px; background: transparent; color: inherit; padding: 5px 8px; font-size: 12px; font-family: inherit; line-height: 1.4; cursor: pointer; text-align: left; }
 .tb-mini-row:hover { background: ${HOVER_BG}; }
 .tb-mini-row.dragging { opacity: 0.5; }
 .tb-mini-closed:hover { background: ${HOVER_BG}; }
+/* The entry pill: same visual weight as the shipped stats pills (quiet
+   tertiary text, transparent until hovered). */
+.tb-mini-entry { display: inline-flex; align-items: center; gap: 5px; border: none; border-radius: 24px; background: transparent; color: ${TERTIARY}; padding: 1px 8px; font: inherit; cursor: pointer; white-space: nowrap; }
+.tb-mini-entry:hover { background: ${HOVER_BG}; color: ${DIM}; }
 `

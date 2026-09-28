@@ -1235,9 +1235,9 @@ function GuideOverlay({ cli, cwd, boardFile, onClose }: { cli: string | null; cw
           </section>
 
           <section style={styles.guideSection}>
-            <div style={styles.guideH}>{L('输入区的小看板', 'The mini board by the composer')}</div>
+            <div style={styles.guideH}>{L('状态栏的看板入口', 'The board entry in the status bar')}</div>
             <p style={styles.guideP}>
-              {L('输入框右下角的 ▤ 按钮（带未完成任务数徽标）拉开一个迷你看板：六个状态块纵排，拖任务行改状态（拖到「已指派」出成员选择器），点行叠出完整详情抽屉；已关闭默认折叠成一行。', 'The ▤ button at the composer\'s right edge (badged with the open-task count) pulls up a mini board: six status blocks stacked vertically — drag a row to change its state (dropping on 已指派 opens the roster picker), click a row to stack the full detail drawer on top; 已关闭 stays collapsed into one row until expanded.')}
+              {L('底部状态栏（轮次/步数/token 那一行）右端有一个低调的「看板」小按钮（带未完成任务数）：点开从右侧拉出全高抽屉——六个状态块纵排，拖任务行改状态（拖到「已指派」出成员选择器），点行再叠一层完整详情抽屉；已关闭默认折叠成一行。', 'At the right end of the bottom status bar (the turns/steps/tokens row) sits a quiet「看板」pill with the open-task count: it opens a full-height drawer from the right edge — six status blocks stacked vertically; drag a row to change its state (dropping on 已指派 opens the roster picker), click a row to stack the full detail drawer on top; 已关闭 stays collapsed into one row until expanded.')}
             </p>
           </section>
 
