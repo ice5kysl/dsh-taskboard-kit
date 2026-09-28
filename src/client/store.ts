@@ -29,11 +29,13 @@ export interface TaskboardState {
   /** Current session's directory; how the host finds the workspace board. */
   cwd: string | null
   board: Board | null
-  /** Task open in the detail drawer. */
+  /** Task open in the BOARD TAB's detail drawer. (The mini board keeps its
+   *  own selection locally — a shared selection rendered both drawers.) */
   selectedId: string | null
   /** Whether the closed column is expanded (default: a collapsed strip). */
   showClosed: boolean
-  /** Whether the composer-side mini board drawer is open. */
+  /** Whether the status-bar mini board drawer is open (shared between the
+   *  entry pill and the shell.overlay drawer — the two halves of one surface). */
   miniOpen: boolean
   /** A mutation is in flight — action buttons stay disabled meanwhile. */
   busy: boolean
@@ -195,7 +197,9 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
       set({ showClosed: on })
     },
     setMiniOpen(open) {
-      set({ miniOpen: open, ...(open ? {} : { selectedId: null }) })
+      // The mini drawer's own selection is component-local and unmounts with
+      // it — nothing to clear here (and the board tab's selectedId is theirs).
+      set({ miniOpen: open })
     },
     clearError() {
       set({ error: null })

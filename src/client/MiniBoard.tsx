@@ -26,6 +26,11 @@
  * a row click stacks the shared DetailDrawer as layer 2. ESC and the backdrop
  * unwind one layer at a time: picker → detail → drawer.
  *
+ * Selection is deliberately split: the mini drawer's open task is
+ * component-local state (unmounted with the drawer, so closing leaves no
+ * residue), while the board tab owns `store.selectedId` — a shared selection
+ * rendered BOTH surfaces' detail drawers on top of each other.
+ *
  * @module dsh-taskboard-kit/client-mini-board
  */
 
@@ -41,7 +46,7 @@ import { planDrop } from '../shared/dnd.ts'
 import { knownActors } from './actors.ts'
 import { L } from './locale.ts'
 import { AssignPicker, DetailDrawer } from './BoardPanel.tsx'
-import type { TaskboardStore } from './store.ts'
+import type { TaskboardState, TaskboardStore } from './store.ts'
 import { getTaskboardStore } from './store.ts'
 import { BG, BG_RAISED, BORDER, BORDER_STRONG, DIM, FAINT, FG, LINK, ON_PRIMARY, PRIORITY_COLORS, TB_CSS } from './theme.ts'
 import { columnLabel, openTaskCount, priorityLabel, runPlanOps, taskRef, useSessionCwd, valueText, type SessionListLike } from './view.ts'
@@ -52,6 +57,8 @@ import { columnLabel, openTaskCount, priorityLabel, runPlanOps, taskRef, useSess
 export interface MiniBoardProps {
   store?: TaskboardStore
   useSessions?: (selector: (state: SessionListLike) => unknown) => unknown
+  /** Open the layer-2 detail for this task on first render (tests drive it). */
+  initialSelectedId?: string
 }
 
 /** Drag wiring inside the mini drawer (same shape as the board's LaneDnd). */
@@ -125,14 +132,23 @@ function inheritThemeTokens(root: HTMLElement): void {
   }
 }
 
-/** The full-height right-edge drawer (null while closed). */
+/** The full-height right-edge drawer (null while closed). The wrapper owns
+ *  the open/closed gate; ALL interaction state lives in the content
+ *  component, which unmounts on close — nothing survives into the next open. */
 export function MiniBoardDrawer(props: MiniBoardProps): JSX.Element | null {
   const store = props.store ?? getTaskboardStore()
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState)
-  const [dragId, setDragId] = useState<string | null>(null)
+  if (!state.miniOpen) return null
+  return <MiniBoardDrawerContent store={store} state={state} initialSelectedId={props.initialSelectedId} />
+}
+
+function MiniBoardDrawerContent({ store, state, initialSelectedId }: { store: TaskboardStore; state: TaskboardState; initialSelectedId?: string }): JSX.Element {  const [dragId, setDragId] = useState<string | null>(null)
   const [overColumn, setOverColumn] = useState<BoardColumn | null>(null)
   const [pickerId, setPickerId] = useState<string | null>(null)
   const [closedOpen, setClosedOpen] = useState(false)
+  // The mini drawer's open task is LOCAL — the board tab owns store.selectedId
+  // (the shared-store selection rendered both drawers on top of each other).
+  const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId ?? null)
   const backdropRef = useRef<HTMLDivElement>(null)
 
   const board = state.board
@@ -146,20 +162,18 @@ export function MiniBoardDrawer(props: MiniBoardProps): JSX.Element | null {
       })),
     [tasks],
   )
-  const selectedId = state.selectedId
   const selected: Task | null = selectedId && board ? board.tasks[selectedId] ?? null : null
   const pickerTask: Task | null = pickerId && board ? board.tasks[pickerId] ?? null : null
 
   // A fresh open shows fresh data.
   useEffect(() => {
-    if (state.miniOpen) void store.refresh()
-  }, [state.miniOpen, store])
+    void store.refresh()
+  }, [store])
 
   // Portal'd out of the themed subtree: copy the tokens onto the backdrop
   // (the shared ancestor of both drawer layers) on open, and re-copy if the
   // theme flips while the drawer is open.
   useEffect(() => {
-    if (!state.miniOpen) return
     const root = backdropRef.current
     if (!root) return
     inheritThemeTokens(root)
@@ -167,17 +181,16 @@ export function MiniBoardDrawer(props: MiniBoardProps): JSX.Element | null {
     const observer = new MutationObserver(() => inheritThemeTokens(root))
     observer.observe(document.body, { attributes: true, attributeFilter: ['data-ds-dark-theme', 'class'] })
     return () => observer.disconnect()
-  }, [state.miniOpen])
+  }, [])
 
   const unwind = (): void => {
     if (pickerId) setPickerId(null)
-    else if (selected) store.select(null)
+    else if (selected) setSelectedId(null)
     else store.setMiniOpen(false)
   }
 
   // ESC unwinds one layer at a time: picker → detail drawer → drawer.
   useEffect(() => {
-    if (!state.miniOpen) return
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') unwind()
     }
@@ -207,8 +220,6 @@ export function MiniBoardDrawer(props: MiniBoardProps): JSX.Element | null {
       void runDrop(id, column)
     },
   }
-
-  if (!state.miniOpen) return null
 
   return (
     <div ref={backdropRef} style={styles.backdrop}>
@@ -243,7 +254,7 @@ export function MiniBoardDrawer(props: MiniBoardProps): JSX.Element | null {
                   column={column}
                   tasks={list}
                   dnd={dnd}
-                  onOpenTask={(id) => store.select(id)}
+                  onOpenTask={(id) => setSelectedId(id)}
                   onCollapse={column === 'closed' ? () => setClosedOpen(false) : undefined}
                   picker={
                     column === 'assigned' && pickerTask ? (
@@ -278,7 +289,7 @@ export function MiniBoardDrawer(props: MiniBoardProps): JSX.Element | null {
           state={state}
           store={store}
           actors={actors}
-          onClose={() => store.select(null)}
+          onClose={() => setSelectedId(null)}
           style={styles.detailOverlay}
         />
       )}

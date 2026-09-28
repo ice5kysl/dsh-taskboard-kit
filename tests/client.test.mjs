@@ -469,13 +469,22 @@ await check('mini board: entry button badge and the six-block drawer', async () 
   // A row click opens the layer-2 detail drawer (shared DetailDrawer),
   // visibly offset from the board drawer: narrower (520 vs 560) and floated
   // 12px off the top and bottom, so the lower layer's left edge + corners
-  // peek out while both right edges stay flush with the frame.
-  store.select('T-3')
-  const layered = renderToStaticMarkup(React.createElement(client.MiniBoardDrawer, { store }))
+  // peek out while both right edges stay flush with the frame. The mini
+  // drawer's selection is component-local — SSR drives it via the prop.
+  const layered = renderToStaticMarkup(React.createElement(client.MiniBoardDrawer, { store, initialSelectedId: 'T-3' }))
   assert.ok(layered.includes('wip one') && layered.includes('>Details<'), 'layer 2 stacks the detail drawer over the sheet')
   assert.ok(layered.includes('width:560px'), 'board drawer widened to 560')
   assert.ok(layered.includes('width:520px'), 'detail layer is narrower')
   assert.ok(layered.includes('top:12px') && layered.includes('bottom:12px'), 'detail layer floats off top and bottom')
+
+  // The ghost-drawer regression: a selection in the shared store (the board
+  // tab's) must NOT open a detail inside the mini drawer — that rendered
+  // both surfaces' DetailDrawers on top of each other.
+  store.select('T-3')
+  const ghost = renderToStaticMarkup(React.createElement(client.MiniBoardDrawer, { store }))
+  assert.ok(!ghost.includes('>Details<'), 'store.selectedId does not leak into the mini drawer')
+  assert.equal(store.getState().selectedId, 'T-3', 'the board tab keeps its own selection')
+  store.select(null)
 })
 
 await check('runPlanOps: executes the plan in order and stops at the first failure', async () => {
