@@ -329,6 +329,44 @@ await check('addComment appends to comments, moves updated_at, and never touches
   await rejectsWith(addComment(ws, 'T-999', 'ghost', 'kimi'), 'not-found')
 })
 
+await check('loadBoard corrects a stale workspace field after the directory moved', async () => {
+  const movedWs = await mkdtemp(join(tmpdir(), 'dsh-taskboard-moved-'))
+  try {
+    await mkdir(join(movedWs, '.dsh'), { recursive: true })
+    const oldPath = '/Users/old/location/dsh'
+    const stale = {
+      version: 1,
+      workspace: oldPath, // the board moved, the field stayed behind
+      next_seq: 2,
+      tasks: {
+        'T-1': {
+          id: 'T-1', title: 'moved board', detail: '', status: 'open', assignee: null,
+          priority: 'medium', value: null, tags: [], created_by: 'human',
+          created_at: '2026-09-20T00:00:00.000Z', updated_at: '2026-09-20T00:00:00.000Z',
+          log: [{ at: '2026-09-20T00:00:00.000Z', by: 'human', event: 'created' }],
+          comments: [],
+        },
+      },
+    }
+    const seeded = `${JSON.stringify(stale, null, 2)}\n`
+    const file = join(movedWs, '.dsh', 'taskboard.json')
+    await writeFile(file, seeded)
+
+    const board = await loadBoard(movedWs)
+    assert.equal(board.workspace, movedWs, 'the loaded board reports the CURRENT cwd')
+
+    // Lazy by design: a read-only load must not write — the on-disk field is
+    // still stale until the next mutation carries the correction out.
+    assert.equal(await readFile(file, 'utf8'), seeded, 'a pure load never writes')
+
+    await addComment(movedWs, 'T-1', 'hello from the new location', 'kimi')
+    const persisted = JSON.parse(await readFile(file, 'utf8'))
+    assert.equal(persisted.workspace, movedWs, 'the next normal write persists the correction')
+  } finally {
+    await rm(movedWs, { recursive: true, force: true })
+  }
+})
+
 await check('loadBoard migrates legacy boards (cancelled → closed, missing value/comments)', async () => {
   const legacyWs = await mkdtemp(join(tmpdir(), 'dsh-taskboard-legacy-'))
   try {

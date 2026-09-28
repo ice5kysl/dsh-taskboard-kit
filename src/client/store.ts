@@ -33,6 +33,8 @@ export interface TaskboardState {
   selectedId: string | null
   /** Whether the closed column is expanded (default: a collapsed strip). */
   showClosed: boolean
+  /** Whether the composer-side mini board drawer is open. */
+  miniOpen: boolean
   /** A mutation is in flight — action buttons stay disabled meanwhile. */
   busy: boolean
   /** Absolute path of the taskboard CLI (guide interpolation; null = the
@@ -56,6 +58,8 @@ export interface TaskboardStore {
   refresh(): Promise<void>
   select(id: string | null): void
   setShowClosed(on: boolean): void
+  /** Toggle the composer-side mini board drawer. */
+  setMiniOpen(open: boolean): void
   clearError(): void
   /** Create a task; resolves true on success so the form can close itself. */
   create(input: CreateInput): Promise<boolean>
@@ -79,6 +83,7 @@ const INITIAL: TaskboardState = {
   board: null,
   selectedId: null,
   showClosed: false,
+  miniOpen: false,
   busy: false,
   cli: null,
   boardFile: null,
@@ -188,6 +193,9 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
     },
     setShowClosed(on) {
       set({ showClosed: on })
+    },
+    setMiniOpen(open) {
+      set({ miniOpen: open, ...(open ? {} : { selectedId: null }) })
     },
     clearError() {
       set({ error: null })

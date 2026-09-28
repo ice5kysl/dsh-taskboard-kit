@@ -87,6 +87,13 @@ export async function loadBoard(cwd: string): Promise<Board> {
       if ((entry.event as string) === 'cancelled') entry.event = 'closed'
     }
   }
+  // Workspace moves (the directory was relocated since the board was written):
+  // report the CURRENT cwd from here on. Lazy on purpose — read paths never
+  // take the lock, and every mutation saves the loaded board back, so the
+  // correction rides the next normal write instead of forcing a locked write
+  // into a read-only list.
+  const currentWorkspace = resolve(cwd)
+  if (parsed.workspace !== currentWorkspace) parsed.workspace = currentWorkspace
   return parsed
 }
 

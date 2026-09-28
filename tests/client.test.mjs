@@ -96,7 +96,7 @@ await check('apply(): the「看板」conversation view tab is registered', () =>
   }
   client.apply(ctx)
 
-  assert.deepEqual([...new Set(injections)], ['conversation.view'])
+  assert.deepEqual([...new Set(injections)].sort(), ['conversation.input.overlay', 'conversation.input.right', 'conversation.view'])
 
   // The「看板」view tab sits after 对话 | 轨迹 | 文件 | 消息 (order 40).
   const view = registrations.find((row) => row.options.name === 'conversation.view')
@@ -106,14 +106,27 @@ await check('apply(): the「看板」conversation view tab is registered', () =>
   assert.equal(view.options.label(), 'Board')
   assert.equal(typeof view.component, 'function')
 
-  // The slot share is the page-wide store.
+  // The composer entry + floating mini board drawer.
+  const entry = registrations.find((row) => row.options.name === 'conversation.input.right')
+  assert.ok(entry, 'the composer entry button is registered')
+  assert.equal(entry.options.id, 'taskboard-mini-entry')
+  assert.equal(typeof entry.component, 'function')
+  const mini = registrations.find((row) => row.options.name === 'conversation.input.overlay')
+  assert.ok(mini, 'the mini board drawer is registered into the composer overlay')
+  assert.equal(mini.options.id, 'taskboard-mini')
+  assert.equal(typeof mini.component, 'function')
+
+  // All three surfaces share the page-wide store.
   const store = view.options.inject().store
   assert.equal(typeof store.getState, 'function')
   assert.equal(typeof store.subscribe, 'function')
+  assert.equal(entry.options.inject().store, store, 'entry shares the store')
+  assert.equal(mini.options.inject().store, store, 'mini board shares the store')
   const state = store.getState()
   assert.equal(state.status, 'loading')
   assert.equal(state.board, null)
   assert.equal(state.showClosed, false)
+  assert.equal(state.miniOpen, false)
 
   // Effects: just the board poller — its disposer must stop the interval.
   assert.equal(disposers.length, 1)
@@ -377,6 +390,101 @@ await check('theme: the primary button rides the shell link tokens (no white blo
   // No tb-* rule may hardcode a white/light background (var() fallbacks for
   // pre-token shells are the sanctioned exception and live inside var()).
   assert.ok(!/\.tb-[a-z-]+[^{]*\{[^}]*background:\s*(#fff|#ffffff|white)\b/i.test(css), 'no tb-* rule hardcodes a white background')
+})
+
+// --------------------------------------------------------- mini board (composer side)
+
+await check('openTaskCount: every not-final task, zero on an empty board', () => {
+  assert.equal(typeof client.openTaskCount, 'function')
+  const task = (status, assignee) => ({ id: 'T-x', title: 't', status, assignee })
+  const board = {
+    version: 1, workspace: '/w', next_seq: 8,
+    tasks: {
+      'T-1': task('open', null),        // pool
+      'T-2': task('open', 'kimi'),      // assigned
+      'T-3': task('in_progress', 'kimi'),
+      'T-4': task('review', 'kimi'),
+      'T-5': task('done', 'kimi'),      // final
+      'T-6': task('closed', null),      // final
+    },
+  }
+  assert.equal(client.openTaskCount(board), 4, 'open+assigned+in_progress+review counted, done/closed not')
+  assert.equal(client.openTaskCount({ version: 1, workspace: '/w', next_seq: 1, tasks: {} }), 0, 'empty board → 0 (badge hides)')
+  assert.equal(client.openTaskCount(null), 0, 'no board → 0')
+})
+
+await check('mini board: entry button badge and the six-block drawer', async () => {
+  const now = Date.now()
+  const iso = (ms) => new Date(now - ms).toISOString()
+  const mk = (id, title, status, assignee) => ({
+    id, title, detail: '', status, assignee, priority: 'medium', value: null,
+    tags: [], created_by: 'human', created_at: iso(1000 * 60 * 60), updated_at: iso(1000 * 60), log: [], comments: [],
+  })
+  const board = {
+    version: 1, workspace: '/work/a', next_seq: 7,
+    tasks: {
+      'T-1': mk('T-1', 'pool one', 'open', null),
+      'T-2': mk('T-2', 'assigned one', 'open', 'kimi'),
+      'T-3': mk('T-3', 'wip one', 'in_progress', 'kimi'),
+      'T-4': mk('T-4', 'review one', 'review', 'kimi'),
+      'T-5': mk('T-5', 'done one', 'done', 'kimi'),
+      'T-6': mk('T-6', 'closed one', 'closed', 'kimi'),
+    },
+  }
+  const bridge = { board: async () => ({ ok: true, board }) }
+  const store = client.createTaskboardStore({ bridge, pollMs: 10 ** 9 })
+  store.setCwd('/work/a')
+  await store.refresh()
+
+  // Entry button: badge = the four open-lane tasks.
+  const button = renderToStaticMarkup(React.createElement(client.MiniBoardButton, { store }))
+  assert.ok(button.includes('>4</span>'), 'badge shows the open-task count')
+  assert.ok(button.includes('Task board'), 'button carries the title')
+
+  // Drawer closed → the overlay renders nothing at all.
+  const closed = renderToStaticMarkup(React.createElement(client.MiniBoardOverlay, { store }))
+  assert.equal(closed, '', 'overlay is null while closed')
+
+  // Drawer open: five expanded blocks + the collapsed closed row.
+  store.setMiniOpen(true)
+  const open = renderToStaticMarkup(React.createElement(client.MiniBoardOverlay, { store }))
+  for (const label of ['Pool', 'Assigned', 'In progress', 'In review', 'Done']) {
+    assert.ok(open.includes(`>${label}<`), `block: ${label}`)
+  }
+  assert.ok(open.includes('Closed (1)'), 'closed renders collapsed as one toggle row')
+  assert.ok(!open.includes('closed one'), 'closed tasks hidden while collapsed')
+  for (const title of ['pool one', 'assigned one', 'wip one', 'review one', 'done one']) {
+    assert.ok(open.includes(title), `row: ${title}`)
+  }
+  assert.ok(open.includes('>#3<'), 'rows carry the #N ref')
+  assert.ok(open.includes('unclaimed'), 'pool row carries the outline badge')
+  assert.ok(open.includes('draggable'), 'rows are draggable (planDrop pipeline)')
+
+  // A row click opens the layer-2 detail drawer (shared DetailDrawer).
+  store.select('T-3')
+  const layered = renderToStaticMarkup(React.createElement(client.MiniBoardOverlay, { store }))
+  assert.ok(layered.includes('wip one') && layered.includes('>Details<'), 'layer 2 stacks the detail drawer over the sheet')
+  assert.ok(layered.includes('z-index:41') || layered.includes('zIndex:41') || layered.includes('z-index: 41'), 'layer 2 sits above the sheet')
+})
+
+await check('runPlanOps: executes the plan in order and stops at the first failure', async () => {
+  assert.equal(typeof client.runPlanOps, 'function')
+  const calls = []
+  const store = {
+    claim: async (id) => { calls.push(['claim', id]); return true },
+    update: async (input) => { calls.push(['update', input]); return true },
+  }
+  // The mini board's drop on 待审核 for a pool card = claim + submit.
+  await client.runPlanOps(store, 'T-1', client.planDrop({ status: 'open', assignee: null }, 'review'))
+  assert.deepEqual(calls, [['claim', 'T-1'], ['update', { id: 'T-1', action: 'submit' }]], 'claim then submit, in order')
+
+  // A failing step stops the sequence (the error rides the store's channel).
+  const failing = {
+    claim: async () => false,
+    update: async (input) => { calls.push(['update-after-fail', input]); return true },
+  }
+  await client.runPlanOps(failing, 'T-2', client.planDrop({ status: 'open', assignee: null }, 'review'))
+  assert.ok(!calls.some((row) => row[0] === 'update-after-fail'), 'no op runs after a failure')
 })
 
 // ------------------------------------------------------------------ done

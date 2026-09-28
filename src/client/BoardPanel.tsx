@@ -54,6 +54,28 @@ import { conventionSnippet, dispatchSnippet, guideProjectDir, hookSnippetClaude,
 import { L } from './locale.ts'
 import { renderMarkdown } from './markdown.ts'
 import type { TaskboardState, TaskboardStore } from './store.ts'
+import {
+  ACCENT,
+  BG,
+  BG_RAISED,
+  BG_SUNK,
+  BORDER,
+  BORDER_STRONG,
+  DANGER,
+  DANGER_BG,
+  DIM,
+  FAINT,
+  FG,
+  HOVER_BG,
+  LINK,
+  MASK,
+  PRIORITY_COLORS,
+  TB_CSS,
+} from './theme.ts'
+import { ageText, columnLabel, priorityLabel, runPlanOps, taskRef, useSessionCwd, valueText, type SessionListLike } from './view.ts'
+
+// taskRef moved to view.ts (shared with the mini board); keep the export path.
+export { taskRef } from './view.ts'
 
 /** Props handed to the view: injected store + the standard slot shares. */
 export interface BoardPanelProps {
@@ -67,11 +89,6 @@ export interface BoardPanelProps {
   initialGuideOpen?: boolean
 }
 
-interface SessionListLike {
-  current?: string
-  byId?: Record<string, { cwd?: string } | undefined>
-}
-
 /** Drag-and-drop wiring the panel hands down to the lanes and their cards. */
 interface LaneDnd {
   /** Id of the card currently being dragged (drives its translucent style). */
@@ -83,97 +100,6 @@ interface LaneDnd {
   /** A card was dropped on a lane: run the planned op sequence. */
   onDropTask(id: string, column: BoardColumn): void
 }
-
-// ------------------------------------------------------------------ theme
-
-const FG = 'var(--dsw-alias-label-primary, #1f2328)'
-const DIM = 'var(--dsw-alias-label-secondary, #6b7280)'
-const FAINT = 'var(--dsw-alias-label-dimmed, #9ca3af)'
-const BG = 'var(--dsw-alias-bg-layer-2, #ffffff)'
-const BG_SUNK = 'var(--dsw-alias-bg-layer-1, #f5f7fa)'
-const BG_RAISED = 'var(--dsw-alias-bg-layer-3, #ffffff)'
-const BORDER = 'var(--dsw-alias-border-l1, rgba(28,35,51,0.12))'
-const BORDER_STRONG = 'var(--dsw-alias-border-l2, rgba(28,35,51,0.20))'
-const ACCENT = 'var(--dsw-alias-brand-primary, #2d66f7)'
-const DANGER = 'var(--dsw-alias-state-error-primary, #dc2626)'
-const HOVER_BG = 'var(--dsw-alias-interactive-bg-hover, rgba(28,35,51,0.06))'
-/**
- * dsh 的 brand-primary 是单色反色系（亮主题=近黑、暗主题=近白）：拿它当填充
- * 暗色下就是一块近白块（实证翻车一次）。壳层自己的蓝色主按钮（输入框发送键）
- * 实证计算值 = link 令牌（亮 #4176e6→shell 文案写作 #2d66f7 系 / 暗 #679efe），
- * 配套：字 = label-primary-foreground（亮 #fff / 暗 #0f1115），悬停 =
- * button-info-hover（亮 #679efe / 暗 #4176e6——shell 令牌表里没有 link-hover，
- * info 按钮对的 fill 恰好恒等于 link，hover 即它的配对）。
- */
-const PRIMARY_FILL = 'var(--dsw-alias-link, #2d66f7)'
-const PRIMARY_FILL_HOVER = 'var(--dsw-alias-button-info-hover, #5686fe)'
-const ON_PRIMARY = 'var(--dsw-alias-label-primary-foreground, #ffffff)'
-/** Text-level accents (links, badges, active chip/tab text) stay blue in both
- *  themes — brand-primary would read as near-white text in dark mode. */
-const LINK = 'var(--dsw-alias-link, #2d66f7)'
-const WARN = 'var(--dsw-alias-state-warn-primary, #d97706)'
-const FOCUS_HALO = 'var(--dsw-alias-interactive-bg-hover-accent, rgba(45,102,247,0.18))'
-const DANGER_BG = 'var(--dsw-alias-interactive-bg-hover-danger, rgba(220,38,38,0.12))'
-const MASK = 'var(--dsw-alias-bg-mask-1, rgba(0,0,0,0.28))'
-/* 保留的硬编码只有三处 box-shadow 的 rgba(0,0,0,…)——shell 令牌体系没有阴影
-   令牌（已核对 dsh-client-ui-theme 全量 dump），alpha 黑两主题下都成立。
-   var() 里的浅色兜底（#ffffff/#2d66f7 等）只服务没有令牌体系的旧 shell。 */
-
-const PRIORITY_COLORS: Record<TaskPriority, string> = { high: DANGER, medium: WARN, low: FAINT }
-
-/** Interactive-state rules for the tb-* classes used across the panel. */
-const TB_CSS = `
-.tb-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid ${BORDER_STRONG}; border-radius: 8px; background: transparent; color: inherit; padding: 5px 10px; font-size: 12px; font-family: inherit; line-height: 1.4; cursor: pointer; }
-.tb-btn:hover { background: ${HOVER_BG}; }
-.tb-btn:disabled { opacity: 0.55; cursor: default; }
-.tb-btn:disabled:hover { background: transparent; }
-/* Shell-native primary button: monochrome fill (near-black in light, near-white
-   in dark) with the on-fill text token — readable and native in BOTH themes. */
-.tb-btn-primary { background: ${PRIMARY_FILL}; border-color: transparent; color: ${ON_PRIMARY}; font-weight: 500; }
-.tb-btn-primary:hover { background: ${PRIMARY_FILL_HOVER}; }
-.tb-btn-primary:disabled:hover { background: ${PRIMARY_FILL}; }
-.tb-btn-danger { color: ${DANGER}; }
-.tb-iconbtn { display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: 6px; background: transparent; color: ${DIM}; padding: 4px 6px; font-size: 13px; font-family: inherit; line-height: 1; cursor: pointer; }
-.tb-iconbtn:hover { background: ${HOVER_BG}; color: ${FG}; }
-.tb-input, .tb-textarea { width: 100%; box-sizing: border-box; border: 1px solid ${BORDER_STRONG}; border-radius: 8px; background: ${BG}; color: inherit; padding: 6px 9px; font-size: 12.5px; font-family: inherit; line-height: 1.5; }
-.tb-input::placeholder, .tb-textarea::placeholder { color: ${DIM}; opacity: 0.7; }
-.tb-input:focus, .tb-textarea:focus { outline: none; border-color: ${LINK}; box-shadow: 0 0 0 3px ${FOCUS_HALO}; }
-.tb-textarea { resize: vertical; }
-.tb-card { display: block; width: 100%; box-sizing: border-box; text-align: left; border: 1px solid ${BORDER}; border-radius: 8px; background: ${BG_RAISED}; color: inherit; padding: 8px 10px; font-family: inherit; cursor: pointer; }
-.tb-card:hover { border-color: ${ACCENT}; }
-.tb-card.active { border-color: ${ACCENT}; box-shadow: 0 0 0 1px ${ACCENT}; }
-.tb-chip { border: 1px solid ${BORDER}; border-radius: 999px; background: transparent; color: ${DIM}; padding: 3px 11px; font-size: 11px; font-family: inherit; cursor: pointer; }
-.tb-chip:hover { color: ${FG}; border-color: ${BORDER_STRONG}; }
-.tb-chip.active { background: ${HOVER_BG}; color: ${LINK}; border-color: ${LINK}; font-weight: 600; }
-.tb-tag { font-size: 10px; color: ${DIM}; border: 1px solid ${BORDER}; border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
-.tb-badge { display: inline-flex; align-items: center; font-size: 10px; color: ${LINK}; background: ${HOVER_BG}; border-radius: 999px; padding: 1px 7px; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tb-badge-outline { display: inline-flex; align-items: center; font-size: 10px; color: ${DIM}; border: 1px dashed ${BORDER_STRONG}; border-radius: 999px; padding: 0 7px; white-space: nowrap; }
-/* Drop-target highlight rides the injected stylesheet (inline styles cannot
-   express state classes); !important beats the lane's inline background. */
-.tb-column.dragover { box-shadow: inset 0 0 0 2px ${ACCENT} !important; background: ${HOVER_BG} !important; }
-/* The collapsed closed column (narrow vertical strip). */
-.tb-closed-strip:hover { background: ${HOVER_BG} !important; }
-/* In-column assignee picker rows. */
-.tb-picker-row { display: flex; width: 100%; box-sizing: border-box; align-items: center; gap: 6px; border: none; border-radius: 6px; background: transparent; color: inherit; padding: 7px 10px; font-size: 12px; font-family: inherit; cursor: pointer; text-align: left; }
-.tb-picker-row:hover { background: ${HOVER_BG}; }
-/* Drawer tab strip. */
-.tb-tab { border: none; border-bottom: 2px solid transparent; background: transparent; color: ${DIM}; padding: 6px 2px; font-size: 12px; font-family: inherit; cursor: pointer; }
-.tb-tab:hover { color: ${FG}; }
-.tb-tab.active { color: ${LINK}; border-bottom-color: ${LINK}; font-weight: 600; }
-/* Rendered markdown (drawer detail + comments): compact, both themes. */
-.tb-md { overflow-wrap: break-word; min-width: 0; }
-.tb-md h1, .tb-md h2, .tb-md h3, .tb-md h4, .tb-md h5, .tb-md h6 { margin: 0.7em 0 0.35em; line-height: 1.35; font-weight: 600; }
-.tb-md h1 { font-size: 16px; } .tb-md h2 { font-size: 14.5px; } .tb-md h3 { font-size: 13.5px; } .tb-md h4, .tb-md h5, .tb-md h6 { font-size: 12.5px; }
-.tb-md p { margin: 0.4em 0; }
-.tb-md ul, .tb-md ol { margin: 0.3em 0; padding-left: 1.35em; }
-.tb-md li { margin: 0.12em 0; }
-.tb-md a { color: ${LINK}; text-decoration: none; }
-.tb-md a:hover { text-decoration: underline; }
-.tb-md code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; background: ${HOVER_BG}; padding: 1px 5px; border-radius: 5px; }
-.tb-md pre { background: ${BG_SUNK}; border: 1px solid ${BORDER}; border-radius: 8px; padding: 9px 11px; overflow-x: auto; margin: 0.5em 0; line-height: 1.6; tab-size: 2; }
-.tb-md pre code { background: transparent; padding: 0; display: block; white-space: pre; }
-.tb-md blockquote { margin: 0.5em 0; padding: 2px 12px; border-left: 3px solid ${ACCENT}; color: ${DIM}; border-radius: 0 6px 6px 0; }
-`
 
 // ------------------------------------------------------------------ helpers
 
@@ -230,21 +156,6 @@ function useRootHeightSync(): (node: HTMLDivElement | null) => void {
   }, [])
 }
 
-/** Read the selected session's directory out of the standard slot share. */
-function useSessionCwd(props: BoardPanelProps): string | undefined {
-  const selector = props.useSessions
-  const read = useCallback((state: SessionListLike): unknown => {
-    const current = state?.current
-    if (!current) return undefined
-    return state?.byId?.[current]?.cwd
-  }, [])
-  // `useSessions` is itself a hook when the host provides one: keep the call
-  // unconditional in shape (no early return above it) so hook order stays
-  // stable; the host keeps this prop stable for the panel's lifetime.
-  const value = typeof selector === 'function' ? selector(read) : undefined
-  return typeof value === 'string' ? value : undefined
-}
-
 /** `/very/long/workspace/path` → `workspace/path` (the last two segments). */
 function shortPath(cwd: string): string {
   const parts = cwd.split('/').filter(Boolean)
@@ -254,17 +165,6 @@ function shortPath(cwd: string): string {
 /** 「ui, kit，看板」→ ['ui', 'kit', '看板']：逗号/中文逗号/空白分隔，去空去重。 */
 function parseTags(text: string): string[] {
   return [...new Set(text.split(/[,，\s]+/).map((tag) => tag.trim()).filter(Boolean))]
-}
-
-/** Card age badge: 5m / 3h / 2d since creation. */
-function ageText(iso: string): string {
-  const at = Date.parse(iso)
-  if (Number.isNaN(at)) return ''
-  const minutes = Math.max(0, Math.floor((Date.now() - at) / 60_000))
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 48) return `${hours}h`
-  return `${Math.floor(hours / 24)}d`
 }
 
 /** Log timeline timestamp: 刚刚 / 5 分钟前 / 3h ago … */
@@ -279,38 +179,8 @@ function relTime(iso: string): string {
   return L('{n} 天前', '{n}d ago', { n: Math.floor(hours / 24) })
 }
 
-function columnLabel(column: BoardColumn): string {
-  switch (column) {
-    case 'pool': return L('待认领', 'Pool')
-    case 'assigned': return L('已指派', 'Assigned')
-    case 'in_progress': return L('进行中', 'In progress')
-    case 'review': return L('待审核', 'In review')
-    case 'done': return L('已完成', 'Done')
-    case 'closed': return L('已关闭', 'Closed')
-  }
-}
-
 function statusLabel(task: Task): string {
   return columnLabel(columnOf(task))
-}
-
-/** 0.5 renders as ½, everything else as its plain number. */
-function valueText(value: TaskValue): string {
-  return value === 0.5 ? '½' : String(value)
-}
-
-/** Card/drawer shorthand: T-3 → #3; ids of any other shape display verbatim. */
-export function taskRef(id: string): string {
-  const digits = /^T-(\d+)$/.exec(id)?.[1]
-  return digits ? `#${digits}` : id
-}
-
-function priorityLabel(priority: TaskPriority): string {
-  switch (priority) {
-    case 'high': return L('高', 'high')
-    case 'medium': return L('中', 'medium')
-    case 'low': return L('低', 'low')
-  }
 }
 
 const EVENT_LABELS: Record<TaskEvent, [string, string]> = {
@@ -403,16 +273,12 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
    * Execute one shared `planDrop` op sequence in order through the store
    * (claim → store.claim, update → store.update with the patch). An empty
    * plan is a no-op (no request); a failed step surfaces through the store's
-   * error channel and stops the sequence.
+   * error channel and stops the sequence. Shared with the mini board via
+   * view.ts (runPlanOps).
    */
   const runPlan = async (task: Task, ops: DropOp[]): Promise<void> => {
     if (ops.length === 0) return
-    for (const op of ops) {
-      const ok = op.kind === 'claim'
-        ? await store.claim(task.id)
-        : await store.update({ id: task.id, ...op.patch })
-      if (!ok) return
-    }
+    await runPlanOps(store, task.id, ops)
   }
 
   /**
@@ -754,8 +620,12 @@ function TaskCard({ task, selected, onOpen, dnd }: { task: Task; selected: boole
  * composer) and 动态 (the log timeline). Keyed by task id at the call site,
  * so the tab, edit mode and drafts reset when the selection changes — but
  * survive background refreshes of the same task.
+ *
+ * Exported for the mini board (MiniBoard), which stacks it as the layer-2
+ * drawer with a `style` override (its default positioning is the board
+ * panel's right edge).
  */
-function DetailDrawer({ task, state, store, actors, onClose }: { task: Task; state: TaskboardState; store: TaskboardStore; actors: string[]; onClose(): void }): JSX.Element {
+export function DetailDrawer({ task, state, store, actors, onClose, style }: { task: Task; state: TaskboardState; store: TaskboardStore; actors: string[]; onClose(): void; style?: CSSProperties }): JSX.Element {
   const [tab, setTab] = useState<'detail' | 'comments' | 'activity'>('detail')
   const [editing, setEditing] = useState(false)
   const [titleDraft, setTitleDraft] = useState(task.title)
@@ -825,7 +695,7 @@ function DetailDrawer({ task, state, store, actors, onClose }: { task: Task; sta
   }
 
   return (
-    <aside style={styles.drawer}>
+    <aside style={{ ...styles.drawer, ...style }}>
       <div style={styles.drawerHead}>
         <span style={styles.drawerRef} title={task.id}>
           {taskRef(task.id)}
@@ -1154,16 +1024,19 @@ function ValueChips({ value, disabled, onChange }: { value: TaskValue | null; di
 }
 
 /**
- * The roster picker that floats inside the assigned lane after a card is
- * dropped on it: pick a name (the drop's planDrop runs with it), send the
- * card back to the pool, or cancel (backdrop / 取消 / ESC — no request).
+ * The roster picker that floats over the drop target after a card is dropped
+ * on 已指派 (the board's assigned lane, the mini board's assigned block):
+ * pick a name (the drop's planDrop runs with it), send the card back to the
+ * pool, or cancel (backdrop / 取消 / ESC — no request). Its `style` override
+ * lets the mini board re-anchor it outside a lane.
  */
-function AssignPicker({
+export function AssignPicker({
   actors,
   current,
   onPick,
   onPool,
   onCancel,
+  style,
 }: {
   actors: string[]
   /** The task's assignee right now (marked, still re-pickable). */
@@ -1171,9 +1044,11 @@ function AssignPicker({
   onPick(name: string): void
   onPool(): void
   onCancel(): void
+  /** Root positioning override (default: floats inside the relative lane). */
+  style?: CSSProperties
 }): JSX.Element {
   return (
-    <div style={styles.picker}>
+    <div style={{ ...styles.picker, ...style }}>
       <div style={styles.pickerTitle}>{L('指派给…', 'Assign to…')}</div>
       <div style={styles.pickerList}>
         {actors.length === 0 ? (
@@ -1357,6 +1232,13 @@ function GuideOverlay({ cli, cwd, boardFile, onClose }: { cli: string | null; cw
               <li>{L('点卡片开抽屉：详情（默认只读，改内容点「编辑」）/ 评论 / 动态 三个 tab。', 'Click a card for its drawer: three tabs — 详情 (read-only until you hit 编辑), 评论 and 动态.')}</li>
               <li>{L('标准流程：认领或指派 → 开始 → 提交审核 → 通过/打回 → 完成；任何非终态都可关闭。', 'The flow: claim or assign → start → submit for review → approve/reject → done; anything not final can be closed.')}</li>
             </ul>
+          </section>
+
+          <section style={styles.guideSection}>
+            <div style={styles.guideH}>{L('输入区的小看板', 'The mini board by the composer')}</div>
+            <p style={styles.guideP}>
+              {L('输入框右下角的 ▤ 按钮（带未完成任务数徽标）拉开一个迷你看板：六个状态块纵排，拖任务行改状态（拖到「已指派」出成员选择器），点行叠出完整详情抽屉；已关闭默认折叠成一行。', 'The ▤ button at the composer\'s right edge (badged with the open-task count) pulls up a mini board: six status blocks stacked vertically — drag a row to change its state (dropping on 已指派 opens the roster picker), click a row to stack the full detail drawer on top; 已关闭 stays collapsed into one row until expanded.')}
+            </p>
           </section>
 
           <section style={styles.guideSection}>
