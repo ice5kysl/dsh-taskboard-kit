@@ -309,6 +309,20 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
     },
   }
 
+  // No session selected (or the session share hasn't resolved one): say so —
+  // the bare loading branch used to mask this as an endless「正在加载看板」,
+  // because a null cwd never refreshes and never leaves status 'loading'.
+  if (!state.cwd) {
+    return (
+      <div style={styles.root} ref={rootHeightRef}>
+        <style>{TB_CSS}</style>
+        <div style={styles.center}>
+          <p style={styles.centerText}>{L('进入一个会话后，这里显示该工作区的看板。', 'Open a session to see its workspace board here.')}</p>
+        </div>
+      </div>
+    )
+  }
+
   if (state.status === 'loading' && !board) {
     return (
       <div style={styles.root} ref={rootHeightRef}>

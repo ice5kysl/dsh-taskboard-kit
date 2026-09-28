@@ -487,6 +487,32 @@ await check('mini board: entry button badge and the six-block drawer', async () 
   store.select(null)
 })
 
+await check('empty states tell the truth: no-session ≠ loading ≠ error', async () => {
+  // cwd unresolved (the session share delivered nothing — e.g. the host's
+  // session list is broken): say "open a session", never fake an endless
+  //「正在加载看板」— a null cwd never refreshes, so status never leaves
+  // 'loading' and the bare loading branch would show forever.
+  const idleStore = client.createTaskboardStore({ bridge: { board: async () => ({ ok: false, error: 'never called' }) }, pollMs: 10 ** 9 })
+  const noSession = renderToStaticMarkup(React.createElement(client.BoardPanel, { store: idleStore }))
+  assert.ok(noSession.includes('Open a session'), 'board tab: null cwd → explicit no-session state')
+  assert.ok(!noSession.includes('Loading the board'), 'board tab: null cwd is NOT disguised as loading')
+
+  // Bridge failing with cwd set: both surfaces must surface the error (with
+  // a retry) — the bare「正在加载看板」branch used to swallow it.
+  const failBridge = { board: async () => ({ ok: false, error: 'boom', code: 'internal' }) }
+  const errStore = client.createTaskboardStore({ bridge: failBridge, pollMs: 10 ** 9 })
+  errStore.setCwd('/work/a')
+  await errStore.refresh()
+  assert.equal(errStore.getState().status, 'error')
+  const boardErr = renderToStaticMarkup(React.createElement(client.BoardPanel, { store: errStore }))
+  assert.ok(boardErr.includes('Cannot read the board'), 'board tab: error state surfaces the error')
+  errStore.setMiniOpen(true)
+  const miniErr = renderToStaticMarkup(React.createElement(client.MiniBoardDrawer, { store: errStore }))
+  assert.ok(miniErr.includes('Cannot read the board'), 'mini drawer: error state surfaces the error')
+  assert.ok(miniErr.includes('Retry'), 'mini drawer: error state offers a retry')
+  assert.ok(!miniErr.includes('Loading the board'), 'mini drawer: error is NOT disguised as loading')
+})
+
 await check('runPlanOps: executes the plan in order and stops at the first failure', async () => {
   assert.equal(typeof client.runPlanOps, 'function')
   const calls = []

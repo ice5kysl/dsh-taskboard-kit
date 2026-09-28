@@ -237,9 +237,18 @@ function MiniBoardDrawerContent({ store, state, initialSelectedId }: { store: Ta
         </div>
         <div style={styles.drawerBody}>
           {!state.cwd ? (
-            <div style={styles.drawerEmpty}>{L('没有选中的会话。', 'No session selected.')}</div>
+            <div style={styles.drawerEmpty}>{L('进入一个会话后，这里显示该工作区的看板。', 'Open a session to see its workspace board here.')}</div>
           ) : !board ? (
-            <div style={styles.drawerEmpty}>{L('正在加载看板…', 'Loading the board…')}</div>
+            state.status === 'error' ? (
+              <div style={styles.drawerEmpty}>
+                <p>{L('无法读取看板：{error}', 'Cannot read the board: {error}', { error: state.error ?? '?' })}</p>
+                <button type="button" className="tb-btn tb-btn-primary" onClick={() => void store.refresh()}>
+                  {L('重试', 'Retry')}
+                </button>
+              </div>
+            ) : (
+              <div style={styles.drawerEmpty}>{L('正在加载看板…', 'Loading the board…')}</div>
+            )
           ) : tasks.length === 0 ? (
             <div style={styles.drawerEmpty}>
               {L('还没有任务——到「看板」页签新建，或让 Agent 用 taskboard_create 建一个。', 'No tasks yet — create one in the 看板 tab, or ask the agent to run taskboard_create.')}
