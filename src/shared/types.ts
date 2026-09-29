@@ -6,8 +6,19 @@
  * every harness and every human working in the same directory sees the same
  * board. No server, no account system.
  *
- * Status flow (v0.3): 待认领/已指派(open) → 进行中(in_progress) →
- * 待审核(review) → 已完成(done)；任何非终态可 已关闭(closed，面板默认折叠)。
+ * Status flow (v0.6): 待认领/已指派(open) → 进行中(in_progress) →
+ * 待审核(review) → 已完成(done) → 已关闭(closed)。
+ *
+ * **只有 closed 是终态。** done 表示"干完了、审核通过了"，但卡还没结清：
+ * 它仍留在活跃视图里（在 已完成 列），直到有人收口成 closed。
+ * 这是刻意的两段式——审核通过 ≠ 这件事了结（可能还要部署、还要等上游确认、
+ * 还要收尾文档），把两者分开，看板上就不会出现"看起来完了但没人负责收口"的灰区。
+ *
+ * 因此：
+ *   • closed 是唯一终态，不再出现在活跃计数/活跃视图里；
+ *   • reopened 可以从 done 或 closed 回到 open（closed → open 就是"结清错了"）；
+ *   • 废弃（abandoned）不另立状态：close 掉并在 note 里写清为什么不做。
+ *
  * open/in_progress/done 刻意对齐 msg9 任务模型，未来服务端后端语义不变。
  *
  * v0.5.4 加了两条**与状态正交**的协作轴（都不新增状态，见 docs/COLLABORATION.md）：
@@ -20,6 +31,26 @@
  */
 
 export type TaskStatus = 'open' | 'in_progress' | 'review' | 'done' | 'closed'
+
+/**
+ * The ONE terminal status: a card here is settled and leaves the active board.
+ * Everything else (including `done`) is still somebody's business.
+ */
+export const TERMINAL_STATUS: TaskStatus = 'closed'
+
+/** Is this status terminal (settled)? Only `closed` is. */
+export function isTerminalStatus(status: TaskStatus): boolean {
+  return status === TERMINAL_STATUS
+}
+
+/**
+ * Is this card awaiting a final settle? `done` means "work finished, approved"
+ * — it still sits on the board until someone closes it, because approval is
+ * not the same as the matter being closed out.
+ */
+export function needsSettling(task: Pick<Task, 'status'>): boolean {
+  return task.status === 'done'
+}
 
 /** 一个 Actor 是人还是 Agent（人类要单独对待：他不在 Agent 的自省循环里）。 */
 export type ActorKind = 'agent' | 'human'
@@ -128,7 +159,11 @@ export interface Board {
   actors: Record<string, ActorEntry>
 }
 
-/** The six kanban columns; `closed` renders collapsed by default. */
+/**
+ * The six kanban columns. `done` is a normal, always-visible lane (cards there
+ * finished but are not settled yet); only `closed` renders collapsed, because
+ * it is the one lane holding settled work nobody needs to act on.
+ */
 export type BoardColumn = 'pool' | 'assigned' | 'in_progress' | 'review' | 'done' | 'closed'
 
 export const BOARD_COLUMNS: readonly BoardColumn[] = ['pool', 'assigned', 'in_progress', 'review', 'done', 'closed']

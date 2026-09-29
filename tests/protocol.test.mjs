@@ -306,14 +306,59 @@ await check('staleness: column age comes from the last COLUMN event, not from ch
   await rm(ws, { recursive: true, force: true })
 })
 
-await check('staleness: a fresh card is not stale, and done/closed never are', async () => {
+await check('staleness: only SETTLED cards never go stale; done still does', async () => {
   const ws = await freshWorkspace()
   const fresh = await lib.createTask(ws, { title: 'just now' }, 'kimi')
   assert.equal(lib.isStale(await lib.getTask(ws, fresh.id)), false)
+
+  // done is NOT terminal (v0.6): approved-but-unclosed work goes stale like
+  // any other unfinished card, because the missing close IS the rot.
   const done = await lib.createTask(ws, { title: 'finished long ago' }, 'kimi')
   await lib.updateTask(ws, done.id, { action: 'done' }, 'kimi')
   await age(ws, done.id, { columnMs: 365 * 24 * HOUR })
-  assert.equal(lib.isStale(await lib.getTask(ws, done.id)), false, 'a finished card is not late')
+  assert.equal(lib.isStale(await lib.getTask(ws, done.id)), true, 'a done-but-unsettled card goes stale')
+
+  // closed is the one terminal status: settled work is never "late".
+  const closed = await lib.createTask(ws, { title: 'settled long ago' }, 'kimi')
+  await lib.updateTask(ws, closed.id, { action: 'done' }, 'kimi')
+  await lib.updateTask(ws, closed.id, { action: 'close' }, 'kimi')
+  await age(ws, closed.id, { columnMs: 365 * 24 * HOUR })
+  assert.equal(lib.isStale(await lib.getTask(ws, closed.id)), false, 'a settled card is not late')
+  await rm(ws, { recursive: true, force: true })
+})
+
+await check('the two-step close: done is not terminal, and an unsettled card is chased', async () => {
+  const ws = await freshWorkspace()
+
+  // A normal flow: claim → start → submit → approve lands in `done`.
+  const task = await lib.createTask(ws, { title: 'ship the thing', assignee: 'kimi' }, 'dsh')
+  await lib.updateTask(ws, task.id, { action: 'start' }, 'kimi')
+  await lib.updateTask(ws, task.id, { action: 'submit', reviewer: 'dsh' }, 'kimi')
+  await lib.updateTask(ws, task.id, { action: 'approve' }, 'dsh')
+  assert.equal((await lib.getTask(ws, task.id)).status, 'done', 'approve lands in done')
+
+  // done is NOT terminal: it still shows up as work on the owner's plate, and
+  // the owner gets an inbox item telling them to close it out.
+  const afterApprove = await lib.loadBoard(ws)
+  const mine = lib.inboxFor(afterApprove, 'kimi').filter((i) => i.kind === 'settle_mine')
+  assert.deepEqual(mine.map((i) => i.task.id), [task.id], 'the owner is told to settle it')
+  assert.match(mine[0].suggest, /--action close/, 'the suggested command is the settle')
+
+  // And the board health names it as its own failure mode.
+  const health = lib.boardHealth(afterApprove)
+  assert.deepEqual(health.needsSettling.map((i) => i.task.id), [task.id], 'unsettled work is a health finding')
+
+  // Once closed it leaves both lists — the card is settled.
+  await lib.updateTask(ws, task.id, { action: 'close' }, 'kimi')
+  const settled = await lib.loadBoard(ws)
+  assert.equal((await lib.getTask(ws, task.id)).status, 'closed')
+  assert.deepEqual(lib.inboxFor(settled, 'kimi').filter((i) => i.kind === 'settle_mine'), [], 'settled work leaves the inbox')
+  assert.deepEqual(lib.boardHealth(settled).needsSettling, [], 'settled work leaves the health list')
+
+  // reopen undoes a wrong settle (done|closed → open).
+  await lib.updateTask(ws, task.id, { action: 'reopen' }, 'kimi')
+  assert.equal((await lib.getTask(ws, task.id)).status, 'open', 'reopen takes it back to the board')
+
   await rm(ws, { recursive: true, force: true })
 })
 

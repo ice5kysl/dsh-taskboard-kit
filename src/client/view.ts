@@ -8,7 +8,7 @@
 
 import { useCallback } from 'react'
 import type { Board, BoardColumn, Task, TaskPriority, TaskValue } from '../shared/types.ts'
-import { columnOf, compareTasks } from '../shared/types.ts'
+import { columnOf, compareTasks, isTerminalStatus } from '../shared/types.ts'
 import { DEFAULT_QUIET_MS, actorKey, actorKeyOf, actorSeenAt } from '../shared/board.ts'
 import type { DropOp } from '../shared/dnd.ts'
 import { L } from './locale.ts'
@@ -50,8 +50,8 @@ export function columnLabel(column: BoardColumn): string {
     case 'assigned': return L('已指派', 'Assigned')
     case 'in_progress': return L('进行中', 'In progress')
     case 'review': return L('待审核', 'In review')
-    case 'done': return L('已完成', 'Done')
-    case 'closed': return L('已关闭', 'Closed')
+    case 'done': return L('待收口', 'To settle')
+    case 'closed': return L('已结清', 'Settled')
   }
 }
 
@@ -85,21 +85,29 @@ export function taskRef(id: string): string {
   return digits ? `#${digits}` : id
 }
 
-/** The entry button's badge: every task not yet in a final column. */
+/**
+ * The entry button's badge: everything still on somebody's plate.
+ *
+ * `done` COUNTS as open work (v0.6): approved-but-unsettled cards still need a
+ * human/PO to close them out, so they must not disappear from the badge — that
+ * disappearance is exactly what let finished work rot unnoticed.
+ */
 export function openTaskCount(board: Board | null): number {
   if (!board) return 0
   let count = 0
   for (const task of Object.values(board.tasks)) {
-    const column = columnOf(task)
-    if (column !== 'done' && column !== 'closed') count += 1
+    if (!isTerminalStatus(task.status)) count += 1
   }
   return count
 }
 
-/** A task is in a final column (done/closed) — the "含已完成" filter's unit. */
+/**
+ * A task is settled (terminal) — only `closed` is. Used by the「含已关闭」
+ * filter in the owner view: `done` cards stay visible because they still owe
+ * a settle, while `closed` ones are history.
+ */
 export function isFinal(task: Task): boolean {
-  const column = columnOf(task)
-  return column === 'done' || column === 'closed'
+  return isTerminalStatus(task.status)
 }
 
 /**
@@ -141,8 +149,9 @@ const OWNER_KIND_ORDER: Record<OwnerGroup['kind'], number> = { unassigned: 0, ac
  * own ordering (`compareTasks`), so priority/age read the same in both views.
  *
  * Options:
- *   • `includeDone` (default false) — finished tasks would otherwise bury the
- *     live ones; the lane header carries the toggle.
+ *   • `includeClosed` (default false) — settled (`closed`) tasks are history and
+ *     would bury the live ones. Note this hides ONLY `closed`: `done` cards
+ *     keep showing, because they still owe a settle (v0.6).
  *
  * Lanes are ordered: 待认领 → owners (alphabetical) → 等人类. Nothing is
  * dropped: a lane exists only when it has at least one task, and an empty
@@ -150,10 +159,10 @@ const OWNER_KIND_ORDER: Record<OwnerGroup['kind'], number> = { unassigned: 0, ac
  */
 export function groupByOwner(
   board: Board | null,
-  options: { includeDone?: boolean; quietMs?: number; now?: number } = {},
+  options: { includeClosed?: boolean; quietMs?: number; now?: number } = {},
 ): OwnerGroup[] {
   if (!board) return []
-  const includeDone = options.includeDone ?? false
+  const includeClosed = options.includeClosed ?? false
   const now = options.now ?? Date.now()
   const quietMs = options.quietMs ?? DEFAULT_QUIET_MS
 
@@ -168,7 +177,7 @@ export function groupByOwner(
   }
 
   for (const task of Object.values(board.tasks)) {
-    if (!includeDone && isFinal(task)) continue
+    if (!includeClosed && isFinal(task)) continue
     if (!task.assignee) {
       lane(UNASSIGNED_KEY, '', 'unassigned').tasks.push(task)
       continue

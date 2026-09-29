@@ -76,11 +76,21 @@
 ## 3. 任务模型
 
 ```
-状态：open ──▶ in_progress ──▶ review ──▶ done
-        │            │            │
-        └────────────┴────────────┴──▶ closed（放弃，旧名 cancel）
+状态：open ──▶ in_progress ──▶ review ──▶ done ──▶ closed
+        │            │            │                ▲
+        └────────────┴────────────┴────────────────┘
         done / closed ──▶ open（reopen）
 ```
+
+**只有 `closed` 是终态。** `done` 的含义是「干完且审核通过」，**不是**「这件事了了」：
+
+- `done` 的卡**仍在看板上**、**仍计入未结清**，需要卡主 / PO / 人类收口 `close`；
+- 为什么分两步：审核通过 ≠ 事情结清（可能还要部署、等上游签字、补文档），把它俩合成一步
+  就会出现「看起来完了、但没人负责收尾」的灰区；
+- 「这事不做了」也走 `close`，**但必须在 note / comment 里写清原因** —— 没有单独的 abandoned 状态，
+  「做完了」和「放弃了」的差别只存在于留言里；
+- 面板顶部有「待收口」条：所有 `done` 未结清的卡列在那里，一键收口 —— 这正是为了防止
+  「审核过了就没人再动」的腐烂（本轮修的就是这个）。
 
 两条**与状态正交**的协作轴（v0.5.4 新增，都不引入新状态）：
 
@@ -104,8 +114,8 @@
 | `submit` | `in_progress` | `review`，写 `reviewer` | 审核人不能是自己（见 §7）；清 `waiting_on` |
 | `approve` | `review` | `done` | 只有 reviewer / 卡主 / 人类 |
 | `reject` | `review` | `in_progress` | 同上；**必须** `--note` 写原因 |
-| `done` | `open`/`in_progress`/`review` | `done` | 自审绕行口，仅用于「无需审核」的琐事；有 reviewer 时优先走 submit |
-| `close` | 非终态 + `done` | `closed` | 放弃/不做，`cancel` 是它的旧别名 |
+| `done` | `open`/`in_progress`/`review` | `done`（**非终态**） | 自审绕行口，仅用于「无需审核」的琐事；有 reviewer 时优先走 submit。**done 之后仍需 close 收口** |
+| `close` | 非终态 + `done` | `closed`（**唯一终态**） | 收口结清；「不做」也走它，但**必须写原因**；`cancel` 是旧别名 |
 | `reopen` | `done`/`closed` | `open`（保留 assignee） | 清 `reviewer` / `waiting_on` |
 | `block` | `open`/`in_progress`/`review` | **状态不变**，写 `waiting_on` | 必须给 `wait_question`；kind 可由 `wait_who` 推断 |
 | `unblock` | 有 `waiting_on` | 状态不变，清 `waiting_on` | 答复写进 `comment` |
@@ -143,6 +153,20 @@ taskboard_comment <id> --text "做了什么 / 验证了什么 / 还差什么"
   → 名册里最近活跃的**其他** Agent → 都没有就交给 `human`。
 - **不能审自己的活**：`--reviewer` 指到自己会被拒（唯一例外：`TASKBOARD_ALLOW_SELF_REVIEW=1`，
   只给「一个 Agent 独占一个 workspace」的场景）。
+
+## 7.5 收口：done 之后必须有人 close
+
+```
+# 审核通过后的收口（卡主 / PO / 人类都能做）
+taskboard_update <id> --action close --note "已部署上线"      # 结清
+taskboard_update <id> --action close --note "方向变了，不做"  # 放弃（同样走 close，写清原因）
+```
+
+- **`done` 不是终点**：它只代表「干完且审核通过」，卡还在活跃视图里、还算未结清。
+- 收口动作是 `close`，**它是唯一的终态**。收口后卡离开活跃计数（仍在「已结清」列，可 reopen 退回）。
+- **不收口就是腐烂**：panel 顶部「待收口」条会一直挂着它，超过 72h 会被自检点名。
+- 放弃也走 `close`：没有单独的 abandoned 状态，**「做完了」与「放弃了」的差别只存在于你写的 note 里**，
+  所以 note 不是可选项。
 
 ## 8. 审核：有归属、有期限、有原因
 
@@ -185,7 +209,8 @@ taskboard_update <id> --action unblock
 | 已指派（open 有负责人） | 48h | 指派了没开工 |
 | 进行中 | 72h | 三天没动静 |
 | 待审核（review） | 24h | 审核人欠一天 |
-| 已完成 / 已关闭 | — | 永不陈旧 |
+| 待收口（done） | 72h | 审核过了没人收口 |
+| 已结清（closed） | — | 永不陈旧 |
 | **等人类** | 24h | 超过即升级催办 |
 | 等 Agent | 8h | 超过即升级催办 |
 | 等外部 | — | 只能等 |

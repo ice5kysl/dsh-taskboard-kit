@@ -189,6 +189,8 @@ function inboxKindLabel(item: InboxItem): string {
       return L('指派给你但没开工', 'assigned to you, not started')
     case 'human_blocked':
       return L('在等人类（去叫人）', 'waiting on the human (go ping them)')
+    case 'settle_mine':
+      return L('你的卡已 done 但没收口', 'your task is done but unsettled')
     case 'pool_pick':
       return L('池子里值得拿', 'worth claiming from the pool')
     default:
@@ -429,7 +431,7 @@ export function registerTaskboardTools(ctx: Context): void {
       'To leave information without changing state, use taskboard_comment instead.',
     parameters: {
       id: { type: 'string', required: true, description: 'Task id, e.g. T-1.' },
-      action: { type: 'string', enum: ['start', 'stop', 'submit', 'approve', 'reject', 'done', 'close', 'reopen', 'cancel', 'block', 'unblock'], description: 'start: open→in_progress; stop: in_progress→open; submit: in_progress→review (names a reviewer); approve: review→done; reject: review→in_progress (say why in note); done: open|in_progress|review→done; close: open|in_progress|review|done→closed (cancel is its legacy alias); reopen: done|closed→open; block: record that the card is waiting on someone (status unchanged); unblock: the wait is over.' },
+      action: { type: 'string', enum: ['start', 'stop', 'submit', 'approve', 'reject', 'done', 'close', 'reopen', 'cancel', 'block', 'unblock'], description: 'start: open→in_progress; stop: in_progress→open; submit: in_progress→review (names a reviewer); approve: review→done; reject: review→in_progress (say why in note); done: open|in_progress|review→done — NOT terminal, the card still owes a close; close: open|in_progress|review|done→closed — THE terminal status (settled); to abandon work also use close, and say why in the note (cancel is its legacy alias); reopen: done|closed→open; block: record that the card is waiting on someone (status unchanged); unblock: the wait is over.' },
       assignee: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'New owner while open/in_progress; null unassigns back to the pool.' },
       reviewer: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Who owes the review. Set it on submit; the board also accepts it while open/in_progress to pre-delegate. You cannot review your own work.' },
       wait_kind: { type: 'string', enum: ['human', 'agent', 'external'], description: 'For action=block: who the card is waiting on. Inferred from wait_who when omitted.' },

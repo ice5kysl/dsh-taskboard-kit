@@ -728,7 +728,7 @@ function canDecide(board: Board, task: Task, by: string): boolean {
 }
 
 /**
- * Status transitions by action (v0.3 review flow):
+ * Status transitions by action (v0.6 two-step closing):
  *   start:   open → in_progress ('started')
  *   stop:    in_progress → open ('stopped', assignee kept)
  *   submit:  in_progress → review ('submitted', reviewer = resolved)
@@ -737,6 +737,12 @@ function canDecide(board: Board, task: Task, by: string): boolean {
  *   done:    open | in_progress | review → done ('done')
  *   close:   open | in_progress | review | done → closed ('closed')
  *   reopen:  done | closed → open ('reopened', assignee kept)
+ *
+ * `done` is NOT terminal: it means "finished and approved", and the card stays
+ * on the board (still counted as open work) until someone settles it with
+ * `close`. `closed` is the one terminal status. Abandoning work is also a
+ * `close` — the difference lives in the note, not in a separate status.
+ *
  * The legacy action `cancel` behaves exactly as `close`.
  * The action lands first; an assignee change in the same call is then checked
  * against the RESULTING status.

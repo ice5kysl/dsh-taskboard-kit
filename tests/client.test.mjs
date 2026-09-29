@@ -311,7 +311,7 @@ await check('groupByOwner: one lane per owner, pool first and 等人类 last', (
   assert.deepEqual(groups.find((g) => g.kind === 'human').tasks.map((t) => t.id), ['T-5'])
 })
 
-await check('groupByOwner: hides finished work by default, includeDone restores it', () => {
+await check('groupByOwner: hides only SETTLED work, so done cards stay visible', () => {
   const board = {
     version: 1, workspace: '/work/a', next_seq: 5, actors: {},
     tasks: {
@@ -320,12 +320,14 @@ await check('groupByOwner: hides finished work by default, includeDone restores 
       'T-3': ownerTask({ id: 'T-3', assignee: 'kimi', status: 'closed' }),
     },
   }
+  // done is NOT terminal (v0.6): an unsettled card stays on the owner's plate,
+  // because that plate is exactly where the missing close has to show up.
   const live = client.groupByOwner(board)
-  assert.deepEqual(live.flatMap((g) => g.tasks.map((t) => t.id)), ['T-1'])
-  const all = client.groupByOwner(board, { includeDone: true })
+  assert.deepEqual(live.flatMap((g) => g.tasks.map((t) => t.id)).sort(), ['T-1', 'T-2'])
+  const all = client.groupByOwner(board, { includeClosed: true })
   assert.deepEqual(all.flatMap((g) => g.tasks.map((t) => t.id)).sort(), ['T-1', 'T-2', 'T-3'])
-  // isFinal is the filter's unit and agrees with the columns.
-  assert.equal(client.isFinal(ownerTask({ status: 'done' })), true)
+  // isFinal is the filter's unit and now means "settled", i.e. closed only.
+  assert.equal(client.isFinal(ownerTask({ status: 'done' })), false)
   assert.equal(client.isFinal(ownerTask({ status: 'closed' })), true)
   assert.equal(client.isFinal(ownerTask({ status: 'review' })), false)
   // A null board and an empty board both yield no lanes (the caller shows its own empty state).
@@ -553,7 +555,7 @@ await check('theme: the primary button rides the shell link tokens (no white blo
 
 // --------------------------------------------------------- mini board (composer side)
 
-await check('openTaskCount: every not-final task, zero on an empty board', () => {
+await check('openTaskCount: only `closed` is terminal, so `done` still counts', () => {
   assert.equal(typeof client.openTaskCount, 'function')
   const task = (status, assignee) => ({ id: 'T-x', title: 't', status, assignee })
   const board = {
@@ -563,13 +565,29 @@ await check('openTaskCount: every not-final task, zero on an empty board', () =>
       'T-2': task('open', 'kimi'),      // assigned
       'T-3': task('in_progress', 'kimi'),
       'T-4': task('review', 'kimi'),
-      'T-5': task('done', 'kimi'),      // final
-      'T-6': task('closed', null),      // final
+      'T-5': task('done', 'kimi'),      // approved but NOT settled (v0.6)
+      'T-6': task('closed', null),      // the only terminal status
     },
   }
-  assert.equal(client.openTaskCount(board), 4, 'open+assigned+in_progress+review counted, done/closed not')
+  // done counts: an unsettled card still needs someone to close it out, so it
+  // must not vanish from the "what is still on the board" badge.
+  assert.equal(client.openTaskCount(board), 5, 'everything except `closed` counts')
   assert.equal(client.openTaskCount({ version: 1, workspace: '/w', next_seq: 1, tasks: {} }), 0, 'empty board → 0 (badge hides)')
   assert.equal(client.openTaskCount(null), 0, 'no board → 0')
+})
+
+await check('isFinal / isTerminalStatus: closed is the ONE terminal status', () => {
+  const task = (status) => ({ id: 'T-1', title: 't', status, assignee: 'kimi' })
+  for (const status of ['open', 'in_progress', 'review', 'done']) {
+    assert.equal(client.isFinal(task(status)), false, `${status} is not terminal`)
+    assert.equal(client.isTerminalStatus(status), false, `${status} is not terminal`)
+  }
+  assert.equal(client.isFinal(task('closed')), true, 'closed is terminal')
+  assert.equal(client.isTerminalStatus('closed'), true)
+  // needsSettling is exactly the done-that-owes-a-close case.
+  assert.equal(client.needsSettling(task('done')), true)
+  assert.equal(client.needsSettling(task('closed')), false)
+  assert.equal(client.needsSettling(task('review')), false)
 })
 
 await check('mini board: entry button badge and the six-block drawer', async () => {
@@ -599,7 +617,8 @@ await check('mini board: entry button badge and the six-block drawer', async () 
   const button = renderToStaticMarkup(React.createElement(client.MiniBoardButton, { store }))
   assert.ok(button.includes('tb-mini-entry'), 'the pill rides the quiet entry class')
   assert.ok(button.includes('Board'), 'button label')
-  assert.ok(button.includes('· 4'), 'open-task count as a pill suffix')
+  // done is not terminal (v0.6), so it counts: only `closed` is excluded.
+  assert.ok(button.includes('· 5'), 'open-task count as a pill suffix (done included)')
   assert.ok(button.includes('data-composer-stats') === false, 'we never impersonate the stats row')
 
   // Drawer closed → the overlay renders nothing at all.
@@ -612,7 +631,8 @@ await check('mini board: entry button badge and the six-block drawer', async () 
   const open = renderToStaticMarkup(React.createElement(client.MiniBoardDrawer, { store }))
   assert.ok(open.includes('position:fixed'), 'frame-wide backdrop')
   assert.ok(open.includes('height:100%'), 'full-height drawer')
-  for (const label of ['Pool', 'Assigned', 'In progress', 'In review', 'Done']) {
+  // The done lane is labelled「待收口」/ To settle since v0.6 (it is not terminal).
+  for (const label of ['Pool', 'Assigned', 'In progress', 'In review', 'To settle']) {
     assert.ok(open.includes(`>${label}<`), `block: ${label}`)
   }
   assert.ok(open.includes('Closed (1)'), 'closed renders collapsed as one toggle row')
@@ -878,7 +898,7 @@ await check('panel: the「按负责人」view renders owner lanes, the switch an
   // Default view is still the six status lanes — the owner view is opt-in.
   assert.ok(html.includes('In progress'), 'status lanes render by default')
   assert.ok(html.includes('By owner'), 'the view switch is offered')
-  assert.ok(!html.includes('Include done'), 'the done toggle is hidden in the status view')
+  assert.ok(!html.includes('Include closed'), 'the settled toggle is hidden in the status view')
 
   // Switch to the owner view and re-render through the same store.
   store.setGroupBy('owner')
@@ -888,24 +908,56 @@ await check('panel: the「按负责人」view renders owner lanes, the switch an
   // dsh-agent folds into dsh's lane: one lane, not two.
   assert.equal((ownerHtml.match(/>dsh</g) ?? []).length, 1, 'aliases fold to ONE dsh lane')
   assert.ok(ownerHtml.includes('Waiting on human · kimi'), 'the blocked lane is labelled as such')
-  assert.ok(ownerHtml.includes('Include done'), 'the done toggle appears in the owner view')
+  assert.ok(ownerHtml.includes('Include closed'), 'the settled toggle appears in the owner view')
   // The owner view is a projection, not a status board: cards are not draggable.
   assert.ok(ownerHtml.includes('draggable="false"'), 'owner-view cards are not drag sources')
 
-  // Finished work is hidden by default and comes back with the toggle. The
-  // markers are distinctive because the toggle's own title mentions "finished".
-  const withDone = collabBoard([
+  // Only SETTLED work is hidden by default (v0.6): a done card is not settled,
+  // so it keeps showing until someone closes it out.
+  const withSettled = collabBoard([
     { id: 'T-1', title: 'stillLiveMarker', status: 'in_progress', assignee: 'kimi' },
-    { id: 'T-2', title: 'finishedMarker', status: 'done', assignee: 'kimi' },
+    { id: 'T-2', title: 'doneMarker', status: 'done', assignee: 'kimi' },
+    { id: 'T-3', title: 'settledMarker', status: 'closed', assignee: 'kimi' },
   ])
-  const second = await renderBoard(withDone)
+  const second = await renderBoard(withSettled)
   second.store.setGroupBy('owner')
   const hidden = renderToStaticMarkup(React.createElement(client.BoardPanel, { store: second.store }))
   assert.ok(hidden.includes('stillLiveMarker'), 'live cards render')
-  assert.ok(!hidden.includes('finishedMarker'), 'done cards are hidden by default')
-  second.store.setIncludeDone(true)
+  assert.ok(hidden.includes('doneMarker'), 'done-but-unsettled cards STAY visible')
+  assert.ok(!hidden.includes('settledMarker'), 'settled cards are hidden by default')
+  second.store.setIncludeClosed(true)
   const shown = renderToStaticMarkup(React.createElement(client.BoardPanel, { store: second.store }))
-  assert.ok(shown.includes('finishedMarker'), 'the toggle brings finished cards back')
+  assert.ok(shown.includes('settledMarker'), 'the toggle brings settled cards back')
+})
+
+await check('panel: done-but-unsettled cards get a settle strip with a one-click close', async () => {
+  const calls = []
+  const board = collabBoard([
+    { id: 'T-1', title: 'approvedNotClosed', status: 'done', assignee: 'kimi' },
+    { id: 'T-2', title: 'stillRunning', status: 'in_progress', assignee: 'kimi' },
+  ])
+  const store = client.createTaskboardStore({
+    bridge: {
+      board: async () => ({ ok: true, board }),
+      update: async (req) => { calls.push([req.id, req.action]); return { ok: true, task: {} } },
+    },
+    pollMs: 10 ** 9,
+  })
+  store.setCwd(board.workspace)
+  await store.refresh()
+
+  const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+  // The strip names the card that is finished but not closed out.
+  assert.ok(html.includes('done, awaiting settle'), 'the settle strip is rendered')
+  assert.ok(html.includes('approvedNotClosed'), 'the unsettled card is listed')
+  // done is not terminal, so the lane label says so instead of reading "Done".
+  assert.ok(html.includes('To settle'), 'the done lane is labelled「待收口」/ To settle')
+
+  // The one-click settle closes through the store (not a hand-rolled fetch).
+  const task = store.getState().board.tasks['T-1']
+  assert.equal(task.status, 'done', 'fixture starts at done')
+  assert.equal(await store.update({ id: 'T-1', action: 'close' }), true)
+  assert.deepEqual(calls, [['T-1', 'close']], 'settle posts action=close')
 })
 
 await check('escapeTarget: one Escape closes exactly ONE layer, topmost first', () => {

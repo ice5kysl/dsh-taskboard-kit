@@ -43,10 +43,11 @@ export interface TaskboardState {
    */
   groupBy: BoardGrouping
   /**
-   * Whether finished (done/closed) tasks appear in the「按负责人」view. Off by
+   * Whether SETTLED (`closed`) tasks appear in the「按负责人」view. Off by
    * default: history would bury the live work the owner view exists to show.
+   * `done` cards are never filtered out — they still owe a settle (v0.6).
    */
-  includeDone: boolean
+  includeClosed: boolean
   /** Whether the status-bar mini board drawer is open (shared between the
    *  entry pill and the shell.overlay drawer — the two halves of one surface). */
   miniOpen: boolean
@@ -75,8 +76,8 @@ export interface TaskboardStore {
   setShowClosed(on: boolean): void
   /** Switch the board tab between the progress lanes and the owner lanes. */
   setGroupBy(mode: BoardGrouping): void
-  /** Show/hide finished tasks in the owner view. */
-  setIncludeDone(on: boolean): void
+  /** Show/hide settled (`closed`) tasks in the owner view. */
+  setIncludeClosed(on: boolean): void
   /** Toggle the composer-side mini board drawer. */
   setMiniOpen(open: boolean): void
   clearError(): void
@@ -112,7 +113,7 @@ const INITIAL: TaskboardState = {
   selectedId: null,
   showClosed: false,
   groupBy: 'column',
-  includeDone: false,
+  includeClosed: false,
   miniOpen: false,
   busy: false,
   cli: null,
@@ -235,8 +236,8 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
     setGroupBy(mode) {
       set({ groupBy: mode })
     },
-    setIncludeDone(on) {
-      set({ includeDone: on })
+    setIncludeClosed(on) {
+      set({ includeClosed: on })
     },
     setMiniOpen(open) {
       // The mini drawer's own selection is component-local and unmounts with

@@ -71,10 +71,10 @@ Because the file lives in the workspace, every harness and every human working i
 | 已指派 / assigned | `open` with an assignee — delegated, not started |
 | 进行中 / in_progress | claimed or started |
 | 待审核 / review | submitted, waiting for a reviewer to `approve` / `reject` |
-| 已完成 / done | approved (or marked `done` directly) |
-| 已关闭 / closed | abandoned — `close` (the panel hides them behind a toggle) |
+| 待收口 / done | approved (or marked `done` directly) — **NOT terminal**, still owes a settle |
+| 已结清 / closed | settled — `close` (the panel hides them behind a toggle) |
 
-Flow: `open → in_progress → review → done`; any non-final status can go `closed`; `done | closed → open` (reopen). In actions: `open → in_progress` (claim / start), `in_progress → open` (stop), `in_progress → review` (submit), `review → done` (approve), `review → in_progress` (reject), `open|in_progress|review → done`, `open|in_progress|review|done → closed` (close; the legacy name `cancel` is its alias), `done|closed → open` (reopen). Status names mirror the msg9 task model on purpose, so a future server-backed board keeps the same semantics. Boards written by older versions load seamlessly: `cancelled` tasks/logs become `closed`, and missing `value` / `comments` fields are hydrated.
+Flow: `open → in_progress → review → done → closed`. **`closed` is the one terminal status**; `done` means "finished and approved, not yet closed out", so a done card stays on the board and still counts as open work until someone settles it. That two-step exists because approval is not the same as the matter being closed out (deploys, upstream sign-off and docs may still follow). Abandoning work is also a `close` — say why in the note, as there is no separate "abandoned" status. A「待收口」strip at the top of the panel lists done-but-unsettled cards with a one-click settle, so finished work cannot rot in a lane nobody owns. In actions: `open → in_progress` (claim / start), `in_progress → open` (stop), `in_progress → review` (submit), `review → done` (approve), `review → in_progress` (reject), `open|in_progress|review → done`, `open|in_progress|review|done → closed` (close; the legacy name `cancel` is its alias), `done|closed → open` (reopen). Status names mirror the msg9 task model on purpose, so a future server-backed board keeps the same semantics. Boards written by older versions load seamlessly: `cancelled` tasks/logs become `closed`, and missing `value` / `comments` fields are hydrated.
 
 Two collaboration axes are **orthogonal to the status** (v0.5.4 — neither invents a status):
 

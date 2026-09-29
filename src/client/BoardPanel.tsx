@@ -41,6 +41,7 @@ import {
   TASK_VALUES,
   columnOf,
   compareTasks,
+  needsSettling,
   type Board,
   type BoardColumn,
   type Task,
@@ -332,14 +333,24 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   const selectedId = state.selectedId
   /** The「按负责人」lanes (only computed while that view is active). */
   const ownerGroups = useMemo(
-    () => (state.groupBy === 'owner' && board ? groupByOwner(board, { includeDone: state.includeDone }) : []),
-    [state.groupBy, state.includeDone, board],
+    () => (state.groupBy === 'owner' && board ? groupByOwner(board, { includeClosed: state.includeClosed }) : []),
+    [state.groupBy, state.includeClosed, board],
   )
   const selected: Task | null = selectedId && board ? board.tasks[selectedId] ?? null : null
   const pickerTask: Task | null = assignPickerId && board ? board.tasks[assignPickerId] ?? null : null
   // The human's own list: cards parked on a PERSON. (等 Agent / 等外部 are the
   // agents' business — they carry a card badge, not a place in this strip.)
   const waitingHuman = useMemo(() => humanWaiting(board), [board])
+  /**
+   * Approved-but-unsettled cards (v0.6): `done` is not terminal, so these still
+   * need someone to close them out. They get their own strip because the whole
+   * point of the two-step close is that finished work must not quietly rot in a
+   * lane nobody feels responsible for.
+   */
+  const unsettled = useMemo(
+    () => tasks.filter((task) => needsSettling(task)).sort(compareTasks),
+    [tasks],
+  )
   const drawerOpen = createOpen || selected !== null
   const closeDrawer = (): void => {
     setCreateOpen(false)
@@ -459,6 +470,9 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
       {waitingHuman.length > 0 && (
         <HumanStrip items={waitingHuman} state={state} store={store} />
       )}
+      {unsettled.length > 0 && (
+        <SettleStrip tasks={unsettled} store={store} />
+      )}
       {!state.cwd ? (
         <div style={styles.center}>
           <p style={styles.centerText}>
@@ -560,13 +574,13 @@ function TopBar({ state, store, total, onCreate, onGuide }: { state: TaskboardSt
       <span style={styles.topbarSpacer} />
       <ViewSwitch mode={state.groupBy} onSwitch={(mode) => store.setGroupBy(mode)} />
       {state.groupBy === 'owner' && (
-        <label style={styles.doneToggle} title={L('负责人视角默认只显示进行中的任务', 'The owner view hides finished tasks by default')}>
+        <label style={styles.doneToggle} title={L('负责人视角默认只显示未结清的任务（已完成但未收口的仍会显示）', 'The owner view hides settled tasks; finished-but-unsettled ones still show')}>
           <input
             type="checkbox"
-            checked={state.includeDone}
-            onChange={(event) => store.setIncludeDone(event.target.checked)}
+            checked={state.includeClosed}
+            onChange={(event) => store.setIncludeClosed(event.target.checked)}
           />
-          {L('含已完成', 'Include done')}
+          {L('含已关闭', 'Include closed')}
         </label>
       )}
       <button type="button" className="tb-iconbtn" onClick={onGuide} title={L('使用指南', 'Guide')}>
@@ -609,6 +623,47 @@ function ViewSwitch({ mode, onSwitch }: { mode: BoardGrouping; onSwitch(mode: Bo
         </button>
       ))}
     </div>
+  )
+}
+
+/**
+ * The「待收口」strip: cards that are `done` but not yet settled.
+ *
+ * v0.6 made `done` non-terminal, which introduces a new way for the board to
+ * rot — a card everyone agrees is finished, that nobody feels owns the closing
+ * step. This strip is the answer: it lists them at the top with a one-click
+ * settle, so "approved" and "actually closed out" cannot silently diverge.
+ */
+function SettleStrip({ tasks, store }: { tasks: Task[]; store: TaskboardStore }): JSX.Element {
+  return (
+    <section style={styles.settleStrip} className="tb-settle-strip">
+      <div style={styles.humanHead}>
+        <span style={styles.settleTitle}>{L('✔ {n} 张卡已完成、待收口', '✔ {n} card(s) done, awaiting settle', { n: tasks.length })}</span>
+        <span style={styles.humanHint}>
+          {L('已完成 ≠ 结清：收口后卡才会离开活跃视图。不做了也走收口，但请在备注里写明原因。', 'Done ≠ settled: a card leaves the active view only once closed. Not doing it after all? Settle it too — but say why in the note.')}
+        </span>
+      </div>
+      <ul style={styles.humanList}>
+        {tasks.map((task) => (
+          <li key={task.id} style={styles.settleRow}>
+            <button type="button" className="tb-link" style={styles.settleRef} onClick={() => store.select(task.id)} title={L('打开详情', 'Open details')}>
+              {taskRef(task.id)}
+            </button>
+            <span style={styles.settleTitleText}>{task.title}</span>
+            {task.assignee && <span style={styles.humanMeta}>{task.assignee}</span>}
+            <span style={styles.topbarSpacer} />
+            <button
+              type="button"
+              className="tb-btn tb-btn-primary"
+              onClick={() => void store.update({ id: task.id, action: 'close' })}
+              title={L('结清这张卡', 'Settle this card')}
+            >
+              {L('收口', 'Settle')}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }
 
@@ -808,9 +863,9 @@ function OwnerLanes({
     return (
       <div style={styles.center}>
         <p style={styles.centerText}>
-          {state.includeDone
+          {state.includeClosed
             ? L('这个板还没有任务。', 'This board has no tasks yet.')
-            : L('没有进行中的任务。勾选「含已完成」可以看到全部。', 'No live tasks. Tick「含已完成」to include finished ones.')}
+            : L('没有未结清的任务。勾选「含已关闭」可以看到全部。', 'No unsettled tasks. Tick「Include closed」to see everything.')}
         </p>
       </div>
     )
@@ -1184,12 +1239,24 @@ export function DetailDrawer({ task, state, store, actors, onClose, style, initi
                 </button>
               </>
             )}
-            {(column === 'done' || column === 'closed') && (
+            {column === 'done' && (
+              <>
+                {/* done is not terminal in v0.6: the primary action here is the
+                    settle, so a finished card cannot silently stay unsettled. */}
+                <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => update({ id: task.id, action: 'close' })}>
+                  {L('收口结清', 'Settle (close)')}
+                </button>
+                <button type="button" className="tb-btn" disabled={busy} onClick={() => update({ id: task.id, action: 'reopen' })}>
+                  {L('重开', 'Reopen')}
+                </button>
+              </>
+            )}
+            {column === 'closed' && (
               <button type="button" className="tb-btn" disabled={busy} onClick={() => update({ id: task.id, action: 'reopen' })}>
-                {L('重开', 'Reopen')}
+                {L('重开（结清错了）', 'Reopen (settled by mistake)')}
               </button>
             )}
-            {column !== 'closed' && (
+            {(column === 'pool' || column === 'assigned' || column === 'in_progress' || column === 'review') && (
               <button type="button" className="tb-btn tb-btn-danger" disabled={busy} onClick={() => update({ id: task.id, action: 'close' })}>
                 {L('关闭', 'Close')}
               </button>
@@ -1904,6 +1971,24 @@ const styles: Record<string, CSSProperties> = {
   },
   humanHead: { display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' },
   humanTitle: { fontSize: 12.5, fontWeight: 600, color: WARN },
+  // The「待收口」strip (done but unsettled): same shape as the human strip,
+  // quieter accent — it is a nudge, not a blocked-on-you alarm.
+  settleStrip: {
+    flexShrink: 0,
+    margin: '8px 12px 0',
+    padding: '8px 12px 10px',
+    borderRadius: 8,
+    border: `1px solid ${BORDER_STRONG}`,
+    borderLeft: `3px solid ${ACCENT}`,
+    background: BG_RAISED,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+  },
+  settleTitle: { fontSize: 12.5, fontWeight: 600, color: ACCENT },
+  settleRow: { display: 'flex', alignItems: 'center', gap: 8, borderTop: `1px solid ${BORDER}`, paddingTop: 7 },
+  settleRef: { flexShrink: 0, fontSize: 10.5, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+  settleTitleText: { fontSize: 12.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 },
   humanHint: { fontSize: 10.5, color: DIM },
   humanList: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 },
   humanItem: { display: 'flex', flexDirection: 'column', gap: 4, borderTop: `1px solid ${BORDER}`, paddingTop: 7 },

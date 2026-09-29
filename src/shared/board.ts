@@ -155,8 +155,11 @@ export const DEFAULT_COLUMN_SLA_MS: Record<BoardColumn, number | null> = {
   assigned: 48 * 3600_000,    // 指派了 2 天还没 start
   in_progress: 72 * 3600_000, // 3 天没动静
   review: 24 * 3600_000,      // 审核人欠 1 天
-  done: null,
-  closed: null,
+  // done is NOT terminal (v0.6): a card approved but never settled is exactly
+  // the rot the two-step close exists to catch, so it goes stale like any
+  // other unfinished work.
+  done: 72 * 3600_000,        // 审核过了 3 天还没人收口
+  closed: null,               // the only terminal column: never stale
 }
 
 /** 等人类/等 Agent 的升级阈值：等过这个时长就该催（或换人）。 */
@@ -214,7 +217,7 @@ export function stalenessOf(task: Task, now: number = Date.now(), options?: Stal
   }
 }
 
-/** 便捷判断：done/closed 永不算陈旧。 */
+/** 便捷判断：只有已结清（closed）永不算陈旧；done 仍算未结清的工作。 */
 export function isStale(task: Task, now: number = Date.now(), options?: StalenessOptions): boolean {
   return stalenessOf(task, now, options).stale
 }
@@ -255,7 +258,7 @@ export function assigneeIsGone(
 
 export interface HealthIssue {
   task: Task
-  kind: 'orphaned' | 'unowned_review' | 'waiting_human' | 'stale'
+  kind: 'orphaned' | 'unowned_review' | 'waiting_human' | 'needs_settling' | 'stale'
   /** 事实描述用的中性数据（谁、多久、什么问题）。 */
   actor?: string
   ageMs: number
@@ -271,7 +274,12 @@ export interface BoardHealth {
   waitingHuman: HealthIssue[]
   /** 在等另一个 Agent / 外部系统的卡（不是人类的事，但仍是"卡着"）。 */
   waitingOther: HealthIssue[]
-  /** 其他列陈旧（不含上面三类）。 */
+  /**
+   * 已经 done 但没人收口（v0.6）。done 不是终态，所以这是一类独立的腐烂：
+   * 所有人都认为它完了，但没人负责把它结清。按列龄从久到近排。
+   */
+  needsSettling: HealthIssue[]
+  /** 其他列陈旧（不含上面几类）。 */
   stale: HealthIssue[]
 }
 
@@ -288,10 +296,18 @@ export interface HealthOptions extends StalenessOptions {
 export function boardHealth(board: Board, options?: HealthOptions): BoardHealth {
   const now = options?.now ?? Date.now()
   const quietMs = options?.quietMs ?? DEFAULT_QUIET_MS
-  const health: BoardHealth = { orphaned: [], unownedReview: [], waitingHuman: [], waitingOther: [], stale: [] }
+  const health: BoardHealth = { orphaned: [], unownedReview: [], waitingHuman: [], waitingOther: [], needsSettling: [], stale: [] }
 
   for (const task of Object.values(board.tasks)) {
-    if (task.status === 'done' || task.status === 'closed') continue
+    // `closed` is the only status that leaves the board entirely.
+    if (task.status === 'closed') continue
+    // done = approved but unsettled: its own rot category, and the ONLY thing
+    // we track about it (a done card is not "blocked" or "orphaned" — it is
+    // simply waiting for someone to write the closing note).
+    if (task.status === 'done') {
+      health.needsSettling.push({ task, kind: 'needs_settling', ageMs: ageInColumnMs(task, now) })
+      continue
+    }
     if (task.waiting_on) {
       const ageMs = Math.max(0, now - (Date.parse(task.waiting_on.since) || now))
       const issue: HealthIssue = {
@@ -333,6 +349,7 @@ export function boardHealth(board: Board, options?: HealthOptions): BoardHealth 
   health.unownedReview.sort(byAge)
   health.waitingHuman.sort(byAge)
   health.waitingOther.sort(byAge)
+  health.needsSettling.sort(byAge)
   health.stale.sort(byAge)
   return health
 }
@@ -351,6 +368,7 @@ export type InboxKind =
   | 'start_assigned'   // 指派给我但还没开工
   | 'orphaned_mine'    // 我派出去的卡，接的人不见了
   | 'pool_pick'        // 待认领池里值得拿的
+  | 'settle_mine'      // 我的卡已 done 但没收口：该写结清说明并 close（v0.6）
   | 'human_blocked'    // 在等人类：需要去叫人（或人类自己来看）
 
 export interface InboxItem {
@@ -378,6 +396,9 @@ const RANK: Record<InboxKind, number> = {
   unblock_me: 20,
   returned: 30,
   stalled_mine: 40,
+  // Settling comes after live work but before picking up something new: an
+  // unfinished close is cheap to finish and blocks the card from ever leaving.
+  settle_mine: 42,
   orphaned_mine: 45,
   start_assigned: 50,
   human_blocked: 60,
@@ -399,7 +420,24 @@ export function inboxFor(board: Board, actor: string, options?: InboxOptions): I
   const isMe = (name: string | null | undefined) => sameActor(board, name, actor)
 
   for (const task of Object.values(board.tasks)) {
-    if (task.status === 'done' || task.status === 'closed') continue
+    // `closed` is settled and gone; `done` is NOT terminal (v0.6) — it still
+    // owes a settle, so it is handled below rather than skipped.
+    if (task.status === 'closed') continue
+
+    // Approved but unsettled, and it is mine to close out.
+    if (task.status === 'done' && task.assignee && isMe(task.assignee)) {
+      items.push({
+        kind: 'settle_mine',
+        task,
+        ageMs: ageInColumnMs(task, now),
+        rank: RANK.settle_mine,
+        // done is not terminal: the closing step is a real action, and the
+        // note is the only place "finished" vs "abandoned" is recorded.
+        suggest: `taskboard update ${task.id} --action close --note "已交付…"（不做了也走 close，写清原因）`,
+      })
+      continue
+    }
+    if (task.status === 'done') continue
 
     if (task.status === 'review' && task.reviewer && isMe(task.reviewer)) {
       items.push({
