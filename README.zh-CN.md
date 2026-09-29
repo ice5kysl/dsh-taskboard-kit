@@ -91,11 +91,18 @@
 ## 安装
 
 ```bash
-dsh plugin --profile web add dsh-taskboard-kit
+dsh plugin --profile web add dsh-taskboard-kit@0.6.0
 # 重启 dsh web，打开任意会话，「看板」页签就在
 ```
 
-升级注意（0.x 版本锁 minor）：用 `dsh plugin --profile web add dsh-taskboard-kit@latest`，不要用 `dsh plugin update`。
+**务必写死版本号。** `dsh plugin` 转发给 pnpm 11，而 pnpm 11 默认带一道供应链
+`minimumReleaseAge` 闸门：刚发布几分钟的版本会被拦下，此时不带版本的
+`add dsh-taskboard-kit` **会静默装上一个旧版本** —— 你拿到的看板里 `done` 仍被当成终点，
+而且没有任何提示。写上 `@0.6.0` 就是让这次安装绕过闸门、装到你指定的版本。
+等 0.6.0 发布满一天后，不带版本也能装到它。
+
+升级同理：`dsh plugin --profile web add dsh-taskboard-kit@<版本号>`（0.x 锁小版本，
+`dsh plugin update` 不会带你跨版本）。
 
 ## 给没有插件的 Agent 用（Kimi Code、Claude Code、任何 shell）
 

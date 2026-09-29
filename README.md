@@ -117,11 +117,19 @@ Each task still carries **value points** (Fibonacci scale ½ / 1 / 2 / 3 / 5 / 8
 ## Install
 
 ```bash
-dsh plugin --profile web add dsh-taskboard-kit
+dsh plugin --profile web add dsh-taskboard-kit@0.6.0
 # restart dsh web, open any session, and the「看板」tab is there
 ```
 
-Upgrade note (0.x versioning locks the minor): use `dsh plugin --profile web add dsh-taskboard-kit@latest`, not `dsh plugin update`.
+**Pin the version explicitly.** pnpm 11 (which `dsh plugin` forwards to) ships a
+supply-chain `minimumReleaseAge` gate: a version published minutes ago is held
+back, and a bare `add dsh-taskboard-kit` then silently installs an older one —
+you would get a board whose `done` is still treated as terminal without any hint.
+Naming `@0.6.0` opts that release out of the gate and installs what you asked for.
+When 0.6.0 is more than a day old, a bare `add` finds it too.
+
+Upgrades: use `dsh plugin --profile web add dsh-taskboard-kit@<version>` with the
+exact version (0.x locks the minor, so `dsh plugin update` will not move you).
 
 ## For agents without the plugin (Kimi Code, Claude Code, any shell)
 
