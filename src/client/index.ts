@@ -56,6 +56,13 @@ export { knownActors } from './actors.ts'
 export { conventionSnippet, dispatchSnippet, guideProjectDir, hookSnippetClaude, hookSnippetKimi } from './guide.ts'
 export { renderMarkdown } from './markdown.ts'
 export { openTaskCount, runPlanOps, groupByOwner, isFinal, escapeTarget, UNASSIGNED_KEY } from './view.ts'
+export { StatsView } from './StatsView.tsx'
+export {
+  headline, byStatus, byPriority, byOwner, flow, dwellByColumn, actionsByActor,
+  valueByOwner, totalValue, columnEnteredAt, timeInColumnMs, dayKey, daySeries,
+  todayKey, durationText, percentText,
+} from './stats.ts'
+export type { Headline, Slice, OwnerStat, DayFlow } from './stats.ts'
 export type { BoardLayer, OwnerGroup } from './view.ts'
 export { L } from './locale.ts'
 export type { BridgeClient } from './api.ts'

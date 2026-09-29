@@ -21,8 +21,8 @@ import type { Board } from '../shared/types.ts'
 import type { ClaimRequest, CommentRequest, CreateRequest, UpdateRequest } from '../shared/bridge.ts'
 import { createBridgeClient, type BridgeClient } from './api.ts'
 
-/** The board tab's two groupings: by progress column, or by owner. */
-export type BoardGrouping = 'column' | 'owner'
+/** The board tab's views: the status lanes, the owner lanes, or analytics. */
+export type BoardGrouping = 'column' | 'owner' | 'stats'
 
 export interface TaskboardState {
   /** 'loading' until the first refresh of the current cwd settles. */
@@ -38,8 +38,9 @@ export interface TaskboardState {
   /** Whether the closed column is expanded (default: a collapsed strip). */
   showClosed: boolean
   /**
-   * How the board tab groups work: by progress (the six swim-lanes) or by
-   * owner (one lane per assignee). Purely a view choice — no data changes.
+   * How the board tab presents the same board: by progress (the six
+   * swim-lanes), by owner (one lane per assignee), or as statistics. Purely a
+   * view choice — no data changes, no extra requests.
    */
   groupBy: BoardGrouping
   /**

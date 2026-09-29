@@ -984,6 +984,221 @@ await check('escapeTarget: one Escape closes exactly ONE layer, topmost first', 
   assert.equal(client.escapeTarget(layers({ drawer: true }), { defaultPrevented: false }), 'drawer')
 })
 
+await check('panel: the「统计」view renders KPIs, charts and tables from the same board', async () => {
+  const board = collabBoard([
+    { id: 'T-1', title: 'wip', status: 'in_progress', assignee: 'kimi', value: 3 },
+    { id: 'T-2', title: 'awaitingVerification', status: 'review', assignee: 'dsh' },
+    { id: 'T-3', title: 'awaitingSettle', status: 'done', assignee: 'kimi' },
+    { id: 'T-4', title: 'settledAlready', status: 'closed', assignee: 'kimi' },
+  ])
+  const { store } = await renderBoard(board)
+
+  // The switch offers all three views; stats is opt-in.
+  const base = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+  assert.ok(base.includes('By status'), 'status lanes render by default')
+  assert.ok(base.includes('Stats'), 'the stats option is offered')
+
+  store.setGroupBy('stats')
+  const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+
+  // KPI tiles: every headline number is on screen.
+  for (const label of ['Open', 'To settle', 'WIP', 'Blocked', 'Settled', 'Median cycle', 'Reject rate', 'Total value']) {
+    assert.ok(html.includes(label), `KPI tile: ${label}`)
+  }
+  // Section titles for the charts/tables.
+  for (const title of ['At a glance', 'Daily flow', 'By status', 'By priority / value', 'Owners', 'Where time piles up']) {
+    assert.ok(html.includes(title), `section: ${title}`)
+  }
+  // The flow legend + the owner table's columns.
+  for (const key of ['created', 'settled', 'backlog']) {
+    assert.ok(html.includes(key), `flow legend: ${key}`)
+  }
+  assert.ok(html.includes('Cycle') && html.includes('Actions'), 'owner table columns')
+  // Counts stay honest: 3 unsettled (everything but the closed card).
+  assert.ok(html.includes('>3<'), 'the open count reflects `done` counting as open')
+})
+
+await check('panel: an empty board keeps its 「no tasks」 state even in the stats view', async () => {
+  const board = collabBoard([])
+  const { store } = await renderBoard(board)
+  store.setGroupBy('stats')
+  const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+  // The panel's own empty state wins over the stats body: a page of zeroes is
+  // worse than one sentence telling you the board is empty.
+  assert.ok(html.includes('No tasks yet'), 'the panel empty state is shown')
+  assert.ok(!html.includes('At a glance'), 'no KPI wall over an empty board')
+  // StatsView itself degrades safely when handed nothing (a null board).
+  const empty = renderToStaticMarkup(React.createElement(client.StatsView, { board: null }))
+  assert.ok(empty.includes('nothing to measure'), 'StatsView has its own empty state')
+})
+
+
+// ---------------------------------------------------------------- 统计 view
+
+/** A board fixture with explicit log timelines, for the analytics functions. */
+function statsBoard(specs) {
+  const base = {
+    detail: '', status: 'open', assignee: null, reviewer: null, waiting_on: null,
+    priority: 'medium', value: null, tags: [], created_by: 'human', log: [], comments: [],
+  }
+  const tasks = {}
+  for (const spec of specs) {
+    tasks[spec.id] = {
+      ...base, ...spec,
+      created_at: spec.created_at, updated_at: spec.created_at,
+      log: spec.log ?? [{ at: spec.created_at, by: spec.created_by ?? 'human', event: 'created' }],
+    }
+  }
+  return { version: 1, workspace: '/w', next_seq: 99, actors: {}, tasks }
+}
+
+await check('stats: headline counts `done` as open work and only `closed` as settled', () => {
+  const at = (h) => new Date(Date.now() - h * 3600_000).toISOString()
+  const board = statsBoard([
+    { id: 'T-1', status: 'in_progress', assignee: 'kimi', created_at: at(100) },
+    { id: 'T-2', status: 'review', assignee: 'kimi', created_at: at(90) },
+    { id: 'T-3', status: 'done', assignee: 'kimi', created_at: at(80) },
+    { id: 'T-4', status: 'closed', assignee: 'kimi', created_at: at(70), log: [
+      { at: at(70), by: 'human', event: 'created' },
+      { at: at(20), by: 'kimi', event: 'closed' },
+    ] },
+    { id: 'T-5', status: 'open', assignee: null, created_at: at(60), waiting_on: { kind: 'human', who: 'x', question: 'q', since: at(10) } },
+  ])
+  const h = client.headline(board)
+  assert.equal(h.total, 5)
+  assert.equal(h.open, 4, 'everything but closed')
+  assert.equal(h.unsettled, 1, 'the done card owes a settle')
+  assert.equal(h.settled, 1)
+  assert.equal(h.wip, 2, 'in_progress + review')
+  assert.equal(h.blocked, 1)
+  // T-4 took 50h: created 70h ago, closed 20h ago.
+  assert.equal(client.durationText(h.medianCycleMs), '2.1d')
+  assert.equal(client.headline(null).total, 0, 'null board → zeros, no throw')
+})
+
+await check('stats: reject rate counts cards that reached review and were sent back', () => {
+  const at = (h) => new Date(Date.now() - h * 3600_000).toISOString()
+  const board = statsBoard([
+    { id: 'T-1', status: 'review', created_at: at(10), log: [
+      { at: at(10), by: 'kimi', event: 'created' },
+      { at: at(8), by: 'kimi', event: 'submitted' },
+      { at: at(6), by: 'dsh', event: 'rejected' },
+      { at: at(4), by: 'kimi', event: 'submitted' },
+    ] },
+    { id: 'T-2', status: 'done', created_at: at(10), log: [
+      { at: at(10), by: 'kimi', event: 'created' },
+      { at: at(8), by: 'kimi', event: 'submitted' },
+      { at: at(6), by: 'dsh', event: 'approved' },
+    ] },
+    { id: 'T-3', status: 'open', created_at: at(10) },
+  ])
+  // 2 cards reached review, 1 was rejected → 50%. The never-submitted card is
+  // not counted at all (it never entered the review pipeline).
+  assert.equal(client.percentText(client.headline(board).rejectRate), '50%')
+  const noReview = statsBoard([{ id: 'T-1', status: 'open', created_at: at(10) }])
+  assert.equal(client.headline(noReview).rejectRate, null, 'no review traffic → null, not 0%')
+  assert.equal(client.percentText(null), '—')
+})
+
+await check('stats: flow counts created/settled per day and tracks the backlog', () => {
+  const day = (offset) => {
+    const d = new Date()
+    d.setHours(12, 0, 0, 0)
+    d.setDate(d.getDate() - offset)
+    return d.toISOString()
+  }
+  const board = statsBoard([
+    { id: 'T-1', status: 'open', created_at: day(3) },
+    { id: 'T-2', status: 'open', created_at: day(3) },
+    { id: 'T-3', status: 'closed', created_at: day(2), log: [
+      { at: day(2), by: 'kimi', event: 'created' },
+      { at: day(1), by: 'kimi', event: 'closed' },
+    ] },
+  ])
+  const rows = client.flow(board, { days: 5 })
+  assert.equal(rows.length, 5, 'a fixed-width axis, gaps included')
+
+  const createdOn = (offset) => rows[rows.length - 1 - offset]
+  assert.equal(createdOn(3).created, 2, 'two cards created that day')
+  assert.equal(createdOn(1).settled, 1, 'one card settled the next day')
+
+  // Backlog: rises by created, falls by settled, and never goes negative.
+  assert.equal(createdOn(4).backlog, 0, 'nothing before the window')
+  assert.equal(createdOn(3).backlog, 2)
+  assert.equal(createdOn(1).backlog, 2, '2 created + 1 created − 1 settled')
+  assert.ok(rows.every((row) => row.backlog >= 0), 'backlog is never negative')
+  // A settled card cannot depress the backlog below zero.
+  const odd = client.flow(statsBoard([
+    { id: 'T-1', status: 'closed', created_at: day(2), log: [
+      { at: day(2), by: 'kimi', event: 'created' },
+      { at: day(1), by: 'kimi', event: 'closed' },
+    ] },
+  ]), { days: 3 })
+  // Created on day 0 → backlog 1; settled the next day → back to 0, never below.
+  assert.equal(odd[0].backlog, 1, 'one card created, one open')
+  assert.equal(odd[1].backlog, 0, 'settled the next day')
+  assert.ok(odd.every((row) => row.backlog >= 0), 'never negative')
+})
+
+await check('stats: daySeries is a contiguous local-time axis ending today', () => {
+  const series = client.daySeries(4)
+  assert.equal(series.length, 4)
+  assert.equal(series[3], client.todayKey(), 'the last bucket is today (local time)')
+  // Contiguous: each step is exactly one day, so charts have no phantom gaps.
+  for (let i = 1; i < series.length; i += 1) {
+    const prev = new Date(`${series[i - 1]}T12:00:00`).getTime()
+    const next = new Date(`${series[i]}T12:00:00`).getTime()
+    assert.equal(next - prev, 24 * 3600_000, `${series[i - 1]} → ${series[i]} is one day`)
+  }
+})
+
+await check('stats: distributions and dwell rank the biggest first', () => {
+  const at = (h) => new Date(Date.now() - h * 3600_000).toISOString()
+  const board = statsBoard([
+    { id: 'T-1', status: 'in_progress', priority: 'high', value: 5, created_at: at(10) },
+    { id: 'T-2', status: 'in_progress', priority: 'high', value: 3, created_at: at(40) },
+    { id: 'T-3', status: 'open', assignee: 'kimi', priority: 'low', value: 1, created_at: at(5) },
+  ])
+  const status = client.byStatus(board)
+  assert.deepEqual(status.map((s) => s.key), ['in_progress', 'assigned'])
+  assert.equal(status[0].count, 2)
+  assert.equal(client.percentText(status[0].share), '67%')
+
+  const priority = client.byPriority(board)
+  assert.equal(priority[0].key, 'high')
+  assert.equal(priority[0].count, 2)
+
+  // Value sums per owner; unestimated cards are reported, not silently zeroed.
+  const value = client.valueByOwner(board)
+  assert.equal(value.rows[0].owner, '')
+  assert.equal(value.rows[0].value, 8)
+  assert.equal(value.unestimated, 0)
+  const withUnestimated = statsBoard([{ id: 'T-1', status: 'open', value: null, created_at: at(1) }])
+  assert.equal(client.valueByOwner(withUnestimated).unestimated, 1)
+
+  // Dwell: T-2 sat longer, so in_progress carries the larger total.
+  const dwell = client.dwellByColumn(board)
+  assert.equal(dwell[0].column, 'in_progress')
+  assert.equal(dwell[0].tasks, 2)
+  // Settled work never contributes to dwell.
+  const settledBoard = statsBoard([
+    { id: 'T-1', status: 'closed', created_at: at(100), log: [
+      { at: at(100), by: 'kimi', event: 'created' },
+    ] },
+  ])
+  assert.deepEqual(client.dwellByColumn(settledBoard), [], 'settled cards leave the dwell chart')
+})
+
+await check('stats: duration text is compact at every scale', () => {
+  assert.equal(client.durationText(30_000), '1m')
+  assert.equal(client.durationText(90 * 60_000), '1.5h')
+  // Hours stay hours until 48h, then switch to days.
+  assert.equal(client.durationText(30 * 3600_000), '30.0h')
+  assert.equal(client.durationText(72 * 3600_000), '3.0d')
+  assert.equal(client.durationText(null), '—')
+  assert.equal(client.durationText(0), '0m')
+})
+
 // ------------------------------------------------------------------ done
 
 console.log(failed === 0 ? 'all checks passed' : `${failed} check(s) failed`)

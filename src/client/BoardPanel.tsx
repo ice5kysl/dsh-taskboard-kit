@@ -64,6 +64,7 @@ import { knownActors } from './actors.ts'
 import { conventionSnippet, dispatchSnippet, guideProjectDir, hookSnippetClaude, hookSnippetKimi } from './guide.ts'
 import { L } from './locale.ts'
 import { renderMarkdown } from './markdown.ts'
+import { StatsView } from './StatsView.tsx'
 import type { BoardGrouping, TaskboardState, TaskboardStore } from './store.ts'
 import {
   ACCENT,
@@ -488,6 +489,8 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
             {L('+ 新建任务', '+ New task')}
           </button>
         </div>
+      ) : state.groupBy === 'stats' ? (
+        <StatsView board={board} />
       ) : state.groupBy === 'owner' ? (
         <div style={styles.lanes}>
           <OwnerLanes
@@ -603,8 +606,9 @@ function TopBar({ state, store, total, onCreate, onGuide }: { state: TaskboardSt
  */
 function ViewSwitch({ mode, onSwitch }: { mode: BoardGrouping; onSwitch(mode: BoardGrouping): void }): JSX.Element {
   const options: Array<{ value: BoardGrouping; label: string; title: string }> = [
-    { value: 'column', label: L('按进度', 'By status'), title: L('按状态分列：待认领 / 已指派 / 进行中 / 待审核 / 已完成 / 已关闭', 'Lanes by status: pool / assigned / in progress / in review / done / closed') },
+    { value: 'column', label: L('按进度', 'By status'), title: L('按状态分列：待认领 / 已指派 / 进行中 / 待审核 / 待收口 / 已结清', 'Lanes by status: pool / assigned / in progress / in review / to settle / settled') },
     { value: 'owner', label: L('按负责人', 'By owner'), title: L('按负责人分列，看清每个人头上挂了哪些任务', 'Lanes by owner — what is on each person\'s plate') },
+    { value: 'stats', label: L('统计', 'Stats'), title: L('宏观统计：现状、每日流量、分布、负责人负载与周期', 'The macro read: current state, daily flow, distributions, per-owner load and cycle time') },
   ]
   return (
     <div style={styles.viewSwitch} role="tablist" aria-label={L('看板视角', 'Board view')}>
