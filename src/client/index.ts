@@ -93,8 +93,8 @@ export function apply(raw: Context): void {
     BoardPanel,
   ))
 
-  // The status-bar entry: a quiet pill at the stats row's right end
-  // (composer.dock's shipped order-0 entry is the stats pills row).
+  // The status-bar entry: a quiet pill riding the stats row inline (order 40,
+  // right after the shipped stats entries — not pinned to the frame's edge).
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register(
     {
       name: 'conversation.composer.dock',

@@ -5,12 +5,11 @@
  *
  *  1. `conversation.composer.dock` (list/session) — the entry. The 0.1.7
  *     dock is a compact CENTERED flex row (the shipped stats pills as the
- *     order-0 entry 'stats' plus the host's own context meter), so we render
- *     a zero-size static anchor and let the absolute pill resolve against
- *     the composer's sticky seat: the pill hugs the composer's right edge,
- *     glued to the stats band. Being resident in the composer, this button
- *     is also what drives `store.setCwd` from the session share when the
- *     看板 tab never opens.
+ *     order-0 entry 'stats' plus the host's own context meter); our button
+ *     rides that row as an ordinary flex item (order 40), flowing inline
+ *     right after the shipped entries — no absolute positioning. Being
+ *     resident in the composer, this button is also what drives
+ *     `store.setCwd` from the session share when the 看板 tab never opens.
  *  2. `shell.overlay` (list/root) — the drawer: a full-height right-edge
  *     side drawer over the whole frame. The layer is portal'd to body,
  *     outside the --dsw-alias-* token scope (they're defined on
@@ -73,11 +72,10 @@ interface MiniDnd {
 }
 
 /**
- * The entry: a quiet pill hugging the composer's right edge. The dock renders
- * the shipped stats row (order 0) and the host's context meter in one compact
- * centered band; our zero-size static anchor leaves that band untouched while
- * the absolute pill resolves against the composer's sticky seat — right edge,
- * glued to the stats band's line.
+ * The entry: a quiet pill flowing inline with the stats band. The dock is a
+ * compact centered flex row (shipped stats pills + the host's context meter);
+ * we register as an ordinary flex item, so the button sits right after the
+ * shipped entries, looking exactly like one of them.
  */
 export function MiniBoardButton(props: MiniBoardProps): JSX.Element {
   const store = props.store ?? getTaskboardStore()
@@ -97,11 +95,14 @@ export function MiniBoardButton(props: MiniBoardProps): JSX.Element {
       <button
         type="button"
         className="tb-mini-entry"
-        style={styles.entryPill}
         onClick={() => store.setMiniOpen(!state.miniOpen)}
         title={state.miniOpen ? L('收起看板抽屉', 'Close the board drawer') : L('任务看板', 'Task board')}
       >
-        <span aria-hidden style={styles.entryIcon}>▤</span>
+        <svg aria-hidden width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.1" style={styles.entryIcon}>
+          <rect x="1" y="1" width="10" height="10" rx="1.6" />
+          <line x1="4.4" y1="1.2" x2="4.4" y2="10.8" />
+          <line x1="7.6" y1="1.2" x2="7.6" y2="10.8" />
+        </svg>
         <span>{L('看板', 'Board')}</span>
         {open > 0 && <span style={styles.entryCount}>· {open}</span>}
       </button>
@@ -440,30 +441,19 @@ function ClosedRow({ count, dnd, onExpand }: { count: number; dnd: MiniDnd; onEx
 // ------------------------------------------------------------------ styles
 
 const styles: Record<string, CSSProperties> = {
-  // Zero-size STATIC anchor in the composer dock. The 0.1.7 dock is a compact
-  // CENTERED flex row (stats pills + the context meter as the row's own last
-  // item) — the old "float into the row's empty right end" trick landed the
-  // pill mid-row. Static + zero-size keeps the dock's layout untouched, and
-  // the absolute pill resolves against the composer's sticky seat (the
-  // full-width positioned ancestor), hugging the composer's right edge.
+  // Ordinary flex item in the composer dock. The 0.1.7 dock is a compact
+  // CENTERED flex row (stats pills + the host's context meter) — riding it as
+  // a normal item lands the button inline right after the shipped entries,
+  // where the band's own entries live. (The earlier zero-size-anchor trick
+  // pinned an absolute pill to the composer's right edge — detached from the
+  // band, ice feedback 2026-09-29.)
   dockAnchor: {
-    position: 'static',
-    width: 0,
-    height: 0,
-    overflow: 'visible',
+    display: 'flex',
+    alignItems: 'center',
     fontSize: 'var(--dsh-content-font-size-secondary, 12px)',
     lineHeight: '20px',
   },
-  // The pill: right edge of the composer (the seat is sticky to the viewport
-  // bottom, so bottom stays glued to the stats band no matter how tall the
-  // input grows). right clearance matches the dock's own side padding.
-  entryPill: {
-    position: 'absolute',
-    right: 'calc(var(--dsh-composer-side-clearance, 0px) + 16px)',
-    bottom: 4,
-    zIndex: 5,
-  },
-  entryIcon: { fontSize: 13, lineHeight: 1 },
+  entryIcon: { display: 'block' },
   entryCount: { color: DIM, fontVariantNumeric: 'tabular-nums' },
   // The overlay frame: fixed full-viewport dimmer (plain alpha like every
   // shell overlay backdrop — no token needed), the drawer pinned right.
