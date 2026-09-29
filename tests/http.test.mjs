@@ -19,7 +19,7 @@ import { join } from 'node:path'
 
 process.env.TASKBOARDKIT_LOCALE = 'en'
 
-const { createTaskboardBridge, isTrustedRequest } = await import('../lib/index.js')
+const { createTaskboardBridge, defaultBridgeDeps, isTrustedRequest } = await import('../lib/index.js')
 
 let failed = 0
 async function check(name, fn) {
@@ -200,6 +200,55 @@ await check('a workspace with a board file is served even when its session is no
   } finally {
     await rm(known, { recursive: true, force: true })
     await rm(fresh, { recursive: true, force: true })
+  }
+})
+
+await check('the cwd whitelist actually ENGAGES through the real host wiring', async () => {
+  // The gap this covers: every other test injects `isAllowedCwd` by hand, so
+  // the production wiring was never exercised — and in a live dsh web it
+  // returned `undefined` for every cwd (the root ctx does not expose `agents`,
+  // a soft dependency), leaving the guard inert. Verified live: a POST /create
+  // with a fresh /tmp cwd created a board there and answered 200.
+  const { mkdtemp, rm } = await import('node:fs/promises')
+  const servedRoot = await mkdtemp(join(tmpdir(), 'dsh-taskboard-served-'))
+  const outside = await mkdtemp(join(tmpdir(), 'dsh-taskboard-outside-'))
+  try {
+    const fakeCtx = {
+      logger: () => ({ info: () => {} }),
+      // The host shape that matters: `agents` is NOT on the root ctx (this
+      // plugin declares only tools+sessions), it arrives via ctx.inject.
+      inject: (deps, callback) => {
+        if (deps[0] === 'agents') {
+          callback({
+            agents: { list: () => [{ id: 'a1' }] },
+            sessions: { get: () => ({ header: { cwd: servedRoot } }) },
+          })
+        }
+      },
+    }
+    const deps = defaultBridgeDeps(fakeCtx)
+    assert.equal(deps.isAllowedCwd(servedRoot), true, 'a live session workspace is served')
+    assert.equal(deps.isAllowedCwd(outside), false, 'and anything else is not')
+
+    // End to end: a boardless directory outside the served roots must be refused
+    // (this is the mkdir-anywhere primitive the audit flagged).
+    const board = createTaskboardBridge(deps)
+    const refused = res()
+    await board.handle({
+      method: 'POST',
+      url: '/dsh-taskboard/create',
+      headers: { host: '127.0.0.1:3080', 'x-taskboard': 'mutate' },
+      socket: { remoteAddress: '127.0.0.1' },
+      [Symbol.asyncIterator]: async function* () {
+        yield Buffer.from(JSON.stringify({ cwd: outside, title: 'should never be written' }))
+      },
+    }, refused)
+    assert.equal(refused.status, 403, 'a boardless, unserved cwd is refused')
+    const { existsSync } = await import('node:fs')
+    assert.equal(existsSync(join(outside, '.dsh', 'taskboard.json')), false, 'and nothing was written')
+  } finally {
+    await rm(servedRoot, { recursive: true, force: true })
+    await rm(outside, { recursive: true, force: true })
   }
 })
 

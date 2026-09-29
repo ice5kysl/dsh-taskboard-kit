@@ -88,8 +88,39 @@ export interface TaskboardBridge {
   handle(req: IncomingMessage, res: ServerResponse): Promise<void>
 }
 
-/** The real dependencies, bound to a host context. */
+/**
+ * The real dependencies, bound to a host context.
+ *
+ * `agents` is a **soft** dependency here — this plugin declares
+ * `inject = ['tools', 'sessions']`, so the root ctx does NOT expose
+ * `ctx.agents`. Reading it directly therefore yielded `undefined` and the cwd
+ * whitelist silently degraded to the structural checks in production (verified
+ * against a live dsh web: `POST /create` with `cwd=/tmp/<fresh dir>` returned
+ * 200 and created the board there). Capture it through `ctx.inject(['agents'])`
+ * — the same channel the board watcher uses, which demonstrably resolves in
+ * this host — and keep the "unknown → permissive" fallback for the moments
+ * before it lands.
+ */
 export function defaultBridgeDeps(ctx: Context): TaskboardBridgeDeps {
+  interface AgentsLike { list(): { id: string }[] }
+  interface SessionsLike { get(id: string): { header?: { cwd?: string } } | undefined }
+  let injectedAgents: AgentsLike | undefined
+  let injectedSessions: SessionsLike | undefined
+  try {
+    const inject = (ctx as unknown as {
+      inject?: (deps: string[], callback: (child: unknown) => void) => unknown
+    }).inject
+    if (typeof inject === 'function') {
+      inject.call(ctx, ['agents'], (child) => {
+        const services = child as { agents?: AgentsLike; sessions?: SessionsLike }
+        injectedAgents = services.agents ?? injectedAgents
+        injectedSessions = services.sessions ?? injectedSessions
+      })
+    }
+  } catch {
+    /* no soft dependency channel (tests, headless): stay permissive */
+  }
+
   return {
     loadBoard,
     createTask,
@@ -103,8 +134,10 @@ export function defaultBridgeDeps(ctx: Context): TaskboardBridgeDeps {
     // requireCwd instead of rejecting every request.
     isAllowedCwd: (cwd) => {
       try {
-        const agents = (ctx as unknown as { agents?: { list(): { id: string }[] } }).agents
-        const sessions = (ctx as unknown as { sessions?: { get(id: string): { header?: { cwd?: string } } | undefined } }).sessions
+        const agents = injectedAgents
+          ?? (ctx as unknown as { agents?: AgentsLike }).agents
+        const sessions = injectedSessions
+          ?? (ctx as unknown as { sessions?: SessionsLike }).sessions
         if (!agents || !sessions || typeof agents.list !== 'function') return undefined
         const live = agents.list()
         if (!Array.isArray(live) || live.length === 0) return undefined

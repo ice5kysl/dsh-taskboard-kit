@@ -261,5 +261,39 @@ await check('claim atomicity still holds after the lock rewrite', async () => {
   assert.equal(final.log.filter((entry) => entry.event === 'claimed').length, 1)
 })
 
+await check('a board that VANISHES is not silently read as empty (nor overwritten)', async () => {
+  const { mkdtemp, rm, unlink } = await import('node:fs/promises')
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-taskboard-vanish-'))
+  try {
+    // Two real tasks, seen by this process.
+    await createTask(dir, { title: 'first' }, 'dsh')
+    await createTask(dir, { title: 'second' }, 'dsh')
+    const before = await loadBoard(dir)
+    assert.equal(Object.keys(before.tasks).length, 2)
+
+    // The file disappears (iCloud eviction, a move, a churning filesystem).
+    await unlink(join(dir, '.dsh', 'taskboard.json'))
+
+    // Reading must fail loudly rather than look like a brand-new workspace…
+    const readError = await loadBoard(dir).then(() => null, (e) => e)
+    assert.ok(readError, 'a vanished board must not read as empty')
+    assert.equal(readError.name, 'StoreError')
+    assert.match(readError.message, /disappeared/)
+
+    // …because the next write would otherwise replace both tasks with one.
+    const writeError = await createTask(dir, { title: 'replacement' }, 'dsh').then(() => null, (e) => e)
+    assert.ok(writeError, 'a write over a vanished board must be refused')
+    assert.match(writeError.message, /disappeared/)
+
+    // A workspace that never had a board is still a normal first run.
+    const fresh = await mkdtemp(join(tmpdir(), 'dsh-taskboard-fresh-'))
+    const empty = await loadBoard(fresh)
+    assert.deepEqual(Object.keys(empty.tasks), [])
+    await rm(fresh, { recursive: true, force: true })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 console.log(failed === 0 ? '\nall hardening checks passed' : `\n${failed} hardening check(s) failed`)
 process.exitCode = failed === 0 ? 0 : 1

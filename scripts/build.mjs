@@ -64,10 +64,29 @@ async function main() {
     logLevel: 'info',
   })
 
-  writeFileSync(join(root, 'lib/client.js'), readFileSync(bodyFile, 'utf8'))
+  // Read the body back and PROVE it is the bundle before publishing it.
+  // On a churning filesystem (cloud-synced working tree) that immediate
+  // read-back can come back empty: this used to write a 270-byte envelope with
+  // an empty factory over lib/client.js and delete the only copy of the real
+  // bundle — a silently broken browser face that only shows up as a kanban tab
+  // that will not render. Fail loudly, and keep the body so a retry can use it.
+  const body = readFileSync(bodyFile, 'utf8')
+  if (body.length < 1000 || !body.includes('window.__ModuleLoader__.load')) {
+    throw new Error(
+      `client bundle read-back looks wrong (${body.length} bytes); ${bodyFile} was kept — re-run the build`,
+    )
+  }
+  writeFileSync(join(root, 'lib/client.js'), body)
   rmSync(bodyFile, { force: true })
 
-  console.log('[build] lib/index.js + lib/client.js written')
+  console.log(`[build] lib/index.js + lib/client.js written (client ${body.length} bytes)`)
+
+  // The host bundle deserves the same proof: a truncated one imports "fine"
+  // until something calls a missing export.
+  const host = readFileSync(join(root, 'lib/index.js'), 'utf8')
+  if (host.length < 1000 || !host.includes('taskboard-kit')) {
+    throw new Error(`host bundle read-back looks wrong (${host.length} bytes); re-run the build`)
+  }
 }
 
 main().catch((error) => {

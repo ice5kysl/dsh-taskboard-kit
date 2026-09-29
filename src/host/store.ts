@@ -71,6 +71,14 @@ export function boardFilePath(cwd: string): string {
 
 // ------------------------------------------------------------------ raw file
 
+/**
+ * How many tasks this process last saw in each workspace's board. Used to tell
+ * "this workspace has no board yet" (a normal first run → empty board) apart
+ * from "the board file vanished out from under us" (never a fresh start: see
+ * the ENOENT branch in loadBoard).
+ */
+const boardsSeen = new Map<string, number>()
+
 export async function loadBoard(cwd: string): Promise<Board> {
   const file = boardFilePath(cwd)
   let raw: string
@@ -79,7 +87,25 @@ export async function loadBoard(cwd: string): Promise<Board> {
   } catch (error) {
     // A missing file is the normal first-run case; anything else (EACCES …)
     // must surface instead of masquerading as an empty board.
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return emptyBoard(resolve(cwd))
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      // …but "missing" and "vanished" are not the same thing. A cloud-synced or
+      // otherwise churning filesystem can make an existing board briefly
+      // unreadable (observed in this very workspace: iCloud evicting files
+      // mid-read, plus a `git` SIGBUS from mmapping its pack inside the synced
+      // tree). Loading an EMPTY board there is not a harmless read — the next
+      // mutation saves it back and silently replaces every task with the one
+      // being written. So once this process has seen a non-empty board for a
+      // workspace, its disappearance is an error to resolve, not a fresh start.
+      const seen = boardsSeen.get(resolve(cwd)) ?? 0
+      if (seen > 0) {
+        throw new StoreError(
+          'internal',
+          `the board file disappeared while this process was running (it held ${seen} task(s) a moment ago); `
+          + 'refusing to treat it as an empty board — restore .dsh/taskboard.json (or restart dsh) and retry',
+        )
+      }
+      return emptyBoard(resolve(cwd))
+    }
     throw error
   }
   let parsed: Board
@@ -179,6 +205,8 @@ export async function loadBoard(cwd: string): Promise<Board> {
   // into a read-only list.
   const currentWorkspace = resolve(cwd)
   if (parsed.workspace !== currentWorkspace) parsed.workspace = currentWorkspace
+  // Remember what we saw, so a later disappearance cannot pass as a first run.
+  boardsSeen.set(currentWorkspace, Object.keys(parsed.tasks ?? {}).length)
   return parsed
 }
 
