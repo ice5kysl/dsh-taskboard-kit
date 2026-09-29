@@ -111,6 +111,40 @@ export async function loadBoard(cwd: string): Promise<Board> {
       if ((entry.event as string) === 'cancelled') entry.event = 'closed'
     }
   }
+  // Roster backfill for boards written before v0.5.4 (or by a harness that
+  // never touched the roster): the log and the comment thread are *evidence of
+  // activity* — the same evidence `touchActor` records — so an actor that is
+  // absent from the roster is derived from them rather than reported as
+  // "never acted". Strictly additive: a recorded `last_seen_at` is never
+  // overwritten, so live boards keep their exact observation.
+  const seen = new Map<string, string>()
+  for (const task of Object.values(parsed.tasks ?? {})) {
+    for (const entry of task.log ?? []) {
+      if (typeof entry?.by !== 'string' || typeof entry?.at !== 'string') continue
+      const key = actorKey(entry.by)
+      if (!key) continue
+      const known = seen.get(key)
+      if (!known || entry.at > known) seen.set(key, entry.at)
+    }
+    for (const comment of task.comments ?? []) {
+      if (typeof comment?.by !== 'string' || typeof comment?.at !== 'string') continue
+      const key = actorKey(comment.by)
+      if (!key) continue
+      const known = seen.get(key)
+      if (!known || comment.at > known) seen.set(key, comment.at)
+    }
+  }
+  for (const [key, at] of seen) {
+    const entry = resolveActor(parsed, key)
+    if (!entry) {
+      parsed.actors[key] = { kind: kindOf(key), aliases: [], first_seen_at: at, last_seen_at: at }
+      continue
+    }
+    // A recorded observation is never overwritten — but `null` is the ABSENCE
+    // of an observation, not evidence of absence, so evidence fills that gap.
+    if (entry.last_seen_at === null) entry.last_seen_at = at
+  }
+
   // Workspace moves (the directory was relocated since the board was written):
   // report the CURRENT cwd from here on. Lazy on purpose — read paths never
   // take the lock, and every mutation saves the loaded board back, so the

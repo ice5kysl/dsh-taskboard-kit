@@ -71,6 +71,7 @@ export {
   actorNames,
   actorSeenAt,
   ageInColumnMs,
+  assigneeIsGone,
   boardHealth,
   columnSince,
   compareByValue,

@@ -224,6 +224,35 @@ export function isStale(task: Task, now: number = Date.now(), options?: Stalenes
 /** 一个 Agent 多久没动手就算"不在场"（默认 36h）。 */
 export const DEFAULT_QUIET_MS = 36 * 3600_000
 
+/**
+ * 「这个负责人算不算不见了」——活性缺失要配上时间才算孤儿。
+ *
+ * `last_seen_at: null`（从未动手）本身不是罪证：刚把卡派给一个还没开工的
+ * Agent，是正常交接，不是孤儿卡（真实误报：T-8 刚改派就被告警）。所以：
+ * 有记录 → 距今超过 `quietMs` 才算；从未动手 → 卡自己先待够 `quietMs` 才算。
+ */
+export function assigneeIsGone(
+  board: Board,
+  task: Task,
+  now: number = Date.now(),
+  quietMs: number = DEFAULT_QUIET_MS,
+): { gone: boolean; reason: 'quiet' | 'never-seen' | 'unknown-actor' | null; ageMs: number } {
+  if (!task.assignee) return { gone: false, reason: null, ageMs: 0 }
+  const seenAt = actorSeenAt(board, task.assignee)
+  if (seenAt === undefined) {
+    const ageMs = ageInColumnMs(task, now)
+    return { gone: ageMs > quietMs, reason: 'unknown-actor', ageMs }
+  }
+  if (seenAt === null) {
+    const ageMs = ageInColumnMs(task, now)
+    return { gone: ageMs > quietMs, reason: 'never-seen', ageMs }
+  }
+  const seen = Date.parse(seenAt)
+  if (Number.isNaN(seen)) return { gone: false, reason: null, ageMs: 0 }
+  const ageMs = now - seen
+  return { gone: ageMs > quietMs, reason: 'quiet', ageMs }
+}
+
 export interface HealthIssue {
   task: Task
   kind: 'orphaned' | 'unowned_review' | 'waiting_human' | 'stale'
@@ -283,16 +312,14 @@ export function boardHealth(board: Board, options?: HealthOptions): BoardHealth 
       continue
     }
     if (task.assignee) {
-      const seenAt = actorSeenAt(board, task.assignee)
-      const seen = seenAt === null || seenAt === undefined ? null : Date.parse(seenAt)
-      const quiet = seenAt === undefined || seen === null || Number.isNaN(seen) || now - seen > quietMs
-      if (quiet) {
+      const gone = assigneeIsGone(board, task, now, quietMs)
+      if (gone.gone) {
         health.orphaned.push({
           task,
           kind: 'orphaned',
           actor: task.assignee,
-          ageMs: seen !== null && !Number.isNaN(seen) ? now - seen : ageInColumnMs(task, now),
-          detail: seenAt === undefined ? 'unknown-actor' : seenAt === null ? 'never-seen' : 'quiet',
+          ageMs: gone.ageMs,
+          detail: gone.reason ?? undefined,
         })
         continue
       }
@@ -451,14 +478,12 @@ export function inboxFor(board: Board, actor: string, options?: InboxOptions): I
 
     // 我派出去、接的人却不见了：交接断了，我欠一个改派。
     if (isMe(task.created_by) && task.assignee) {
-      const seenAt = actorSeenAt(board, task.assignee)
-      const seen = seenAt ? Date.parse(seenAt) : NaN
-      const quietMs = options?.quietMs ?? DEFAULT_QUIET_MS
-      if (seenAt === undefined || seenAt === null || Number.isNaN(seen) || now - seen > quietMs) {
+      const gone = assigneeIsGone(board, task, now, options?.quietMs ?? DEFAULT_QUIET_MS)
+      if (gone.gone) {
         items.push({
           kind: 'orphaned_mine',
           task,
-          ageMs: seenAt && !Number.isNaN(seen) ? now - seen : ageInColumnMs(task, now),
+          ageMs: gone.ageMs,
           rank: RANK.orphaned_mine,
           suggest: `taskboard update ${task.id} --assignee none（放回池子）或 --assignee <活跃的 Agent>`,
           actor: task.assignee,

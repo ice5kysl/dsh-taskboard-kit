@@ -105,6 +105,47 @@ await check('roster: TASKBOARD_ACTOR_ALIASES adds groups; roster() reports quiet
   await rm(ws, { recursive: true, force: true })
 })
 
+await check('legacy boards get a roster derived from the log (no "never acted" lie)', async () => {
+  const ws = await freshWorkspace()
+  // A board written the way pre-0.5.4 versions did: tasks + log, no actors.
+  const legacy = {
+    version: 1,
+    workspace: ws,
+    next_seq: 3,
+    tasks: {
+      'T-1': {
+        id: 'T-1', title: 'old work', detail: '', status: 'in_progress', assignee: 'kimi',
+        priority: 'medium', value: null, tags: [], created_by: 'claude', created_at: '2026-09-01T00:00:00.000Z',
+        updated_at: '2026-09-02T00:00:00.000Z',
+        log: [
+          { at: '2026-09-01T00:00:00.000Z', by: 'claude', event: 'created' },
+          { at: '2026-09-02T00:00:00.000Z', by: 'kimi', event: 'claimed' },
+        ],
+        comments: [{ at: '2026-09-03T00:00:00.000Z', by: 'iceskysl', text: 'go ahead' }],
+      },
+    },
+  }
+  await lib.saveBoard(ws, legacy)
+  const board = await lib.loadBoard(ws)
+  assert.equal(lib.actorSeenAt(board, 'kimi'), '2026-09-02T00:00:00.000Z', 'the log is activity evidence')
+  assert.equal(lib.actorSeenAt(board, 'claude'), '2026-09-01T00:00:00.000Z')
+  assert.equal(lib.actorSeenAt(board, 'iceskysl'), '2026-09-03T00:00:00.000Z', 'comments count too')
+  assert.equal(lib.resolveActor(board, 'iceskysl').kind, 'human', 'TASKBOARD_HUMANS still applies')
+
+  // An entry that exists with last_seen_at: null (a name that was only ever
+  // *referenced*, e.g. set as an assignee) is filled from the evidence, while a
+  // real recorded observation stays untouched.
+  const withRoster = await lib.loadBoard(ws)
+  withRoster.actors['referenced-only'] = { kind: 'agent', aliases: [], first_seen_at: '2026-08-01T00:00:00.000Z', last_seen_at: null }
+  withRoster.tasks['T-1'].comments.push({ at: '2026-09-04T00:00:00.000Z', by: 'referenced-only', text: 'now I acted' })
+  withRoster.actors['kimi'].last_seen_at = '2026-09-02T00:00:00.000Z'
+  await lib.saveBoard(ws, withRoster)
+  const backfilled = await lib.loadBoard(ws)
+  assert.equal(lib.actorSeenAt(backfilled, 'referenced-only'), '2026-09-04T00:00:00.000Z', 'null gets filled from evidence')
+  assert.equal(lib.actorSeenAt(backfilled, 'kimi'), '2026-09-02T00:00:00.000Z', 'a recorded observation is never overwritten')
+  await rm(ws, { recursive: true, force: true })
+})
+
 // ------------------------------------------------------------ review ownership
 
 await check('submit names a reviewer: explicit flag wins', async () => {
@@ -318,6 +359,25 @@ await check('inbox: my own stale card and a delegate who went quiet both surface
   const orphan = items.find((item) => item.kind === 'orphaned_mine')
   assert.equal(orphan.actor, 'claude')
   assert.match(orphan.suggest, /--assignee/)
+  await rm(ws, { recursive: true, force: true })
+})
+
+await check('a fresh delegation is NOT an orphan; only time makes one', async () => {
+  const ws = await freshWorkspace()
+  // Handing a card to a name that has never acted is a normal handoff…
+  const fresh = await lib.createTask(ws, { title: 'just delegated', assignee: 'brand-new-agent' }, 'dsh')
+  let board = await lib.loadBoard(ws)
+  assert.deepEqual(lib.boardHealth(board).orphaned, [], 'assigning to a brand-new actor must not alarm immediately')
+  assert.equal(lib.assigneeIsGone(board, board.tasks[fresh.id]).gone, false)
+  // …but the same card, untouched for longer than the quiet window, is one.
+  const aged = await lib.loadBoard(ws)
+  for (const entry of aged.tasks[fresh.id].log) entry.at = new Date(Date.now() - 100 * HOUR).toISOString()
+  await lib.saveBoard(ws, aged)
+  board = await lib.loadBoard(ws)
+  assert.equal(lib.assigneeIsGone(board, board.tasks[fresh.id]).gone, true)
+  // The assignee is on the roster but has never acted: never-seen, not unknown.
+  assert.equal(lib.assigneeIsGone(board, board.tasks[fresh.id]).reason, 'never-seen')
+  assert.deepEqual(lib.boardHealth(board).orphaned.map((issue) => issue.task.id), [fresh.id])
   await rm(ws, { recursive: true, force: true })
 })
 
