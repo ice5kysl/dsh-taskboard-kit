@@ -385,6 +385,27 @@ await check('renderMarkdown: GFM tables render as real tables (not raw pipes)', 
   assert.ok(!md('| <img src=x onerror=alert(1)> | b |\n|---|---|').includes('<img'), 'table cells cannot inject html')
 })
 
+await check('renderMarkdown: setext headings win over the thematic break', () => {
+  const md = client.renderMarkdown
+  // GFM reads `title\n---` as an h2; rendering it as <p>title</p><hr> would be
+  // a silent misread of the most common underline idiom.
+  assert.equal(md('标题\n---'), '<h2>标题</h2>')
+  assert.equal(md('标题\n==='), '<h1>标题</h1>')
+  assert.equal(md('标题\n-'), '<h2>标题</h2>', 'a single dash underline is enough')
+  assert.equal(md('a\nb\n---'), '<h2>a<br>b</h2>', 'the underline closes the whole paragraph')
+  assert.equal(md('a\n---\nb'), '<h2>a</h2><p>b</p>')
+  // `***` / `___` are never underlines — they stay thematic breaks.
+  assert.ok(md('a\n***').includes('<p>a</p><hr>'), '*** under text is a break, not a heading')
+  // A standalone underline is still a break (nothing to head).
+  assert.ok(md('---').includes('<hr>'), 'bare --- has no paragraph to head')
+  assert.ok(md('a\n\n---').includes('<p>a</p><hr>'), 'blank line between text and --- keeps it a break')
+  // A paragraph followed by a list/heading is unaffected.
+  assert.ok(md('说明\n- 项目').startsWith('<p>说明</p><ul>'), 'list after a paragraph stays a list')
+  assert.ok(md('说明\n## 小标题').startsWith('<p>说明</p><h2>'), 'heading after a paragraph stays a heading')
+  // No runaway loop on a document made only of underlines.
+  assert.equal(md('---\n---'), '<hr><hr>')
+})
+
 await check('renderMarkdown: multi-source input cannot inject anything', () => {
   const md = client.renderMarkdown
   assert.ok(!md('<script>alert(1)</script>').includes('<script>'), 'raw html is escaped')

@@ -11,9 +11,9 @@
  *   2. the remaining text is HTML-escaped (& < > ");
  *   3. the only markup produced afterwards is ours: links (http/https only —
  *      javascript: and friends render as literal text), bold, italic;
- *   4. block level: paragraphs (single newline = <br>), # headings, -/* and
- *      1. lists, ``` fenced code, > quotes, --- thematic breaks, and GFM
- *      tables (header row + |---| delimiter row + body rows).
+ *   4. block level: paragraphs (single newline = <br>), # and setext headings,
+ *      -/* and 1. lists, ``` fenced code, > quotes, --- thematic breaks, and
+ *      GFM tables (header row + |---| delimiter row + body rows).
  *
  * The result is a sanitized HTML string for dangerouslySetInnerHTML — every
  * byte of user input has passed through escapeHtml exactly once, and every
@@ -64,6 +64,9 @@ type ColumnAlign = '' | 'left' | 'center' | 'right'
 
 /** `---`, `:---`, `---:`, `:---:` — one delimiter-row cell. */
 const DELIMITER_CELL = /^:?-+:?$/
+
+/** The setext underline of a heading: `===` (h1) or `---` (h2) under a paragraph. */
+const SETEXT = /^\s{0,3}(=+|-+)\s*$/
 
 /**
  * Split one table row into trimmed cells. Pipes are separators unless they are
@@ -225,13 +228,24 @@ export function renderMarkdown(source: string): string {
       continue
     }
 
-    // Paragraph: until a blank line or the start of another block.
+    // Paragraph — or a setext heading when a `===`/`---` underline closes it
+    // (GFM's `title\n---` idiom). The underline is checked before isBlockStart
+    // because a `---` line is both a break and an underline; text + `---` must
+    // not silently turn a title into a horizontal rule.
     const para: string[] = []
-    while (i < lines.length && at(i).trim() !== '' && !isBlockStart(i)) {
+    let setext = 0
+    while (i < lines.length && at(i).trim() !== '') {
+      const underline = SETEXT.exec(at(i))
+      if (underline && para.length > 0) {
+        setext = (underline[1] ?? '-').startsWith('=') ? 1 : 2
+        i += 1
+        break
+      }
+      if (isBlockStart(i)) break
       para.push(at(i))
       i += 1
     }
-    out.push(`<p>${para.map(inline).join('<br>')}</p>`)
+    out.push(setext > 0 ? `<h${setext}>${para.map(inline).join('<br>')}</h${setext}>` : `<p>${para.map(inline).join('<br>')}</p>`)
   }
   return out.join('')
 }
