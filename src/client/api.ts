@@ -25,6 +25,8 @@ import {
   type ClaimRequest,
   type CommentRequest,
   type CreateRequest,
+  type EnableRequest,
+  type EnableResponse,
   type TaskResponse,
   type UpdateRequest,
 } from '../shared/bridge.ts'
@@ -33,6 +35,8 @@ import { L } from './locale.ts'
 /** The `/dsh-taskboard` calls the panel makes. */
 export interface BridgeClient {
   board(cwd: string, signal?: AbortSignal): Promise<BoardResponse>
+  /** Turn the board on for a workspace (create board + protocol doc). */
+  enable(req: EnableRequest, signal?: AbortSignal): Promise<EnableResponse>
   create(req: CreateRequest, signal?: AbortSignal): Promise<TaskResponse>
   claim(req: ClaimRequest, signal?: AbortSignal): Promise<TaskResponse>
   update(req: UpdateRequest, signal?: AbortSignal): Promise<TaskResponse>
@@ -114,6 +118,7 @@ export function createBridgeClient(options: BridgeOptions = {}): BridgeClient {
 
   return {
     board: (cwd, signal) => request<BoardResponse>(`/board?cwd=${encodeURIComponent(cwd)}`, { signal }),
+    enable: (req, signal) => request<EnableResponse>('/enable', { method: 'POST', body: req, signal }),
     create: (req, signal) => request<TaskResponse>('/create', { method: 'POST', body: req, signal }),
     claim: (req, signal) => request<TaskResponse>('/claim', { method: 'POST', body: req, signal }),
     update: (req, signal) => request<TaskResponse>('/update', { method: 'POST', body: req, signal }),

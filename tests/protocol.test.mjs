@@ -11,9 +11,9 @@
 
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
@@ -303,6 +303,54 @@ await check('staleness: column age comes from the last COLUMN event, not from ch
   assert.ok(staleness.ageMs >= 29 * HOUR, `age ${staleness.ageMs}`)
   assert.equal(staleness.stale, true, 'review SLA is 24h by default')
   assert.ok(staleness.overdueMs > 0)
+  await rm(ws, { recursive: true, force: true })
+})
+
+await check('enableBoard: creates the board and the workspace protocol doc', async () => {
+  const ws = await freshWorkspace()
+  const result = await lib.enableBoard(ws)
+
+  assert.equal(result.already_existed, false, 'a virgin workspace had no board')
+  assert.equal(result.board_file, join(ws, '.dsh', 'taskboard.json'))
+  assert.equal(result.protocol_file, join(ws, '.dsh', 'BOARD-PROTOCOL.md'))
+
+  // The board is real and usable straight away.
+  const board = await lib.loadBoard(ws)
+  assert.deepEqual(board.tasks, {}, 'a fresh board has no tasks')
+  assert.equal(board.workspace, resolve(ws), 'workspace records the absolute cwd')
+
+  // The doc must carry the one rule an agent cannot infer: closed-only terminal.
+  const doc = await readFile(join(ws, '.dsh', 'BOARD-PROTOCOL.md'), 'utf8')
+  assert.match(doc, /只有 closed 是终点/, 'states the terminal-status rule')
+  assert.match(doc, /done.*还没结清|还没结清/, 'explains done still owes a settle')
+  assert.match(doc, /不要手改|永远不要手改/, 'warns against hand-editing the JSON')
+  await rm(ws, { recursive: true, force: true })
+})
+
+await check('enableBoard: is idempotent and NEVER rewrites existing data', async () => {
+  const ws = await freshWorkspace()
+  await lib.enableBoard(ws)
+
+  // Real work lands on the board, and the project edits its own protocol doc —
+  // both must survive a second enable untouched.
+  const task = await lib.createTask(ws, { title: 'precious work' }, 'kimi')
+  const docPath = join(ws, '.dsh', 'BOARD-PROTOCOL.md')
+  await writeFile(docPath, '# 本项目自己的规范（改过了）\n', 'utf8')
+
+  const again = await lib.enableBoard(ws)
+  assert.equal(again.already_existed, true, 'reports the board was already there')
+  assert.equal(again.protocol_file, null, 'no protocol rewrite was attempted')
+
+  const board = await lib.loadBoard(ws)
+  assert.equal(board.tasks[task.id].title, 'precious work', 'the task survived')
+  assert.equal(await readFile(docPath, 'utf8'), '# 本项目自己的规范（改过了）\n', 'the edited doc survived')
+
+  // seedProtocol:false creates only the board.
+  const bare = await freshWorkspace()
+  const noSeed = await lib.enableBoard(bare, { seedProtocol: false })
+  assert.equal(noSeed.protocol_file, null, 'no doc when seeding is off')
+  await assert.rejects(readFile(join(bare, '.dsh', 'BOARD-PROTOCOL.md')), 'and it really is absent')
+  await rm(bare, { recursive: true, force: true })
   await rm(ws, { recursive: true, force: true })
 })
 

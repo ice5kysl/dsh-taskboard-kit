@@ -48,6 +48,7 @@ export {
   claimTask,
   columnAgeMs,
   createTask,
+  enableBoard,
   getTask,
   health,
   humanNames,

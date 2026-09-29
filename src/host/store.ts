@@ -228,6 +228,122 @@ export async function saveBoard(cwd: string, board: Board): Promise<void> {
   }
 }
 
+// ------------------------------------------------------------------ enable
+
+/** What `enableBoard` did, so the UI can report it honestly. */
+export interface EnableResult {
+  /** The board file's absolute path. */
+  board_file: string
+  /** The workspace protocol doc's path when it was written, else null. */
+  protocol_file: string | null
+  /** Whether the board file already existed (we then left its tasks alone). */
+  already_existed: boolean
+}
+
+/**
+ * Turn the board on for a workspace.
+ *
+ * "On" means two things, and both matter:
+ *   1. `.dsh/taskboard.json` exists, so the panel shows a real (possibly
+ *      empty) board instead of the first-run prompt;
+ *   2. `.dsh/BOARD-PROTOCOL.md` exists, so an agent that has never seen this
+ *      board has the local rules in the project itself — the plugin's system
+ *      prompt covers the flow, but the project doc is what a human or a
+ *      different harness can read without the plugin.
+ *
+ * Idempotent and non-destructive: an existing board is NEVER rewritten (its
+ * tasks are the user's data), and an existing protocol doc is left as-is so a
+ * project can keep its own edits. Both are reported back.
+ */
+export async function enableBoard(
+  cwd: string,
+  options: { seedProtocol?: boolean } = {},
+): Promise<EnableResult> {
+  const boardFile = boardFilePath(cwd)
+  const protocolFile = join(cwd, '.dsh', 'BOARD-PROTOCOL.md')
+  const alreadyExisted = await fileExists(boardFile)
+
+  // Creating a board is a write, so it goes through the lock like any other.
+  if (!alreadyExisted) {
+    await withBoardLock(cwd, async () => {
+      // Re-check under the lock: another writer may have won the race.
+      if (await fileExists(boardFile)) return
+      await saveBoard(cwd, emptyBoard(resolve(cwd)))
+    })
+  }
+
+  let protocolWritten: string | null = null
+  if (options.seedProtocol !== false && !(await fileExists(protocolFile))) {
+    await mkdir(dirname(protocolFile), { recursive: true })
+    await writeFile(protocolFile, protocolDoc(), { mode: 0o600 })
+    protocolWritten = protocolFile
+  }
+
+  return {
+    board_file: boardFile,
+    protocol_file: protocolWritten,
+    already_existed: alreadyExisted,
+  }
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await stat(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The workspace protocol doc seeded by `enableBoard`.
+ *
+ * Deliberately short: it points at the plugin's full spec instead of copying
+ * it, because a copy would go stale the moment the plugin ships a change. What
+ * it DOES state is the part an agent cannot infer — above all that only
+ * `closed` is terminal, so `done` still owes a settle.
+ */
+function protocolDoc(): string {
+  return `# 本工作区的任务看板约定
+
+> 本文件由 dsh-taskboard-kit 在「开启看板」时生成，之后**归本工作区所有** —— 可以自由编辑、扩充、
+> 甚至删除；插件不会覆盖它。完整规范见插件自带文档（\`dsh-taskboard-kit/docs/COLLABORATION.md\`），
+> 这里只写本板不可不知的几条。
+
+## 唯一事实源
+
+看板就是一个文件：\`.dsh/taskboard.json\`（本目录下）。**永远不要手改它** ——
+锁、原子认领、状态机都在工具里，手改会绕过全部保护。用 \`taskboard_*\` 工具，
+或没有插件时的 \`dsh-taskboard-kit/bin/taskboard.mjs\` CLI。
+
+## 状态机：只有 closed 是终点
+
+\`\`\`
+open ──▶ in_progress ──▶ review ──▶ done ──▶ closed
+\`\`\`
+
+- \`done\` = 干完且审核通过，**但还没结清**：卡仍在看板上，仍算「未结清」。
+- \`closed\` = 结清，**唯一的终态**：结清后卡离开活跃视图与活跃计数。
+- 「这事不做了」也走 \`close\`，但**必须在 note 里写清原因** ——
+  没有单独的 abandoned 状态，「做完了」和「放弃了」的区别只存在于留言里。
+
+所以：审核通过之后，**还有一步收口**。没人收口的卡会一直挂在面板顶部的
+「待收口」条上，超过 72h 会被自检点名。
+
+## 三条最常被违反的规矩
+
+1. **动手前先占位**：池里的卡 \`claim\`，指派给你的卡 \`start\`。没占位不开工。
+2. **做完交审核，不要自己 done**：\`submit --reviewer <名字>\` + 一条 \`comment\` 写清
+   「做了什么 / 验证了什么 / 还差什么」。没有交接留言的提交，审核人无法验收。
+3. **卡住要说清在等谁**：等人类 \`block --on human --question "一句能直接转发的问句"\`；
+   等 Agent \`block --on agent --who <名字>\`。等谁的卡不能被认领。
+
+## 会话开始先看自己那一份
+
+\`taskboard_inbox\` —— 现在压在你身上的事，按急迫度排好，每条都带该敲的命令。
+`
+}
+
 // -------------------------------------------------------------------- lock
 // In-process queue first (the common case is one dsh process per workspace),
 // then a cross-process O_EXCL lock file.

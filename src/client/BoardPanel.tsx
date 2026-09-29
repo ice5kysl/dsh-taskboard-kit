@@ -481,14 +481,27 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
           </p>
         </div>
       ) : tasks.length === 0 ? (
-        <div style={styles.center}>
-          <p style={styles.centerText}>
-            {L('还没有任务——让 Agent 用 taskboard_create 建一个，或点 + 新建。', 'No tasks yet — ask the agent to run taskboard_create, or hit + to create one.')}
-          </p>
-          <button type="button" className="tb-btn tb-btn-primary" onClick={() => setCreateOpen(true)}>
-            {L('+ 新建任务', '+ New task')}
-          </button>
-        </div>
+        state.boardExists ? (
+          // Board is ON but has no cards yet: an agent can already work here,
+          // so the honest prompt is "create the first one".
+          <div style={styles.center}>
+            <p style={styles.centerText}>
+              {L('看板已开启，还没有任务——让 Agent 用 taskboard_create 建一个，或点下面的按钮。', 'The board is on and has no cards yet — ask an agent to run taskboard_create, or use the button below.')}
+            </p>
+            <button type="button" className="tb-btn tb-btn-primary" onClick={() => setCreateOpen(true)}>
+              {L('+ 新建任务', '+ New task')}
+            </button>
+          </div>
+        ) : (
+          <EnableBoardWizard
+            cwd={state.cwd}
+            boardFile={state.boardFile}
+            cli={state.cli}
+            busy={state.busy}
+            onCreate={() => setCreateOpen(true)}
+            onEnable={() => store.enableBoard()}
+          />
+        )
       ) : state.groupBy === 'stats' ? (
         <StatsView board={board} />
       ) : state.groupBy === 'owner' ? (
@@ -641,6 +654,126 @@ function ViewSwitch({ mode, onSwitch }: { mode: BoardGrouping; onSwitch(mode: Bo
           ))}
         </div>
       ))}
+    </div>
+  )
+}
+
+/**
+ * The「开启看板」wizard — what a workspace sees before its board exists.
+ *
+ * Before this, an unopened workspace showed "no tasks yet", which is a lie of
+ * omission: the board file does not exist, so NO agent can use it, and the
+ * reader was told to "ask an agent to create a task" — advice that cannot work
+ * because the agent has no board to write to. The two states are genuinely
+ * different and now look different:
+ *
+ *   • 未开启 (boarnd file absent) — this wizard: turn it on, in one click.
+ *   • 已开启但为空 (board exists, zero tasks) — the plain "create the first
+ *     task" prompt, because an agent CAN work here now.
+ *
+ * "On" writes two things and says so, because both are load-bearing: the board
+ * file (the agent's data) and the workspace protocol doc (the agent's rules).
+ */
+function EnableBoardWizard({
+  cwd,
+  boardFile,
+  cli,
+  busy,
+  onCreate,
+  onEnable,
+}: {
+  cwd: string | null
+  boardFile: string | null
+  cli: string | null
+  busy: boolean
+  onCreate(): void
+  onEnable(): Promise<{ boardFile: string; protocolFile: string | null; alreadyExisted: boolean } | null>
+}): JSX.Element {
+  const [result, setResult] = useState<{ boardFile: string; protocolFile: string | null; alreadyExisted: boolean } | null>(null)
+  const projectDir = guideProjectDir(boardFile, cwd)
+
+  const enable = async (): Promise<void> => {
+    if (busy) return
+    const outcome = await onEnable()
+    if (outcome) setResult(outcome)
+  }
+
+  if (result) {
+    return (
+      <div style={styles.center}>
+        <div style={styles.wizard}>
+          <h3 style={styles.wizardTitle}>{L('看板已开启', 'Board is on')}</h3>
+          <p style={styles.wizardText}>
+            {result.alreadyExisted
+              ? L('这个工作区本来就有看板，我没有动它已用的数据。', 'This workspace already had a board — I left its data untouched.')
+              : L('已为这个工作区建好看板。', 'Created the board for this workspace.')}
+          </p>
+          <ul style={styles.wizardFiles}>
+            <li style={styles.wizardFile}>
+              <span style={styles.wizardFileLabel}>{L('看板数据', 'Board data')}</span>
+              <code style={styles.wizardCode} title={result.boardFile}>.dsh/taskboard.json</code>
+            </li>
+            <li style={styles.wizardFile}>
+              <span style={styles.wizardFileLabel}>{L('工作区规范', 'Rules')}</span>
+              {result.protocolFile
+                ? <code style={styles.wizardCode} title={result.protocolFile}>.dsh/BOARD-PROTOCOL.md</code>
+                : <span style={styles.wizardMuted}>{L('已存在，保持原样（不会覆盖）', 'already present — left as-is (never overwritten)')}</span>}
+            </li>
+          </ul>
+          <p style={styles.wizardText}>
+            {L(
+              '现在 Agent 可以按规范用了：会话开始会拿到自己那一份待办，动手前先占位，做完交审核，审核通过后收口。',
+              'Agents can use the board now: each session starts with its own slice of work, claims before starting, hands off for review, and settles after approval.',
+            )}
+          </p>
+          <div style={styles.wizardActions}>
+            <button type="button" className="tb-btn tb-btn-primary" onClick={onCreate}>
+              {L('+ 新建第一张卡', '+ Create the first card')}
+            </button>
+            <button type="button" className="tb-btn" onClick={() => setResult(null)}>
+              {L('返回', 'Back')}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div style={styles.center}>
+      <div style={styles.wizard}>
+        <h3 style={styles.wizardTitle}>{L('这个工作区还没开启看板', 'The board is not on for this workspace')}</h3>
+        <p style={styles.wizardText}>
+          {L(
+            '开启后 Agent 就能按规范协作：会话开始先看自己那一份待办、动手前占位、做完交审核、审核过后收口。',
+            'Once on, agents collaborate by the protocol: each session starts with its own slice, claims before working, hands off for review, and settles after approval.',
+          )}
+        </p>
+        <ul style={styles.wizardFiles}>
+          <li style={styles.wizardFile}>
+            <span style={styles.wizardFileLabel}>{L('会创建', 'Will create')}</span>
+            <code style={styles.wizardCode} title={`${projectDir}/.dsh/taskboard.json`}>.dsh/taskboard.json</code>
+            <span style={styles.wizardMuted}>{L('看板数据', 'board data')}</span>
+          </li>
+          <li style={styles.wizardFile}>
+            <span style={styles.wizardFileLabel}>{L('会创建', 'Will create')}</span>
+            <code style={styles.wizardCode} title={`${projectDir}/.dsh/BOARD-PROTOCOL.md`}>.dsh/BOARD-PROTOCOL.md</code>
+            <span style={styles.wizardMuted}>{L('协作规范', 'protocol')}</span>
+          </li>
+        </ul>
+        <p style={styles.wizardMuted}>
+          {L('两者都已存在时不会覆盖任何东西。', 'Neither is overwritten if it already exists.')}
+        </p>
+        <div style={styles.wizardActions}>
+          <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => void enable()}>
+            {busy ? L('开启中…', 'Turning on…') : L('开启看板', 'Turn the board on')}
+          </button>
+          <button type="button" className="tb-btn" disabled={busy} onClick={onCreate}>
+            {L('只想先建一张卡', 'Just create a card')}
+          </button>
+        </div>
+        <code style={styles.wizardCli} title={L('这个工作区', 'This workspace')}>{projectDir}</code>
+      </div>
     </div>
   )
 }
@@ -2044,6 +2177,34 @@ const styles: Record<string, CSSProperties> = {
     alignItems: 'center',
   },
   centerText: { color: DIM, fontSize: 12, lineHeight: 1.6, margin: 0 },
+  // The「开启看板」wizard card. The file rows need real gap between the label,
+  // the code and the hint — they ran together ("jsonboard data") while these
+  // keys were missing, because an unknown style key renders as nothing at all.
+  wizard: {
+    maxWidth: 540,
+    background: BG_RAISED,
+    border: `1px solid ${BORDER}`,
+    borderRadius: 10,
+    padding: '14px 16px 16px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 9,
+  },
+  wizardTitle: { margin: 0, fontSize: 13.5, fontWeight: 600 },
+  wizardText: { margin: 0, fontSize: 12, lineHeight: 1.65, color: FG },
+  wizardFiles: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 5 },
+  wizardFile: { display: 'flex', alignItems: 'baseline', gap: 10, fontSize: 11.5, flexWrap: 'wrap' },
+  wizardFileLabel: { color: DIM, flexShrink: 0, minWidth: 62 },
+  wizardCode: {
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+    fontSize: 11,
+    overflowWrap: 'anywhere',
+    minWidth: 0,
+    color: FG,
+  },
+  wizardMuted: { margin: 0, fontSize: 11, color: DIM },
+  wizardActions: { display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 2 },
+  wizardCli: { fontSize: 10.5, color: FAINT, overflowWrap: 'anywhere' },
   errorText: { color: DANGER, fontSize: 12, lineHeight: 1.6, margin: 0, whiteSpace: 'pre-wrap' },
   backdrop: { position: 'absolute', inset: 0, background: MASK, zIndex: 20 },
   drawer: {

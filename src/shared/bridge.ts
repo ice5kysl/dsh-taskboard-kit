@@ -12,6 +12,8 @@
  *   POST /dsh-taskboard/claim    ClaimRequest  → TaskResponse (conflict → ok:false, code 'conflict')
  *   POST /dsh-taskboard/update   UpdateRequest → TaskResponse
  *   POST /dsh-taskboard/comment  CommentRequest → TaskResponse
+ *   POST /dsh-taskboard/enable   EnableRequest  → EnableResponse (create the
+ *                                board for a workspace; idempotent)
  *
  * The browser's mutations are always attributed to actor `human`; the host
  * stamps `by` itself — the request bodies carry no actor field.
@@ -94,5 +96,26 @@ export interface ApiError {
   code?: ErrorCode
 }
 
-export type BoardResponse = { ok: true; board: Board; cli?: string | null; board_file?: string } | ApiError
+/**
+ * `board_exists` distinguishes the two empty-looking states: a board file that
+ * is absent (nobody has turned the board on for this workspace) versus one that
+ * exists with zero tasks (on, and waiting for its first card). The panel shows
+ * a different prompt for each — the first needs enabling before any agent can
+ * work, the second just needs a task.
+ */
+export type BoardResponse = { ok: true; board: Board; cli?: string | null; board_file?: string; board_exists?: boolean } | ApiError
 export type TaskResponse = { ok: true; task: Task } | ApiError
+
+/**
+ * Turn the board on for a workspace: create `.dsh/taskboard.json` if absent,
+ * and seed `.dsh/BOARD-PROTOCOL.md` if absent. Never rewrites either.
+ */
+export interface EnableRequest {
+  cwd: string
+  /** When false, only the board is created (no protocol doc). Default true. */
+  seed_protocol?: boolean
+}
+
+export type EnableResponse =
+  | { ok: true; board_file: string; protocol_file: string | null; already_existed: boolean }
+  | ApiError

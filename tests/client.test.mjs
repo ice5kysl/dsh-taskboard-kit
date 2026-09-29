@@ -1018,6 +1018,66 @@ await check('panel: the「统计」view renders KPIs, charts and tables from the
   assert.ok(html.includes('>3<'), 'the open count reflects `done` counting as open')
 })
 
+await check('panel: an unopened board offers to turn the board on, not "create a task"', async () => {
+  // board_exists:false = the workspace has no board file at all. Telling the
+  // reader to "ask an agent to create a task" would be advice that cannot work.
+  const board = collabBoard([])
+  const store = client.createTaskboardStore({
+    bridge: { board: async () => ({ ok: true, board, board_exists: false, board_file: '/w/.dsh/taskboard.json', cli: '/cli/taskboard.mjs' }) },
+    pollMs: 10 ** 9,
+  })
+  store.setCwd('/w')
+  await store.refresh()
+  assert.equal(store.getState().boardExists, false, 'the store tracks file existence')
+
+  const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+  assert.ok(html.includes('not on for this workspace'), 'the wizard explains the board is off')
+  assert.ok(html.includes('Turn the board on'), 'and offers the enable action')
+  assert.ok(html.includes('taskboard.json') && html.includes('BOARD-PROTOCOL.md'), 'names both files it will create')
+  assert.ok(!html.includes('has no cards yet'), 'the empty-board prompt is NOT shown')
+})
+
+await check('panel: an ON but empty board asks for a task instead', async () => {
+  const board = collabBoard([])
+  const store = client.createTaskboardStore({
+    bridge: { board: async () => ({ ok: true, board, board_exists: true }) },
+    pollMs: 10 ** 9,
+  })
+  store.setCwd('/w')
+  await store.refresh()
+
+  const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+  assert.ok(html.includes('has no cards yet'), 'now the prompt is to create the first card')
+  assert.ok(!html.includes('Turn the board on'), 'the wizard is gone')
+})
+
+await check('store.enableBoard: posts /enable, then re-reads the board', async () => {
+  const calls = []
+  const empty = collabBoard([])
+  const store = client.createTaskboardStore({
+    bridge: {
+      board: async () => ({ ok: true, board: empty, board_exists: calls.length > 0 }),
+      enable: async (req) => {
+        calls.push(req.cwd)
+        return { ok: true, board_file: '/w/.dsh/taskboard.json', protocol_file: '/w/.dsh/BOARD-PROTOCOL.md', already_existed: false }
+      },
+    },
+    pollMs: 10 ** 9,
+  })
+  store.setCwd('/w')
+  await store.refresh()
+  assert.equal(store.getState().boardExists, false, 'starts unopened')
+
+  const outcome = await store.enableBoard()
+  assert.deepEqual(calls, ['/w'], 'enable was called for the current cwd')
+  assert.equal(outcome.protocolFile, '/w/.dsh/BOARD-PROTOCOL.md')
+  assert.equal(store.getState().boardExists, true, 'the re-read picked up the new board')
+
+  // No cwd → nothing to enable, no request fired.
+  const idle = client.createTaskboardStore({ bridge: { board: async () => ({ ok: true, board: empty }) }, pollMs: 10 ** 9 })
+  assert.equal(await idle.enableBoard(), null, 'no cwd → no-op')
+})
+
 await check('panel: the view switch renders as TWO groups (lanes) + (stats)', async () => {
   const board = collabBoard([{ id: 'T-1', title: 'x', status: 'in_progress', assignee: 'kimi' }])
   const { store } = await renderBoard(board)
@@ -1049,8 +1109,9 @@ await check('panel: an empty board keeps its 「no tasks」 state even in the st
   store.setGroupBy('stats')
   const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
   // The panel's own empty state wins over the stats body: a page of zeroes is
-  // worse than one sentence telling you the board is empty.
-  assert.ok(html.includes('No tasks yet'), 'the panel empty state is shown')
+  // worse than one sentence telling you the board is empty. (collabBoard's
+  // fixture has no board_exists, so the store defaults to "exists".)
+  assert.ok(html.includes('has no cards yet'), 'the panel empty state is shown')
   assert.ok(!html.includes('At a glance'), 'no KPI wall over an empty board')
   // StatsView itself degrades safely when handed nothing (a null board).
   const empty = renderToStaticMarkup(React.createElement(client.StatsView, { board: null }))

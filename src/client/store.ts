@@ -59,6 +59,11 @@ export interface TaskboardState {
   cli: string | null
   /** Absolute path of the board file (guide interpolation). */
   boardFile: string | null
+  /**
+   * Whether the board FILE exists. `board === empty` alone cannot tell the two
+   * first-run shapes apart: absent (needs enabling) vs empty (needs a task).
+   */
+  boardExists: boolean
 }
 
 /** Create/claim/update/comment requests without the cwd (the store fills it in). */
@@ -82,6 +87,13 @@ export interface TaskboardStore {
   /** Toggle the composer-side mini board drawer. */
   setMiniOpen(open: boolean): void
   clearError(): void
+  /**
+   * Turn the board on for the current workspace: create the board file and
+   * seed `.dsh/BOARD-PROTOCOL.md`. Resolves the host's report (file paths,
+   * whether things already existed) so the wizard can show what happened; null
+   * when there is no cwd or the write failed (error lands on the store).
+   */
+  enableBoard(): Promise<EnableOutcome | null>
   /** Create a task; resolves true on success so the form can close itself. */
   create(input: CreateInput): Promise<boolean>
   /** Claim a pool task (human self-assign); conflict surfaces as `error`. */
@@ -99,6 +111,13 @@ export interface TaskboardStore {
    * for empty text (nothing to answer with).
    */
   answerWaiting(id: string, text: string): Promise<boolean>
+}
+
+/** What `enableBoard()` resolved with (mirrors the host's EnableResponse). */
+export interface EnableOutcome {
+  boardFile: string
+  protocolFile: string | null
+  alreadyExisted: boolean
 }
 
 export interface StoreOptions {
@@ -119,6 +138,7 @@ const INITIAL: TaskboardState = {
   busy: false,
   cli: null,
   boardFile: null,
+  boardExists: false,
 }
 
 /** Build a store. Tests pass a fake bridge; the app uses the default one. */
@@ -153,6 +173,7 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
         error: null,
         cli: res.cli ?? null,
         boardFile: res.board_file ?? null,
+        boardExists: res.board_exists ?? true,
       })
     } else {
       // A failed reload keeps the board it already has; only a failed FIRST
@@ -223,6 +244,7 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
         error: null,
         cli: null,
         boardFile: null,
+        boardExists: false,
         status: next ? 'loading' : 'ready',
       })
       void refresh()
@@ -247,6 +269,28 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
     },
     clearError() {
       set({ error: null })
+    },
+    async enableBoard() {
+      const cwd = state.cwd
+      if (!cwd || state.busy) return null
+      set({ busy: true, error: null })
+      try {
+        const res = await bridge.enable({ cwd })
+        if (!res.ok) {
+          set({ error: res.error ?? 'unknown error' })
+          return null
+        }
+        // Re-read so the panel immediately shows the real (empty) board
+        // instead of the first-run prompt.
+        await refresh()
+        return {
+          boardFile: res.board_file,
+          protocolFile: res.protocol_file ?? null,
+          alreadyExisted: res.already_existed,
+        }
+      } finally {
+        set({ busy: false })
+      }
     },
     create(input) {
       return mutate((cwd) => bridge.create({ ...input, cwd }))

@@ -46,6 +46,7 @@ import {
   boardFilePath,
   claimTask,
   createTask,
+  enableBoard,
   loadBoard,
   updateTask,
 } from './store.ts'
@@ -72,6 +73,7 @@ function cliPath(): string | null {
 export interface TaskboardBridgeDeps {
   loadBoard(cwd: string): Promise<Board>
   createTask: typeof createTask
+  enableBoard: typeof enableBoard
   claimTask: typeof claimTask
   updateTask: typeof updateTask
   addComment: typeof addComment
@@ -123,6 +125,7 @@ export function defaultBridgeDeps(ctx: Context): TaskboardBridgeDeps {
 
   return {
     loadBoard,
+    enableBoard,
     createTask,
     claimTask,
     updateTask,
@@ -358,6 +361,22 @@ async function runDomain(res: ServerResponse, op: () => Promise<Task>): Promise<
   }
 }
 
+/**
+ * Same error contract as `runDomain`, but for routes that answer with shapes
+ * other than a Task (enable returns file paths). Kept separate so the Task
+ * routes keep their exact return type.
+ */
+async function runPlain<T>(res: ServerResponse, op: () => Promise<T>): Promise<void> {
+  try {
+    return sendJson(res, 200, await op())
+  } catch (error) {
+    if (error instanceof StoreError) {
+      return fail(res, error.code === 'internal' ? 500 : 200, error.code, error.message)
+    }
+    throw error
+  }
+}
+
 // -------------------------------------------------------------------- bridge
 
 /** Build the `/dsh-taskboard` handler. */
@@ -373,11 +392,15 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
       const cwd = requireCwd(deps, url.searchParams.get('cwd'))
       try {
         const cli = cliPath()
+        const boardFile = boardFilePath(cwd)
         return sendJson(res, 200, {
           ok: true,
           board: await deps.loadBoard(cwd),
           cli: cli && existsSync(cli) ? cli : null,
-          board_file: boardFilePath(cwd),
+          board_file: boardFile,
+          // Reported alongside the board so the panel can tell "no board yet"
+          // (offer to enable) apart from "empty board" (offer to create).
+          board_exists: existsSync(boardFile),
         })
       } catch (error) {
         if (error instanceof StoreError) {
@@ -385,6 +408,19 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
         }
         throw error
       }
+    }
+
+    // Turn the board on for a workspace. The empty-state wizard calls this:
+    // it creates the board file (so the panel stops showing "no board yet") and
+    // seeds the workspace protocol doc. Idempotent and never destructive.
+    if (method === 'POST' && path === `${BRIDGE_PREFIX}/enable`) {
+      requireMutateHeader(req)
+      const body = await readJsonBody(req)
+      const cwd = requireCwd(deps, body.cwd)
+      return runPlain(res, async () => {
+        const result = await deps.enableBoard(cwd, { seedProtocol: body.seed_protocol !== false })
+        return { ok: true as const, ...result }
+      })
     }
 
     if (method === 'POST' && path === `${BRIDGE_PREFIX}/create`) {
