@@ -131,6 +131,19 @@ export function timeInColumnMs(task: Task, now: number = Date.now()): number {
 
 // ------------------------------------------------------------------ headline
 
+/**
+ * A median plus the number of samples behind it.
+ *
+ * The count is NOT optional bookkeeping: a median over one card is that card,
+ * and showing "10.3h" from a single sample is how a statistic starts lying.
+ * Every surface that renders `value` must be able to render `n` too.
+ */
+export interface Metric {
+  value: number | null
+  /** How many observations produced `value`; 0 when it is null. */
+  n: number
+}
+
 export interface Headline {
   total: number
   /** Not yet settled (everything except `closed`) — the real "open" number. */
@@ -142,8 +155,19 @@ export interface Headline {
   wip: number
   /** Blocked on someone right now. */
   blocked: number
-  /** Median time from `created` to `closed`, over settled cards (ms). */
-  medianCycleMs: number | null
+  /**
+   * Median `created → done` (ms): how long the WORK takes. Measured to the
+   * `done`/`approved` transition, NOT to `closed` — closing is an
+   * administrative step that can lag for days, and folding that lag in makes
+   * delivery look slower the more nobody gets around to settling cards.
+   */
+  cycle: Metric
+  /**
+   * Median `done → closed` (ms): the settle lag. Separate from `cycle` on
+   * purpose — together they say "the work is fast, the paperwork is slow",
+   * which one combined number can never express.
+   */
+  settleLag: Metric
   /** Of the cards that reached review, the share rejected at least once. */
   rejectRate: number | null
 }
@@ -158,17 +182,22 @@ function median(values: number[]): number | null {
 export function headline(board: Board | null, now: number = Date.now()): Headline {
   const tasks = board ? Object.values(board.tasks) : []
   const cycles: number[] = []
+  const lags: number[] = []
   let reviewed = 0
   let rejected = 0
   for (const task of tasks) {
-    const settledAt = firstEventAt(task, ['closed'])
     const createdAt = Date.parse(task.created_at)
-    if (settledAt !== null && !Number.isNaN(createdAt)) cycles.push(Math.max(0, settledAt - createdAt))
+    // Work time ends when the work ended, not when someone filed it away.
+    const finishedAt = firstEventAt(task, ['done', 'approved'])
+    if (finishedAt !== null && !Number.isNaN(createdAt)) cycles.push(Math.max(0, finishedAt - createdAt))
+    const closedAt = firstEventAt(task, ['closed'])
+    if (closedAt !== null && finishedAt !== null) lags.push(Math.max(0, closedAt - finishedAt))
     if (firstEventAt(task, ['submitted']) !== null) {
       reviewed += 1
       if (firstEventAt(task, ['rejected']) !== null) rejected += 1
     }
   }
+  void now
   return {
     total: tasks.length,
     open: tasks.filter((task) => !isTerminalStatus(task.status)).length,
@@ -176,7 +205,8 @@ export function headline(board: Board | null, now: number = Date.now()): Headlin
     settled: tasks.filter((task) => isTerminalStatus(task.status)).length,
     wip: tasks.filter((task) => task.status === 'in_progress' || task.status === 'review').length,
     blocked: tasks.filter((task) => task.waiting_on !== null && !isTerminalStatus(task.status)).length,
-    medianCycleMs: median(cycles),
+    cycle: { value: median(cycles), n: cycles.length },
+    settleLag: { value: median(lags), n: lags.length },
     rejectRate: reviewed === 0 ? null : rejected / reviewed,
   }
 }
@@ -255,8 +285,8 @@ export interface OwnerStat {
   value: number
   /** Events this owner logged in the window (a cheap activity measure). */
   actions: number
-  /** Median created→closed over this owner's settled cards (ms). */
-  medianCycleMs: number | null
+  /** Median `created → done` over this owner's finished cards (see `Metric`). */
+  cycle: Metric
 }
 
 /**
@@ -273,7 +303,7 @@ export function byOwner(board: Board | null, options: { days?: number; now?: num
   const rowFor = (owner: string) => {
     let row = acc.get(owner)
     if (!row) {
-      row = { owner, open: 0, unsettled: 0, settled: 0, value: 0, actions: 0, medianCycleMs: null, cycles: [] }
+      row = { owner, open: 0, unsettled: 0, settled: 0, value: 0, actions: 0, cycle: { value: null, n: 0 }, cycles: [] }
       acc.set(owner, row)
     }
     return row
@@ -286,9 +316,10 @@ export function byOwner(board: Board | null, options: { days?: number; now?: num
     else row.open += 1
     if (needsSettling(task)) row.unsettled += 1
     if (task.value !== null) row.value += task.value
-    const settledAt = firstEventAt(task, ['closed'])
+    // Same rule as the headline: measure the WORK, not the paperwork.
+    const finishedAt = firstEventAt(task, ['done', 'approved'])
     const createdAt = Date.parse(task.created_at)
-    if (settledAt !== null && !Number.isNaN(createdAt)) row.cycles.push(Math.max(0, settledAt - createdAt))
+    if (finishedAt !== null && !Number.isNaN(createdAt)) row.cycles.push(Math.max(0, finishedAt - createdAt))
   }
 
   // Activity is attributed to whoever logged the event, which may be someone
@@ -303,7 +334,7 @@ export function byOwner(board: Board | null, options: { days?: number; now?: num
   }
 
   return [...acc.values()]
-    .map(({ cycles, ...row }) => ({ ...row, medianCycleMs: median(cycles) }))
+    .map(({ cycles, ...row }) => ({ ...row, cycle: { value: median(cycles), n: cycles.length } }))
     .sort((a, b) => b.open - a.open || b.actions - a.actions || a.owner.localeCompare(b.owner))
 }
 

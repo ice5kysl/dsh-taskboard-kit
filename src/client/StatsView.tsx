@@ -38,6 +38,7 @@ import {
   totalValue,
   valueByOwner,
   dwellByColumn,
+  type Metric,
   type OwnerStat,
   type Slice,
 } from './stats.ts'
@@ -58,6 +59,9 @@ import {
 
 /** How many days the trend charts cover. */
 const WINDOW_DAYS = 14
+
+/** Settle lag past this reads as a problem rather than a rounding error. */
+const HOUR = 3600_000
 
 const STATUS_COLORS: Record<BoardColumn, string> = {
   pool: FAINT,
@@ -105,9 +109,15 @@ export function StatsView({ board, now = Date.now() }: { board: Board | null; no
           <Tile label={L('已结清', 'Settled')} value={String(head.settled)} tone={DIM} hint={percentText(settledShare) + L(' 的卡', ' of all cards')} />
           <Tile
             label={L('中位周期', 'Median cycle')}
-            value={durationText(head.medianCycleMs)}
-            tone={FG}
-            hint={L('从建卡到结清', 'created → settled')}
+            value={metricText(head.cycle)}
+            tone={head.cycle.n <= 1 ? DIM : FG}
+            hint={metricHint(head.cycle, L('从建卡到干完（done/approved）', 'created → done'))}
+          />
+          <Tile
+            label={L('收口延迟', 'Settle lag')}
+            value={metricText(head.settleLag)}
+            tone={head.settleLag.value !== null && head.settleLag.value > 48 * HOUR ? WARN : DIM}
+            hint={metricHint(head.settleLag, L('从干完到收口（done → closed）', 'done → closed'))}
           />
           <Tile
             label={L('打回率', 'Reject rate')}
@@ -187,6 +197,25 @@ function SectionTitle({ title, hint }: { title: string; hint?: string }): JSX.El
       {hint && <span style={styles.sectionHint}>{hint}</span>}
     </div>
   )
+}
+
+/**
+ * A median and the sample size behind it: `1.2h (n=5)`.
+ *
+ * The `n` is not decoration. A median over one card IS that card, and rendering
+ * it bare is how "10.3h" looked like a trend when it was a single sample.
+ * Below two samples we say so in words instead of implying precision.
+ */
+function metricText(metric: Metric): string {
+  if (metric.value === null) return '—'
+  return metric.n <= 1 ? durationText(metric.value) : `${durationText(metric.value)} (n=${metric.n})`
+}
+
+/** Tooltip for a metric tile: explains what it measures and over how many. */
+function metricHint(metric: Metric, what: string): string {
+  if (metric.value === null) return L('{what}（还没有样本）', '{what} (no samples yet)', { what })
+  if (metric.n <= 1) return L('{what}（只有 1 张卡，不足以当中位数看）', '{what} (only 1 card — not a median)', { what })
+  return L('{what}，基于 {n} 张卡', '{what}, over {n} cards', { what, n: metric.n })
 }
 
 function Tile({ label, value, hint, tone }: { label: string; value: string; hint?: string; tone: string }): JSX.Element {
@@ -334,7 +363,7 @@ function OwnerTable({ owners }: { owners: OwnerStat[] }): JSX.Element {
             <td style={styles.tdNum}>{row.open}</td>
             <td style={{ ...styles.tdNum, color: row.unsettled > 0 ? LINK : DIM }}>{row.unsettled}</td>
             <td style={styles.tdNum}>{row.value}</td>
-            <td style={styles.tdNum}>{durationText(row.medianCycleMs)}</td>
+            <td style={styles.tdNum} title={metricHint(row.cycle, L('该负责人的周期', 'this owner\'s cycle'))}>{metricText(row.cycle)}</td>
             <td style={styles.tdNum}>{row.actions}</td>
           </tr>
         ))}

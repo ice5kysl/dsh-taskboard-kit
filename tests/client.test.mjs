@@ -1002,7 +1002,7 @@ await check('panel: the「统计」view renders KPIs, charts and tables from the
   const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
 
   // KPI tiles: every headline number is on screen.
-  for (const label of ['Open', 'To settle', 'WIP', 'Blocked', 'Settled', 'Median cycle', 'Reject rate', 'Total value']) {
+  for (const label of ['Open', 'To settle', 'WIP', 'Blocked', 'Settled', 'Median cycle', 'Settle lag', 'Reject rate', 'Total value']) {
     assert.ok(html.includes(label), `KPI tile: ${label}`)
   }
   // Section titles for the charts/tables.
@@ -1016,6 +1016,9 @@ await check('panel: the「统计」view renders KPIs, charts and tables from the
   assert.ok(html.includes('Cycle') && html.includes('Actions'), 'owner table columns')
   // Counts stay honest: 3 unsettled (everything but the closed card).
   assert.ok(html.includes('>3<'), 'the open count reflects `done` counting as open')
+  // The fixture's cards carry no done/approved events, so the cycle tile must
+  // read as "no data" rather than inventing a number from creation times.
+  assert.ok(html.includes('no samples yet'), 'an empty metric says so in its tooltip')
 })
 
 await check('panel: an unopened board offers to turn the board on, not "create a task"', async () => {
@@ -1146,6 +1149,7 @@ await check('stats: headline counts `done` as open work and only `closed` as set
     { id: 'T-3', status: 'done', assignee: 'kimi', created_at: at(80) },
     { id: 'T-4', status: 'closed', assignee: 'kimi', created_at: at(70), log: [
       { at: at(70), by: 'human', event: 'created' },
+      { at: at(60), by: 'kimi', event: 'approved' },
       { at: at(20), by: 'kimi', event: 'closed' },
     ] },
     { id: 'T-5', status: 'open', assignee: null, created_at: at(60), waiting_on: { kind: 'human', who: 'x', question: 'q', since: at(10) } },
@@ -1157,9 +1161,71 @@ await check('stats: headline counts `done` as open work and only `closed` as set
   assert.equal(h.settled, 1)
   assert.equal(h.wip, 2, 'in_progress + review')
   assert.equal(h.blocked, 1)
-  // T-4 took 50h: created 70h ago, closed 20h ago.
-  assert.equal(client.durationText(h.medianCycleMs), '2.1d')
+  // Cycle counts only cards that FINISHED (done/approved), and carries n.
+  assert.equal(h.cycle.n, 1, 'only the one card with a done/approved event')
+  // 70h ago → 60h ago = 10h of actual work (NOT the 50h to `closed`).
+  assert.equal(client.durationText(h.cycle.value), '10.0h')
+  assert.equal(h.settleLag.n, 1, 'that same card then sat 40h before being closed')
   assert.equal(client.headline(null).total, 0, 'null board → zeros, no throw')
+})
+
+await check('stats: cycle measures work (created→done), settle lag measures paperwork', () => {
+  const at = (h) => new Date(Date.now() - h * 3600_000).toISOString()
+  // The exact shape that produced a nonsense "10.3h": a card finished in ~1h
+  // but left unsettled for days. Measuring to `closed` would report 4 days.
+  const board = statsBoard([
+    { id: 'T-1', status: 'closed', assignee: 'kimi', created_at: at(100), log: [
+      { at: at(100), by: 'kimi', event: 'created' },
+      { at: at(99), by: 'kimi', event: 'approved' },   // work took 1h
+      { at: at(2), by: 'human', event: 'closed' },      // paperwork took 97h
+    ] },
+  ])
+  const h = client.headline(board)
+  assert.equal(client.durationText(h.cycle.value), '1.0h', 'cycle = the WORK, not the close lag')
+  assert.equal(h.cycle.n, 1)
+  // The lag is reported separately instead of being smuggled into the cycle.
+  // 97h is past durationText's 48h switch, so it reads in days.
+  assert.equal(client.durationText(h.settleLag.value), '4.0d')
+  assert.equal(h.settleLag.n, 1)
+
+  // A card that finished but was never closed contributes a cycle, no lag.
+  const open = statsBoard([
+    { id: 'T-1', status: 'done', created_at: at(10), log: [
+      { at: at(10), by: 'kimi', event: 'created' },
+      { at: at(8), by: 'kimi', event: 'done' },
+    ] },
+  ])
+  const o = client.headline(open)
+  assert.equal(o.cycle.n, 1, 'finished work counts toward the cycle')
+  assert.equal(o.settleLag.n, 0, 'no close yet → no lag sample')
+  assert.equal(o.settleLag.value, null)
+
+  // `reopen` does not erase the fact that the work was once finished.
+  const reopened = statsBoard([
+    { id: 'T-1', status: 'open', created_at: at(50), log: [
+      { at: at(50), by: 'kimi', event: 'created' },
+      { at: at(30), by: 'kimi', event: 'done' },
+      { at: at(10), by: 'kimi', event: 'reopened' },
+    ] },
+  ])
+  assert.equal(client.durationText(client.headline(reopened).cycle.value), '20.0h')
+})
+
+await check('stats: a one-sample median is exposed as such, never as a trend', () => {
+  const at = (h) => new Date(Date.now() - h * 3600_000).toISOString()
+  const single = statsBoard([
+    { id: 'T-1', status: 'done', created_at: at(10), log: [
+      { at: at(10), by: 'kimi', event: 'created' },
+      { at: at(9), by: 'kimi', event: 'done' },
+    ] },
+  ])
+  const h = client.headline(single)
+  // n is what lets the UI say "only 1 card" instead of printing a confident
+  // "1.0h" that looks like a measured median.
+  assert.equal(h.cycle.n, 1)
+  const empty = statsBoard([{ id: 'T-1', status: 'open', created_at: at(10) }])
+  assert.equal(client.headline(empty).cycle.value, null)
+  assert.equal(client.headline(empty).cycle.n, 0, 'no samples → n=0, not a fake 0ms')
 })
 
 await check('stats: reject rate counts cards that reached review and were sent back', () => {
