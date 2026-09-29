@@ -164,5 +164,44 @@ await check('an unexpected failure is sanitized (no paths, no file bytes)', asyn
   assert.equal(JSON.parse(response.body).error, 'internal error')
 })
 
+await check('a workspace with a board file is served even when its session is not live', async () => {
+  // The panel legitimately switches to an older session's workspace; the host's
+  // live-session list cannot know it, so refusing would break the kanban. What
+  // stays closed is creating `.dsh/` in a directory nobody ever used.
+  const { mkdir, writeFile, rm } = await import('node:fs/promises')
+  const known = await mkdtemp(join(tmpdir(), 'dsh-taskboard-known-'))
+  const fresh = await mkdtemp(join(tmpdir(), 'dsh-taskboard-fresh-'))
+  try {
+    await mkdir(join(known, '.dsh'), { recursive: true })
+    await writeFile(join(known, '.dsh', 'taskboard.json'), JSON.stringify({ version: 1, workspace: known, next_seq: 1, tasks: {} }))
+
+    const board = bridge() // only /etc is refused, but we widen the refusal:
+    const strict = createTaskboardBridge({
+      loadBoard: async (cwd) => ({ version: 1, workspace: cwd, next_seq: 1, tasks: {} }),
+      createTask: async (cwd, input) => ({ id: 'T-1', ...input }),
+      claimTask: async () => ({ id: 'T-1' }),
+      updateTask: async () => ({ task: { id: 'T-1' }, events: [] }),
+      addComment: async () => ({ id: 'T-1' }),
+      // This host serves nothing at all: every cwd is "not in the whitelist".
+      isAllowedCwd: () => false,
+      log: () => {},
+    })
+
+    const served = res()
+    await strict.handle(req(trusted, '127.0.0.1', 'GET', `/dsh-taskboard/board?cwd=${encodeURIComponent(known)}`), served)
+    assert.equal(served.status, 200, 'an existing board is readable even outside the live list')
+
+    const refused = res()
+    await strict.handle(req(trusted, '127.0.0.1', 'GET', `/dsh-taskboard/board?cwd=${encodeURIComponent(fresh)}`), refused)
+    assert.equal(refused.status, 403, 'a boardless directory is not a workspace we serve')
+    assert.match(JSON.parse(refused.body).error, /no board file/)
+
+    assert.ok(board, 'the shared fixture bridge still builds')
+  } finally {
+    await rm(known, { recursive: true, force: true })
+    await rm(fresh, { recursive: true, force: true })
+  }
+})
+
 console.log(failed === 0 ? '\nall bridge checks passed' : `\n${failed} bridge check(s) failed`)
 process.exitCode = failed === 0 ? 0 : 1

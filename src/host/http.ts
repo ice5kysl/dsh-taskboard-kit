@@ -278,7 +278,16 @@ function requireMutateHeader(req: IncomingMessage): void {
  * `cwd` selects the board file, so it is validated before any filesystem work:
  * an absolute path, no `..` segments, and — when the host can tell — a
  * workspace it actually serves (`deps.isAllowedCwd`). Without the last check a
- * caller could address any `<dir>/.dsh/taskboard.json` on the machine.
+ * caller could address (and, on a mutation, *create*) any
+ * `<dir>/.dsh/taskboard.json` on the machine.
+ *
+ * The whitelist is **live sessions only** (`agents.list()` / `sessions.list()`
+ * are live-only), while the panel legitimately shows a workspace whose session
+ * is not live right now (an older session picked in the sidebar). Refusing
+ * those would break the kanban for the human, so a directory that already
+ * carries a board file is accepted: it is a workspace this instance has served
+ * before, not an arbitrary path. What stays closed is exactly the sharp edge —
+ * *creating* `.dsh/` in a directory nobody has ever put a board in.
  */
 function requireCwd(deps: TaskboardBridgeDeps, raw: unknown): string {
   const value = str(raw)
@@ -290,8 +299,12 @@ function requireCwd(deps: TaskboardBridgeDeps, raw: unknown): string {
     throw new BridgeError(400, 'invalid-input', '"cwd" must not contain ".."')
   }
   const cwd = resolve(value)
-  if (deps.isAllowedCwd?.(cwd) === false) {
-    throw new BridgeError(403, 'forbidden', 'cwd is not a workspace served by this dsh instance')
+  if (deps.isAllowedCwd?.(cwd) === false && !existsSync(boardFilePath(cwd))) {
+    throw new BridgeError(
+      403,
+      'forbidden',
+      'cwd is not a workspace served by this dsh instance and has no board file',
+    )
   }
   return cwd
 }
