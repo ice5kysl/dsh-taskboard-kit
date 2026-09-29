@@ -22,6 +22,7 @@ const {
   addComment,
   updateTask,
   loadBoard,
+  saveBoard,
 } = await import('../lib/index.js')
 
 const NAMES = ['dsh', 'dsh-agent']
@@ -289,6 +290,103 @@ await check('TASKBOARD_WATCH=0 disables the watcher entirely', () => {
     assert.deepEqual(effects, [], 'no watcher effect registered')
   } finally {
     delete process.env.TASKBOARD_WATCH
+  }
+})
+
+// ------------------------------------- sibling sessions + clock-driven audit
+
+await check('diffBoards: a declared sibling session is mine, yet its actions still reach me', () => {
+  const before = board([task({ id: 'T-1', created_by: 'dsh-audit', assignee: 'dsh-audit' })])
+  const after = board([task({ id: 'T-1', created_by: 'dsh-audit', assignee: 'dsh-audit' })])
+  // The sibling holds the card and hands a review to itself — but on a board
+  // where it is declared as a sibling, that card is OURS, so its action is news.
+  after.tasks['T-1'].reviewer = 'dsh-audit'
+  after.tasks['T-1'].log.push({ at: '2026-09-26T01:00:00.000Z', by: 'dsh-audit', event: 'submitted' })
+  const withSibling = diffBoards(before, after, NAMES, ['dsh-audit'])
+  assert.ok(withSibling.some((line) => line.includes('review requested from you')), JSON.stringify(withSibling))
+
+  // Undeclared, the exact same change belongs to a stranger: not my news.
+  const withoutSibling = diffBoards(before, after, NAMES, [])
+  assert.deepEqual(withoutSibling, [])
+})
+
+await check('diffBoards: my own action is still silent when siblings are declared', () => {
+  const before = board([task({ id: 'T-1', created_by: 'human' })])
+  const after = board([task({ id: 'T-1', created_by: 'human' })])
+  after.tasks['T-1'].comments.push({ at: '2026-09-26T01:00:00.000Z', by: 'dsh', text: 'mine' })
+  assert.deepEqual(diffBoards(before, after, NAMES, ['dsh-audit']), [])
+})
+
+await check('watcher: the clock-driven audit nudges my stale card WITHOUT any file change', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'dsh-taskboard-audit-'))
+  const notices = []
+  const watcher = createBoardWatcher({
+    loadBoard,
+    resolveAgents: () => [{ id: 'a1', cwd }],
+    injectNotice: (_id, text) => notices.push(text),
+    names: NAMES,
+    log: () => {},
+    watchDir: () => () => {},
+    reconcileMs: 60_000,
+  })
+  const stop = watcher.start()
+  try {
+    const mine = await createTask(cwd, { title: 'my stalled work', assignee: 'dsh-agent' }, 'dsh-agent')
+    await updateTask(cwd, mine.id, { action: 'start' }, 'dsh-agent')
+    // Age the card past the in_progress SLA by rewriting the log clock.
+    const agedBoard = await loadBoard(cwd)
+    for (const entry of agedBoard.tasks[mine.id].log) entry.at = new Date(Date.now() - 100 * 3600_000).toISOString()
+    await saveBoard(cwd, agedBoard)
+
+    await watcher.audit(cwd)
+    assert.equal(notices.length, 1, JSON.stringify(notices))
+    assert.match(notices[0], /self-audit/)
+    assert.match(notices[0], new RegExp(mine.id))
+    assert.match(notices[0], /stalled_mine/)
+
+    // Throttled: an identical item set does not nag again right away.
+    await watcher.audit(cwd)
+    assert.equal(notices.length, 1)
+  } finally {
+    stop()
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+await check('watcher: a human wait past the SLA escalates out-of-band, once', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'dsh-taskboard-escalate-'))
+  const escalated = []
+  const watcher = createBoardWatcher({
+    loadBoard,
+    resolveAgents: () => [{ id: 'a1', cwd }],
+    injectNotice: () => {},
+    names: NAMES,
+    log: () => {},
+    watchDir: () => () => {},
+    reconcileMs: 60_000,
+    onHumanWaitOverdue: (escalation) => escalated.push(escalation),
+  })
+  const stop = watcher.start()
+  try {
+    const parked = await createTask(cwd, { title: 'parked on the human' }, 'dsh-agent')
+    await updateTask(cwd, parked.id, {
+      action: 'block', wait_kind: 'human', wait_who: 'iceskysl', wait_question: 'go/no-go?',
+    }, 'dsh-agent')
+    const agedBoard = await loadBoard(cwd)
+    agedBoard.tasks[parked.id].waiting_on.since = new Date(Date.now() - 30 * 3600_000).toISOString()
+    await saveBoard(cwd, agedBoard)
+
+    await watcher.audit(cwd)
+    assert.equal(escalated.length, 1, JSON.stringify(escalated))
+    assert.equal(escalated[0].task.id, parked.id)
+    assert.equal(escalated[0].question, 'go/no-go?')
+    assert.equal(escalated[0].reason, 'overdue')
+    // Escalation rides the same throttle window: no repeat nagging.
+    await watcher.audit(cwd)
+    assert.equal(escalated.length, 1)
+  } finally {
+    stop()
+    await rm(cwd, { recursive: true, force: true })
   }
 })
 

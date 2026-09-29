@@ -292,14 +292,16 @@ await check('guideProjectDir: the board file location wins over the detected cwd
   assert.equal(client.guideProjectDir('/odd/path/board.json', '/w'), '/w', 'unrecognized board_file shape falls back to cwd')
 })
 
-await check('guide hook snippets: guarded, assignee-tagged, parseable', () => {
+await check('guide hook snippets: guarded, actor-tagged, silent-when-clean, parseable', () => {
   assert.equal(typeof client.hookSnippetKimi, 'function')
   assert.equal(typeof client.hookSnippetClaude, 'function')
 
   const kimi = client.hookSnippetKimi('/a/bin/taskboard.mjs')
   assert.ok(kimi.includes('/a/bin/taskboard.mjs'), 'cli path interpolated')
   assert.ok(kimi.includes('[ -f .dsh/taskboard.json ]'), 'board-file guard present')
-  assert.ok(kimi.includes('--assignee kimi'), 'assignee kimi in the command')
+  assert.ok(kimi.includes('inbox --cwd "$PWD" --by kimi'), 'the hook asks for MY inbox, tagged with my name')
+  assert.ok(kimi.includes('没有该你处理的事') && kimi.includes('nothing is on you'),
+    'the hook stays silent when nothing is on me (both locales)')
   assert.equal(kimi.match(/\[\[hooks\]\]/g).length, 2, 'two [[hooks]] blocks (SessionStart + UserPromptSubmit)')
   assert.ok(kimi.includes('event = "SessionStart"'))
   assert.ok(kimi.includes('event = "UserPromptSubmit"'))
@@ -311,8 +313,8 @@ await check('guide hook snippets: guarded, assignee-tagged, parseable', () => {
   assert.equal(parsed.hooks.SessionStart[0].hooks[0].type, 'command')
   assert.ok(parsed.hooks.SessionStart[0].hooks[0].command.includes('/a/bin/taskboard.mjs'), 'cli path in the SessionStart command')
   assert.ok(parsed.hooks.SessionStart[0].hooks[0].command.includes('[ -f .dsh/taskboard.json ]'), 'board-file guard in SessionStart')
-  assert.ok(parsed.hooks.SessionStart[0].hooks[0].command.includes('--assignee claude'), 'assignee claude in SessionStart')
-  assert.ok(parsed.hooks.UserPromptSubmit[0].hooks[0].command.includes('--assignee claude'), 'UserPromptSubmit carries the same command in full')
+  assert.ok(parsed.hooks.SessionStart[0].hooks[0].command.includes('--by claude'), 'actor claude in SessionStart')
+  assert.ok(parsed.hooks.UserPromptSubmit[0].hooks[0].command.includes('--by claude'), 'UserPromptSubmit carries the same command in full')
   assert.equal(parsed.hooks.UserPromptSubmit[0].hooks[0].command, parsed.hooks.SessionStart[0].hooks[0].command, 'both events carry the full identical command (no "ditto" shorthand)')
   assert.ok(client.hookSnippetClaude(null).includes('插件目录'), 'null cli degrades to the placeholder')
 })
@@ -602,6 +604,178 @@ await check('runPlanOps: executes the plan in order and stops at the first failu
   }
   await client.runPlanOps(failing, 'T-2', client.planDrop({ status: 'open', assignee: null }, 'review'))
   assert.ok(!calls.some((row) => row[0] === 'update-after-fail'), 'no op runs after a failure')
+})
+
+// ------------------------------------------- collaboration marks (v0.5.4)
+// The board's other axis: `reviewer` (who owes the verdict) and `waiting_on`
+// (who the card is parked on). The point of these checks is the human side —
+// a card parked on a person must be visibly DIFFERENT from claimable work, and
+// answering it must be one gesture that leaves a record.
+
+/** A board fixture with the v0.5.4 fields; `iso(ms)` = ms ago. */
+function collabBoard(tasks, actors) {
+  const now = Date.now()
+  const iso = (ms) => new Date(now - ms).toISOString()
+  const base = {
+    detail: '', assignee: null, reviewer: null, waiting_on: null,
+    priority: 'medium', value: null, tags: [],
+    created_by: 'dsh', created_at: iso(9 * 24 * 3600_000), updated_at: iso(60_000),
+    log: [], comments: [],
+  }
+  const roster = {
+    dsh: { kind: 'agent', aliases: ['dsh-agent'], first_seen_at: iso(9 * 24 * 3600_000), last_seen_at: iso(60_000) },
+    kimi: { kind: 'agent', aliases: [], first_seen_at: iso(9 * 24 * 3600_000), last_seen_at: iso(120_000) },
+    iceskysl: { kind: 'human', aliases: [], first_seen_at: iso(9 * 24 * 3600_000), last_seen_at: iso(300_000) },
+    ...actors,
+  }
+  return {
+    version: 1, workspace: '/work/a', next_seq: 99, actors: roster,
+    tasks: Object.fromEntries(tasks.map((task) => [task.id, { ...base, ...task }])),
+    iso,
+  }
+}
+
+/** Load a fixture board into a fresh store and render the board tab. */
+async function renderBoard(board) {
+  const store = client.createTaskboardStore({ bridge: { board: async () => ({ ok: true, board }) }, pollMs: 10 ** 9 })
+  store.setCwd(board.workspace)
+  await store.refresh()
+  return { store, html: renderToStaticMarkup(React.createElement(client.BoardPanel, { store })) }
+}
+
+await check('store.answerWaiting: comment first, then unblock (and never the other way round)', async () => {
+  assert.equal(typeof client.createTaskboardStore, 'function')
+  const calls = []
+  const board = { version: 1, workspace: '/w', next_seq: 1, tasks: {}, actors: {} }
+  const bridge = {
+    board: async () => ({ ok: true, board }),
+    comment: async (req) => { calls.push(['comment', req.id, req.text]); return { ok: true, task: {} } },
+    update: async (req) => { calls.push(['update', req.id, req.action]); return { ok: true, task: {} } },
+  }
+  const store = client.createTaskboardStore({ bridge, pollMs: 10 ** 9 })
+  store.setCwd('/w')
+  await store.refresh()
+
+  assert.equal(store.getState().error, null, 'clean start')
+  // The answer is trimmed before it is stored, and the release follows it.
+  assert.equal(await store.answerWaiting('T-1', '  撤掉 C 段  '), true)
+  assert.deepEqual(calls, [['comment', 'T-1', '撤掉 C 段'], ['update', 'T-1', 'unblock']], 'comment → unblock, in order')
+
+  // A failed comment must NOT release the wait: the answer is the durable
+  // record, and an unblock without it would silently drop the question.
+  calls.length = 0
+  const failing = {
+    board: bridge.board,
+    comment: async () => ({ ok: false, error: 'boom' }),
+    update: async () => { calls.push(['update']); return { ok: true, task: {} } },
+  }
+  const broken = client.createTaskboardStore({ bridge: failing, pollMs: 10 ** 9 })
+  broken.setCwd('/w')
+  await broken.refresh()
+  assert.equal(await broken.answerWaiting('T-1', 'x'), false)
+  assert.deepEqual(calls, [], 'no unblock after a failed comment')
+  assert.equal(broken.getState().error, 'boom', 'the failure surfaces on the store error channel')
+
+  // Empty text is a no-op — no request at all.
+  calls.length = 0
+  assert.equal(await store.answerWaiting('T-1', '   '), false)
+  assert.deepEqual(calls, [], 'blank answer fires nothing')
+})
+
+await check('human strip: cards parked on a PERSON get their own surface', async () => {
+  const fixture = collabBoard([
+    {
+      id: 'T-1', title: '删掉 C 段吗', status: 'in_progress', assignee: 'dsh',
+      waiting_on: { kind: 'human', who: 'iceskysl', question: 'C 段前提已过时——撤掉还是重定义？', since: new Date(Date.now() - 48 * 3600_000).toISOString() },
+    },
+    {
+      id: 'T-2', title: '等 kimi 回执', status: 'in_progress', assignee: 'dsh',
+      waiting_on: { kind: 'agent', who: 'kimi', question: '回执呢', since: new Date(Date.now() - 3600_000).toISOString() },
+    },
+  ])
+  const { store, html } = await renderBoard(fixture)
+
+  assert.ok(html.includes('class="tb-human-strip"'), 'the strip renders when a person is being waited on')
+  assert.ok(html.includes('◷ 1 card(s) waiting on you'), 'it counts ONLY the human-parked card (the agent-parked one is the agents\' business)')
+  assert.ok(!html.includes('2 card(s) waiting on you'), 'the agent-parked card is not counted as the human\'s')
+  assert.ok(html.includes('删掉 C 段吗'), 'the card title is listed')
+  assert.ok(html.includes('C 段前提已过时'), 'the full question is shown verbatim — answerable without opening anything')
+  assert.ok(html.includes('waiting on iceskysl · 2d'), 'who is waiting and for how long')
+  assert.ok(html.includes('>overdue<'), 'a 48h wait passes the 24h human SLA and is marked')
+  assert.ok(html.includes('Reply'), 'an answer affordance is offered inline')
+  // The agent-parked card still carries its badge on the CARD (not the strip).
+  assert.ok(html.includes('waiting on agent kimi · 1h'), 'agent waits ride the card badge')
+
+  // Selecting the waiting card unfolds the inline answer box (textarea + the
+  // one-gesture 「回复并解除等待」 submit). SSR drives the selection via the store.
+  store.select('T-1')
+  const opened = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+  assert.ok(opened.includes('class="tb-textarea"'), 'the answer box opens for the selected waiting card')
+  assert.ok(opened.includes('Reply &amp; release'), 'the one-gesture answer button is there')
+  assert.ok(opened.includes('>Hide<'), 'and it can be folded away again')
+  store.select(null)
+})
+
+await check('stale + reviewer: column age, a quiet dot, and who owes the verdict', async () => {
+  const now = Date.now()
+  const reviewTask = (reviewer, submittedAgoMs) => ({
+    id: 'T-4', title: 'review one', status: 'review', assignee: 'dsh', reviewer,
+    log: [
+      { at: new Date(now - 9 * 24 * 3600_000).toISOString(), by: 'dsh', event: 'created' },
+      { at: new Date(now - submittedAgoMs).toISOString(), by: 'dsh', event: 'submitted' },
+    ],
+  })
+
+  // A 1h-old review card is inside the 24h SLA: no stale mark.
+  const fresh = await renderBoard(collabBoard([reviewTask('kimi', 3600_000)]))
+  assert.ok(!fresh.html.includes('class="tb-stale"'), 'a fresh review card carries no stale mark')
+  assert.ok(fresh.html.includes('review kimi'), 'the reviewer badge names who owes the verdict')
+  assert.ok(!fresh.html.includes('(inactive)'), 'a reviewer seen 2 minutes ago is not flagged quiet')
+
+  // 3 days in the review column: stale, and the age badge counts time in the
+  // CURRENT column (creation age would be meaningless here).
+  const old = await renderBoard(collabBoard([reviewTask('kimi', 3 * 24 * 3600_000)]))
+  assert.ok(old.html.includes('class="tb-stale"'), 'a 3d-old review card carries the stale dot')
+  assert.ok(old.html.includes('3d in this column'), 'the badge counts time in the current column')
+  assert.ok(!old.html.includes('9d in this column'), 'NOT time since creation')
+
+  // A reviewer the roster has never heard of (the lost claude case): hinted,
+  // never reassigned.
+  const ghost = await renderBoard(collabBoard([reviewTask('ghost', 3 * 24 * 3600_000)]))
+  assert.ok(ghost.html.includes('review ghost (inactive)'), 'an unknown reviewer is marked quiet')
+  assert.equal(ghost.store.getState().board.tasks['T-4'].reviewer, 'ghost', 'the hint never reassigns the card')
+})
+
+await check('activity timeline: blocked / unblocked carry real labels', async () => {
+  const now = Date.now()
+  const iso = (ms) => new Date(now - ms).toISOString()
+  const board = {
+    version: 1, workspace: '/work/a', next_seq: 3, actors: {},
+    tasks: {
+      'T-1': {
+        id: 'T-1', title: 'parked one', detail: '', status: 'in_progress', assignee: 'dsh',
+        reviewer: null, waiting_on: null, priority: 'medium', value: null, tags: [],
+        created_by: 'dsh', created_at: iso(4 * 3600_000), updated_at: iso(3600_000),
+        log: [
+          { at: iso(3 * 3600_000), by: 'dsh', event: 'started' },
+          { at: iso(2 * 3600_000), by: 'dsh', event: 'blocked', note: '等主人排期' },
+          { at: iso(3600_000), by: 'human', event: 'unblocked' },
+        ],
+        comments: [],
+      },
+    },
+  }
+  const store = client.createTaskboardStore({ bridge: { board: async () => ({ ok: true, board }) }, pollMs: 10 ** 9 })
+  store.setCwd('/work/a')
+  await store.refresh()
+  store.setMiniOpen(true)
+
+  // The activity tab renders one row per log event through EVENT_LABELS; a
+  // missing key would silently fall back to the raw event name.
+  const html = renderToStaticMarkup(React.createElement(client.MiniBoardDrawer, { store, initialSelectedId: 'T-1', initialTab: 'activity' }))
+  assert.ok(html.includes('>waiting<'), 'blocked renders a localized label')
+  assert.ok(html.includes('>released<'), 'unblocked renders a localized label')
+  assert.ok(html.includes('等主人排期'), 'the log note rides the row')
 })
 
 // ------------------------------------------------------------------ done

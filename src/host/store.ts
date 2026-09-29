@@ -23,9 +23,28 @@ import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/prom
 import { dirname, join, resolve } from 'node:path'
 import type { ErrorCode, UpdateAction } from '../shared/bridge.ts'
 import {
+  HUMAN_ACTOR,
+  actorKey,
+  actorNames,
+  ageInColumnMs,
+  boardHealth,
+  inboxFor,
+  parseAliasConfig,
+  parseWatchNames,
+  resolveActor,
+  sameActor,
+  stalenessOf,
+  type BoardHealth,
+  type HealthOptions,
+  type InboxItem,
+  type InboxOptions,
+} from '../shared/board.ts'
+import {
   TASK_VALUES,
   compareTasks,
   emptyBoard,
+  type ActorEntry,
+  type ActorKind,
   type Board,
   type Task,
   type TaskEvent,
@@ -33,6 +52,7 @@ import {
   type TaskPriority,
   type TaskStatus,
   type TaskValue,
+  type WaitOn,
 } from '../shared/types.ts'
 
 /** A structured store failure; `code` is the bridge-facing error code. */
@@ -78,11 +98,15 @@ export async function loadBoard(cwd: string): Promise<Board> {
   }
   // Schema drift normalization (version stays 1 for added/renamed fields):
   //   v0.2 added comments — hydrate it in place;
-  //   v0.3 renamed cancelled → closed (status AND log events) and added value.
+  //   v0.3 renamed cancelled → closed (status AND log events) and added value;
+  //   v0.5.4 added reviewer / waiting_on (per task) and actors (per board).
+  parsed.actors ??= {}
   for (const task of Object.values(parsed.tasks ?? {})) {
     if (!Array.isArray(task.comments)) task.comments = []
     if (task.value === undefined) task.value = null
     if ((task.status as string) === 'cancelled') task.status = 'closed'
+    if (task.reviewer === undefined) task.reviewer = null
+    if (task.waiting_on === undefined) task.waiting_on = null
     for (const entry of task.log ?? []) {
       if ((entry.event as string) === 'cancelled') entry.event = 'closed'
     }
@@ -198,7 +222,10 @@ async function isStaleLock(lockPath: string): Promise<boolean> {
 const PRIORITIES: readonly TaskPriority[] = ['high', 'medium', 'low']
 const STATUSES: readonly TaskStatus[] = ['open', 'in_progress', 'review', 'done', 'closed']
 // `cancel` is the pre-v0.3 name of `close`; accepted as an alias forever.
-const ACTIONS: readonly UpdateAction[] = ['start', 'stop', 'submit', 'approve', 'reject', 'done', 'close', 'reopen', 'cancel']
+// `block` / `unblock` (v0.5.4) park a card on someone without moving the status.
+const ACTIONS: readonly UpdateAction[] = [
+  'start', 'stop', 'submit', 'approve', 'reject', 'done', 'close', 'reopen', 'cancel', 'block', 'unblock',
+]
 
 function requireId(id: unknown): string {
   if (typeof id !== 'string' || id.trim() === '') {
@@ -275,6 +302,104 @@ function logEntry(at: string, by: string, event: TaskEvent): TaskLogEntry {
   return { at, by, event }
 }
 
+// ------------------------------------------------------------------- roster
+// The roster answers "who is here, and when did we last see them" — the fact
+// the board cannot derive from the log alone (a task delegated to an actor
+// that never ran again just looks busy). Aliases unify one agent's many names
+// so `dsh` and `dsh-agent` are one owner, not two.
+
+/**
+ * Alias groups in force: the built-in `dsh ≡ dsh-agent`, plus
+ * `TASKBOARD_ACTOR_ALIASES` (`canonical:alias1|alias2,…`), plus
+ * `TASKBOARD_WATCH_NAMES` (whose FIRST name is canonical and the rest aliases —
+ * the instance already declares "these names are all me" there).
+ */
+export function actorAliasGroups(): Record<string, string[]> {
+  const groups: Record<string, string[]> = {}
+  const add = (canonical: string, aliases: readonly string[]) => {
+    const key = actorKey(canonical)
+    if (!key) return
+    groups[key] = [...new Set([...(groups[key] ?? []), ...aliases.map((alias) => alias.trim()).filter(Boolean)])]
+  }
+  add('dsh', ['dsh-agent'])
+  for (const [canonical, aliases] of Object.entries(parseAliasConfig(process.env.TASKBOARD_ACTOR_ALIASES))) {
+    add(canonical, aliases)
+  }
+  const watch = parseWatchNames(process.env.TASKBOARD_WATCH_NAMES)
+  if (watch) add(watch.canonical, watch.aliases)
+  return groups
+}
+
+/** Names that are humans, not agents: `human` plus `TASKBOARD_HUMANS` (逗号分隔). */
+export function humanNames(): string[] {
+  const configured = (process.env.TASKBOARD_HUMANS ?? '').split(',').map((name) => name.trim()).filter(Boolean)
+  return [HUMAN_ACTOR, ...configured]
+}
+
+function kindOf(name: string): ActorKind {
+  const key = actorKey(name)
+  return humanNames().some((human) => actorKey(human) === key) ? 'human' : 'agent'
+}
+
+/**
+ * Record that `name` just acted (or was just referenced): refresh
+ * `last_seen_at`, materialize its aliases from the configured groups.
+ * `touchActor` (actor) and `noteActor` (mere reference — no liveness claim)
+ * are deliberately different: being *named* in an assignee field is not
+ * evidence of being alive.
+ */
+function touchActor(board: Board, name: string, now: string): void {
+  const key = actorKey(name)
+  if (!key) return
+  board.actors ??= {}
+  const groups = actorAliasGroups()
+  // The canonical spelling of an alias group wins when we mint a new entry, so
+  // `dsh-agent` acting first still files under `dsh` (one owner, not two).
+  const canonical = Object.keys(groups).find((group) =>
+    group === key || groups[group]!.some((alias) => actorKey(alias) === key))
+  const aliases = groups[key] ?? (canonical ? groups[canonical] ?? [] : [])
+  const existingKey = Object.keys(board.actors).find((entry) => actorKey(entry) === key)
+    ?? Object.keys(board.actors).find((entry) => (board.actors[entry]?.aliases ?? []).some((alias) => actorKey(alias) === key))
+  const target = existingKey ?? canonical ?? name.trim()
+  const entry: ActorEntry = board.actors[target] ?? {
+    kind: kindOf(name),
+    aliases: [],
+    first_seen_at: now,
+    last_seen_at: null,
+  }
+  entry.aliases = [...new Set([...entry.aliases, ...aliases])].filter((alias) => actorKey(alias) !== actorKey(target))
+  entry.last_seen_at = now
+  board.actors[target] = entry
+}
+
+/** Register a name we merely referenced (assignee / reviewer / waiting_on). */
+function noteActor(board: Board, name: string | null | undefined, now: string, kind?: ActorKind): void {
+  if (!name) return
+  const key = actorKey(name)
+  if (!key) return
+  if (resolveActor(board, name)) return
+  board.actors ??= {}
+  board.actors[name.trim()] = {
+    kind: kind ?? kindOf(name),
+    aliases: [],
+    first_seen_at: now,
+    last_seen_at: null,
+  }
+}
+
+/** 名册成员的名字集合（规范名 + 别名）——通知"是谁"时用得到。 */
+export function actorNamesOf(board: Board, name: string): string[] {
+  return actorNames(board, name)
+}
+
+/** 解析成名册里的规范名，解析不到就给规范化后的自身。 */
+export function canonicalActor(board: Board, name: string): string {
+  const entry = resolveActor(board, name)
+  if (!entry) return name.trim()
+  const found = Object.entries(board.actors ?? {}).find(([, value]) => value === entry)
+  return found?.[0] ?? name.trim()
+}
+
 // ---------------------------------------------------------- domain operations
 
 export interface CreateTaskInput {
@@ -308,6 +433,8 @@ export async function createTask(cwd: string, input: CreateTaskInput, by: string
       detail,
       status: 'open',
       assignee,
+      reviewer: null,
+      waiting_on: null,
       priority,
       value,
       tags,
@@ -318,6 +445,8 @@ export async function createTask(cwd: string, input: CreateTaskInput, by: string
       comments: [],
     }
     board.tasks[id] = task
+    touchActor(board, by, now)
+    noteActor(board, assignee, now)
     await saveBoard(cwd, board)
     return task
   })
@@ -327,12 +456,22 @@ export async function createTask(cwd: string, input: CreateTaskInput, by: string
  * The core atomic action: take a task out of the claimable pool. Succeeds only
  * while the task is open AND unassigned; anything else (already claimed, in
  * progress, review, done, closed, or delegated to someone) is a conflict.
+ *
+ * v0.5.4: a task **waiting on someone** (usually the human) is NOT claimable —
+ * "waiting for a decision" must never be advertised as "free work" (that is
+ * exactly how T-8 sat in the pool looking like it was up for grabs).
  */
 export async function claimTask(cwd: string, id: string, by: string): Promise<Task> {
   const taskId = requireId(id)
   return withBoardLock(cwd, async () => {
     const board = await loadBoard(cwd)
     const task = mustTask(board, taskId)
+    if (task.waiting_on) {
+      throw new StoreError(
+        'conflict',
+        `${taskId} is waiting on ${task.waiting_on.kind}${task.waiting_on.who ? ` (${task.waiting_on.who})` : ''}: ${task.waiting_on.question} — unblock it before claiming`,
+      )
+    }
     if (task.status !== 'open' || task.assignee) {
       const held = task.assignee ? ` (held by ${task.assignee})` : ''
       throw new StoreError('conflict', `${taskId} cannot be claimed: status is ${task.status}${held}`)
@@ -342,6 +481,7 @@ export async function claimTask(cwd: string, id: string, by: string): Promise<Ta
     task.assignee = by
     task.updated_at = now
     task.log.push(logEntry(now, by, 'claimed'))
+    touchActor(board, by, now)
     await saveBoard(cwd, board)
     return task
   })
@@ -351,6 +491,14 @@ export interface UpdateTaskPatch {
   action?: UpdateAction
   /** Change the owner while open/in_progress; null unassigns back to the pool. */
   assignee?: string | null
+  /** Who owes the review (set at submit, or pre-delegated); null clears it. */
+  reviewer?: string | null
+  /** block: 在等谁（human / agent / external）；省略时由 wait_who 推断。 */
+  wait_kind?: WaitOn['kind']
+  /** block: 具体等谁（人类名 / Agent 名）。 */
+  wait_who?: string | null
+  /** block: 要对方回答什么——必须是一句能直接抄给对方的问句。 */
+  wait_question?: string
   title?: string
   detail?: string
   priority?: TaskPriority
@@ -361,11 +509,59 @@ export interface UpdateTaskPatch {
   note?: string
 }
 
+const WAIT_KINDS: readonly WaitOn['kind'][] = ['human', 'agent', 'external']
+
+function parseWaitKind(kind: unknown): WaitOn['kind'] | undefined {
+  if (kind === undefined) return undefined
+  if (typeof kind !== 'string' || !WAIT_KINDS.includes(kind as WaitOn['kind'])) {
+    throw new StoreError('invalid-input', `wait kind must be one of ${WAIT_KINDS.join(' | ')}`)
+  }
+  return kind as WaitOn['kind']
+}
+
+/**
+ * Self-review is refused by default: a card approved by whoever wrote it is not
+ * reviewed at all. `TASKBOARD_ALLOW_SELF_REVIEW=1` is the escape hatch for a
+ * one-agent workspace, where the alternative is a card stuck forever.
+ */
+function allowsSelfReview(): boolean {
+  return process.env.TASKBOARD_ALLOW_SELF_REVIEW === '1'
+}
+
+/**
+ * Who owes the review of this card. Explicit wins; otherwise keep an existing
+ * reviewer; otherwise the task's creator (the person accountable for the work);
+ * otherwise the most recently active other agent; finally the human.
+ */
+function resolveReviewer(board: Board, task: Task, by: string, requested: string | null | undefined): string {
+  const selfReview = (name: string) => allowsSelfReview() || !sameActor(board, name, by)
+  if (requested && requested.trim() !== '') {
+    if (!selfReview(requested)) {
+      throw new StoreError('invalid-input', `you cannot review your own work: pick another reviewer (or set TASKBOARD_ALLOW_SELF_REVIEW=1)`)
+    }
+    return requested.trim()
+  }
+  if (task.reviewer && sameActor(board, task.reviewer, by) === false) return task.reviewer
+  if (task.created_by && !sameActor(board, task.created_by, by)) return task.created_by
+  const others = Object.entries(board.actors ?? {})
+    .filter(([name, entry]) => entry.kind === 'agent' && !sameActor(board, name, by) && entry.last_seen_at)
+    .sort((a, b) => String(b[1].last_seen_at).localeCompare(String(a[1].last_seen_at)))
+  if (others.length > 0) return others[0]![0]
+  return HUMAN_ACTOR
+}
+
+/** 审核裁决权：审核人本人、卡主（对自己派出去的活负责）、以及人类。 */
+function canDecide(board: Board, task: Task, by: string): boolean {
+  if (kindOf(by) === 'human') return true
+  if (!task.reviewer) return true // legacy board: nobody named, don't block the flow
+  return sameActor(board, task.reviewer, by) || sameActor(board, task.created_by, by)
+}
+
 /**
  * Status transitions by action (v0.3 review flow):
  *   start:   open → in_progress ('started')
  *   stop:    in_progress → open ('stopped', assignee kept)
- *   submit:  in_progress → review ('submitted')
+ *   submit:  in_progress → review ('submitted', reviewer = resolved)
  *   approve: review → done ('approved')
  *   reject:  review → in_progress ('rejected')
  *   done:    open | in_progress | review → done ('done')
@@ -374,6 +570,11 @@ export interface UpdateTaskPatch {
  * The legacy action `cancel` behaves exactly as `close`.
  * The action lands first; an assignee change in the same call is then checked
  * against the RESULTING status.
+ *
+ * v0.5.4 adds two actions that do NOT move the status machine:
+ *   block:   set `waiting_on` (open | in_progress | review) — 'blocked'
+ *   unblock: clear `waiting_on` — 'unblocked'
+ * so "parked on a human" stops looking like "free work".
  */
 export async function updateTask(
   cwd: string,
@@ -384,6 +585,10 @@ export async function updateTask(
   const taskId = requireId(id)
   const action = parseAction(patch?.action)
   const assignee = parseAssignee(patch?.assignee)
+  const reviewer = parseAssignee(patch?.reviewer)
+  const waitKind = parseWaitKind(patch?.wait_kind)
+  const waitWho = parseAssignee(patch?.wait_who)
+  const waitQuestion = parseDetail(patch?.wait_question)
   const title = patch?.title === undefined ? undefined : requireTitle(patch.title)
   const detail = parseDetail(patch?.detail)
   const priority = parsePriority(patch?.priority)
@@ -398,9 +603,58 @@ export async function updateTask(
     const events: TaskEvent[] = []
 
     if (action) {
-      const transition = transitionOf(task, action)
-      task.status = transition.to
-      events.push(transition.event)
+      if (action === 'block') {
+        if (task.status === 'done' || task.status === 'closed') {
+          throw new StoreError('invalid-transition', `${taskId} is ${task.status}; a finished task cannot be blocked`)
+        }
+        const kind = waitKind ?? (waitWho ? kindOf(waitWho) : undefined)
+        if (!kind) {
+          throw new StoreError('invalid-input', 'block needs wait_kind (human | agent | external) or wait_who')
+        }
+        const question = (waitQuestion ?? '').trim()
+        if (question === '') {
+          throw new StoreError('invalid-input', 'block needs wait_question — say exactly what the other side must decide')
+        }
+        task.waiting_on = { kind, who: waitWho ?? null, question, since: now }
+        // The wait target belongs on the roster so the panel and the CLI can
+        // show "in review / waiting on <name> — never acted" instead of an
+        // anonymous string.
+        noteActor(board, waitWho, now, kind === 'human' ? 'human' : 'agent')
+        events.push('blocked')
+      } else if (action === 'unblock') {
+        if (!task.waiting_on) {
+          throw new StoreError('invalid-transition', `${taskId} is not waiting on anyone`)
+        }
+        task.waiting_on = null
+        events.push('unblocked')
+      } else {
+        const transition = transitionOf(task, action)
+        // Review ownership: submit hands the card to a named reviewer; the
+        // verdict actions are reserved for that reviewer, the task's creator
+        // and the human.
+        if (action === 'submit') {
+          // The reviewer rides the `submitted` event itself — no extra `updated`
+          // entry, so the timeline stays one line per real state change.
+          const resolved = resolveReviewer(board, task, by, reviewer)
+          task.reviewer = resolved
+          touchActor(board, resolved, now) // being handed the review IS presence
+          task.waiting_on = null
+        } else if (action === 'approve' || action === 'reject') {
+          if (!canDecide(board, task, by)) {
+            throw new StoreError(
+              'conflict',
+              `${taskId} is waiting for ${task.reviewer} to review it; only the reviewer, ${task.created_by} (creator) or the human can decide`,
+            )
+          }
+          task.reviewer = null
+          task.waiting_on = null
+        } else if (action === 'done' || action === 'close' || action === 'reopen') {
+          task.reviewer = null
+          task.waiting_on = null
+        }
+        task.status = transition.to
+        events.push(transition.event)
+      }
     }
 
     if (assignee !== undefined && assignee !== task.assignee) {
@@ -412,6 +666,26 @@ export async function updateTask(
       }
       events.push(task.assignee === null && assignee !== null ? 'assigned' : 'updated')
       task.assignee = assignee
+      noteActor(board, assignee, now)
+    }
+
+    if (reviewer !== undefined && action !== 'submit' && reviewer !== null && !sameActor(board, task.reviewer, reviewer)) {
+      const mayDelegate = kindOf(by) === 'human'
+        || sameActor(board, task.assignee, by)
+        || sameActor(board, task.created_by, by)
+        || sameActor(board, task.reviewer, by)
+      if (!mayDelegate) {
+        throw new StoreError('conflict', `${taskId} is not yours to hand over: only its owner, creator, current reviewer or the human can set the reviewer`)
+      }
+      if (sameActor(board, reviewer, by) && !allowsSelfReview()) {
+        throw new StoreError('invalid-input', 'you cannot review your own work: pick another reviewer (or set TASKBOARD_ALLOW_SELF_REVIEW=1)')
+      }
+      task.reviewer = reviewer
+      noteActor(board, reviewer, now)
+      events.push('updated')
+    } else if (reviewer === null && task.reviewer !== null) {
+      task.reviewer = null
+      events.push('updated')
     }
 
     let fieldsChanged = false
@@ -447,13 +721,16 @@ export async function updateTask(
     if (note) entries[entries.length - 1]!.note = note
     task.log.push(...entries)
     task.updated_at = now
+    touchActor(board, by, now)
     await saveBoard(cwd, board)
     return { task, events }
   })
 }
 
-/** The status machine (v0.3): action → allowed source statuses → target + event. */
-type EffectiveAction = Exclude<UpdateAction, 'cancel'>
+/** The status machine (v0.3): action → allowed source statuses → target + event.
+ *  `block` / `unblock` are deliberately absent — they write `waiting_on`, not
+ *  the status, so a parked card keeps living in the column it really is in. */
+type EffectiveAction = Exclude<UpdateAction, 'cancel' | 'block' | 'unblock'>
 
 const TRANSITIONS: Record<EffectiveAction, { from: readonly TaskStatus[]; to: TaskStatus; event: TaskEvent }> = {
   start: { from: ['open'], to: 'in_progress', event: 'started' },
@@ -468,8 +745,11 @@ const TRANSITIONS: Record<EffectiveAction, { from: readonly TaskStatus[]; to: Ta
 
 /** The transition one action produces, or an invalid-transition StoreError. */
 function transitionOf(task: Task, action: UpdateAction): { to: TaskStatus; event: TaskEvent } {
-  const effective: EffectiveAction = action === 'cancel' ? 'close' : action
+  const effective: EffectiveAction = action === 'cancel' ? 'close' : (action as EffectiveAction)
   const transition = TRANSITIONS[effective]
+  if (!transition) {
+    throw new StoreError('invalid-input', `action "${action}" does not move the status; use it on its own`)
+  }
   if (!transition.from.includes(task.status)) {
     throw new StoreError('invalid-transition', `${task.id} is ${task.status}; action "${action}" is not allowed now`)
   }
@@ -493,6 +773,7 @@ export async function addComment(cwd: string, id: string, text: string, by: stri
     const now = new Date().toISOString()
     task.comments.push({ at: now, by, text: body })
     task.updated_at = now
+    touchActor(board, by, now)
     await saveBoard(cwd, board)
     return task
   })
@@ -508,11 +789,16 @@ export interface ListTasksFilter {
   status?: TaskStatus
   /** A concrete actor name, or 'none' for tasks still in the claimable pool. */
   assignee?: string | 'none'
+  /** 只看在等谁：`human` / `agent` / `external` / `any`（在等任何人）。 */
+  waiting?: WaitOn['kind'] | 'any'
 }
 
 export async function listTasks(cwd: string, filter?: ListTasksFilter): Promise<Task[]> {
   if (filter?.status !== undefined && !STATUSES.includes(filter.status)) {
     throw new StoreError('invalid-input', `status must be one of ${STATUSES.join(' | ')}`)
+  }
+  if (filter?.waiting !== undefined && filter.waiting !== 'any' && !WAIT_KINDS.includes(filter.waiting)) {
+    throw new StoreError('invalid-input', `waiting must be one of ${WAIT_KINDS.join(' | ')} or any`)
   }
   const board = await loadBoard(cwd)
   return Object.values(board.tasks)
@@ -520,7 +806,48 @@ export async function listTasks(cwd: string, filter?: ListTasksFilter): Promise<
       if (filter?.status && task.status !== filter.status) return false
       if (filter?.assignee === 'none' && task.assignee !== null) return false
       if (filter?.assignee !== undefined && filter.assignee !== 'none' && task.assignee !== filter.assignee) return false
+      if (filter?.waiting === 'any' && !task.waiting_on) return false
+      if (filter?.waiting !== undefined && filter.waiting !== 'any' && task.waiting_on?.kind !== filter.waiting) return false
       return true
     })
     .sort(compareTasks)
+}
+
+// ------------------------------------------------------- derived collaboration
+
+/**
+ * 「我现在该干什么」——按急迫度排好的行动清单（见 shared/board.inboxFor）。
+ * 这是让看板**主动推进**而不是被人轮询的那一半。
+ */
+export async function inbox(cwd: string, actor: string, options?: InboxOptions): Promise<InboxItem[]> {
+  const board = await loadBoard(cwd)
+  return inboxFor(board, actor, options)
+}
+
+/** 全板协作健康度：交接断了 / 审核没人认领 / 在等人类 / 列陈旧。 */
+export async function health(cwd: string, options?: HealthOptions): Promise<BoardHealth> {
+  return boardHealth(await loadBoard(cwd), options)
+}
+
+/** 名册快照（面板与 CLI 用来回答"谁还在场"）。 */
+export async function roster(cwd: string): Promise<{ name: string; entry: ActorEntry; quietMs: number | null }[]> {
+  const board = await loadBoard(cwd)
+  const now = Date.now()
+  return Object.entries(board.actors ?? {})
+    .map(([name, entry]) => ({
+      name,
+      entry,
+      quietMs: entry.last_seen_at ? Math.max(0, now - (Date.parse(entry.last_seen_at) || now)) : null,
+    }))
+    .sort((a, b) => (a.quietMs ?? Number.MAX_SAFE_INTEGER) - (b.quietMs ?? Number.MAX_SAFE_INTEGER))
+}
+
+/** 「这张卡在该列待了多久」——面板角标与 CLI stale 共用的那一句话。 */
+export function columnAgeMs(task: Task, now: number = Date.now()): number {
+  return ageInColumnMs(task, now)
+}
+
+/** 陈旧判定的再导出，方便调用方只依赖 store。 */
+export function taskStaleness(task: Task, now?: number) {
+  return stalenessOf(task, now)
 }

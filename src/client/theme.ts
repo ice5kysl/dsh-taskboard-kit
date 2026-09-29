@@ -79,6 +79,14 @@ export const TB_CSS = `
 .tb-tag { font-size: 10px; color: ${DIM}; border: 1px solid ${BORDER}; border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
 .tb-badge { display: inline-flex; align-items: center; font-size: 10px; color: ${LINK}; background: ${HOVER_BG}; border-radius: 999px; padding: 1px 7px; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tb-badge-outline { display: inline-flex; align-items: center; font-size: 10px; color: ${DIM}; border: 1px dashed ${BORDER_STRONG}; border-radius: 999px; padding: 0 7px; white-space: nowrap; }
+/* v0.5.4 collaboration marks: "parked on someone" (amber, shared by the card
+   and the drawer) and "past its column SLA" (a quiet dot, deliberately NOT a
+   red alarm — see the human strip for the one place that speaks up). */
+.tb-badge-wait { display: inline-flex; align-items: center; font-size: 10px; color: ${WARN}; border: 1px solid ${WARN}; border-radius: 999px; padding: 0 7px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tb-stale { display: inline-block; width: 5px; height: 5px; border-radius: 3px; background: ${TERTIARY}; flex-shrink: 0; align-self: center; }
+/* The human strip's card button: reads as a title, behaves like a link. */
+.tb-human-card { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; border: none; border-radius: 6px; background: transparent; color: inherit; padding: 1px 4px; font-family: inherit; font-size: 12.5px; font-weight: 500; line-height: 1.5; cursor: pointer; text-align: left; }
+.tb-human-card:hover { background: ${HOVER_BG}; }
 /* Drop-target highlight rides the injected stylesheet (inline styles cannot
    express state classes); !important beats the lane's inline background. */
 .tb-column.dragover { box-shadow: inset 0 0 0 2px ${ACCENT} !important; background: ${HOVER_BG} !important; }

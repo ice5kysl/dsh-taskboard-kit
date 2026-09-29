@@ -64,9 +64,11 @@ assert.equal(done.log.at(-1).note, '验收通过')
 ok('update --action done lands with the note on the log')
 
 const fetched = await cli('get', 'T-1')
-assert.match(fetched, /done · kimi/)
-assert.match(fetched, /claimed · kimi/)
-ok('get shows status and the event timeline')
+assert.match(fetched, /T-1 · done · high/)
+assert.match(fetched, /负责人：kimi/)
+assert.match(fetched, /当前列：done/)
+assert.match(fetched, /kimi · claimed/)
+ok('get shows status, column age and the event timeline')
 
 const missing = await cliFails('get', 'T-99')
 assert.equal(missing.code, 2)
@@ -85,7 +87,7 @@ assert.match(plain, /^commented T-1 · by kimi$/)
 ok('plain output renders "commented T-1 · by kimi"')
 
 const shown = await cli('get', 'T-1')
-assert.match(shown, /comments:/)
+assert.match(shown, /留言：/)
 assert.match(shown, /交接：CLI 路径验证完毕/)
 ok('get shows the comment thread')
 

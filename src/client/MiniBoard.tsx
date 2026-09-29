@@ -38,16 +38,18 @@ import {
   BOARD_COLUMNS,
   columnOf,
   compareTasks,
+  type Board,
   type BoardColumn,
   type Task,
 } from '../shared/types.ts'
+import { stalenessOf } from '../shared/board.ts'
 import { planDrop } from '../shared/dnd.ts'
 import { knownActors } from './actors.ts'
 import { L } from './locale.ts'
-import { AssignPicker, DetailDrawer } from './BoardPanel.tsx'
+import { AssignPicker, DetailDrawer, ageLabel, humanWaiting, isQuietActor, waitLabel } from './BoardPanel.tsx'
 import type { TaskboardState, TaskboardStore } from './store.ts'
 import { getTaskboardStore } from './store.ts'
-import { BG, BG_RAISED, BORDER, BORDER_STRONG, DIM, FAINT, FG, LINK, ON_PRIMARY, PRIORITY_COLORS, TB_CSS } from './theme.ts'
+import { BG, BG_RAISED, BORDER, BORDER_STRONG, DIM, FAINT, FG, LINK, ON_PRIMARY, PRIORITY_COLORS, TB_CSS, WARN } from './theme.ts'
 import { columnLabel, openTaskCount, priorityLabel, runPlanOps, taskRef, useSessionCwd, valueText, type SessionListLike } from './view.ts'
 
 /** Props handed by the slot: the injected store + the standard session share.
@@ -60,6 +62,8 @@ export interface MiniBoardProps {
   sessionId?: string
   /** Open the layer-2 detail for this task on first render (tests drive it). */
   initialSelectedId?: string
+  /** Open the layer-2 detail on this tab first (tests drive it; default 详情). */
+  initialTab?: 'detail' | 'comments' | 'activity'
 }
 
 /** Drag wiring inside the mini drawer (same shape as the board's LaneDnd). */
@@ -89,6 +93,9 @@ export function MiniBoardButton(props: MiniBoardProps): JSX.Element {
   }, [store, cwd])
 
   const open = openTaskCount(state.board)
+  // Cards parked on the HUMAN — the one number here that is not about agents'
+  // throughput. Quiet marker, amber, with the count in the tooltip.
+  const waiting = humanWaiting(state.board).length
   return (
     <div style={styles.dockAnchor}>
       <style>{TB_CSS}</style>
@@ -96,7 +103,9 @@ export function MiniBoardButton(props: MiniBoardProps): JSX.Element {
         type="button"
         className="tb-mini-entry"
         onClick={() => store.setMiniOpen(!state.miniOpen)}
-        title={state.miniOpen ? L('收起看板抽屉', 'Close the board drawer') : L('任务看板', 'Task board')}
+        title={waiting > 0
+          ? L('任务看板 · {n} 张卡在等你决定', 'Task board · {n} card(s) waiting on you', { n: waiting })
+          : state.miniOpen ? L('收起看板抽屉', 'Close the board drawer') : L('任务看板', 'Task board')}
       >
         <svg aria-hidden width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.1" style={styles.entryIcon}>
           <rect x="1" y="1" width="10" height="10" rx="1.6" />
@@ -105,6 +114,7 @@ export function MiniBoardButton(props: MiniBoardProps): JSX.Element {
         </svg>
         <span>{L('看板', 'Board')}</span>
         {open > 0 && <span style={styles.entryCount}>· {open}</span>}
+        {waiting > 0 && <span style={styles.entryWaiting}>◷{waiting}</span>}
       </button>
     </div>
   )
@@ -142,10 +152,17 @@ export function MiniBoardDrawer(props: MiniBoardProps): JSX.Element | null {
   const store = props.store ?? getTaskboardStore()
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState)
   if (!state.miniOpen) return null
-  return <MiniBoardDrawerContent store={store} state={state} initialSelectedId={props.initialSelectedId} />
+  return (
+    <MiniBoardDrawerContent
+      store={store}
+      state={state}
+      initialSelectedId={props.initialSelectedId}
+      initialTab={props.initialTab}
+    />
+  )
 }
 
-function MiniBoardDrawerContent({ store, state, initialSelectedId }: { store: TaskboardStore; state: TaskboardState; initialSelectedId?: string }): JSX.Element {  const [dragId, setDragId] = useState<string | null>(null)
+function MiniBoardDrawerContent({ store, state, initialSelectedId, initialTab }: { store: TaskboardStore; state: TaskboardState; initialSelectedId?: string; initialTab?: 'detail' | 'comments' | 'activity' }): JSX.Element {  const [dragId, setDragId] = useState<string | null>(null)
   const [overColumn, setOverColumn] = useState<BoardColumn | null>(null)
   const [pickerId, setPickerId] = useState<string | null>(null)
   const [closedOpen, setClosedOpen] = useState(false)
@@ -167,6 +184,9 @@ function MiniBoardDrawerContent({ store, state, initialSelectedId }: { store: Ta
   )
   const selected: Task | null = selectedId && board ? board.tasks[selectedId] ?? null : null
   const pickerTask: Task | null = pickerId && board ? board.tasks[pickerId] ?? null : null
+  // The mini surface carries the same "someone is waiting on the human" count
+  // as the board tab's strip, so a closed board tab cannot hide it.
+  const humanCount = useMemo(() => humanWaiting(board).length, [board])
 
   // A fresh open shows fresh data.
   useEffect(() => {
@@ -233,6 +253,11 @@ function MiniBoardDrawerContent({ store, state, initialSelectedId }: { store: Ta
         <div style={styles.drawerHead}>
           <span style={styles.drawerTitle}>{L('看板', 'Board')}</span>
           <span style={styles.drawerCount}>{L('{n} 个进行中', '{n} open', { n: openTaskCount(board) })}</span>
+          {humanCount > 0 && (
+            <span style={styles.drawerWaiting} title={L('这些卡在等人（不是待认领）', 'These cards are parked on a person — not claimable work')}>
+              ◷ {L('{n} 张等你决定', '{n} waiting on you', { n: humanCount })}
+            </span>
+          )}
           <span style={{ flex: 1 }} />
           <button type="button" className="tb-iconbtn" onClick={() => store.setMiniOpen(false)} title={L('关闭', 'Close')}>
             ×
@@ -265,6 +290,7 @@ function MiniBoardDrawerContent({ store, state, initialSelectedId }: { store: Ta
                   key={column}
                   column={column}
                   tasks={list}
+                  board={board}
                   dnd={dnd}
                   onOpenTask={(id) => setSelectedId(id)}
                   onCollapse={column === 'closed' ? () => setClosedOpen(false) : undefined}
@@ -303,6 +329,7 @@ function MiniBoardDrawerContent({ store, state, initialSelectedId }: { store: Ta
           actors={actors}
           onClose={() => setSelectedId(null)}
           style={styles.detailOverlay}
+          {...(initialTab ? { initialTab } : {})}
         />
       )}
     </div>
@@ -313,6 +340,7 @@ function MiniBoardDrawerContent({ store, state, initialSelectedId }: { store: Ta
 function MiniSection({
   column,
   tasks,
+  board,
   dnd,
   onOpenTask,
   onCollapse,
@@ -320,6 +348,7 @@ function MiniSection({
 }: {
   column: BoardColumn
   tasks: Task[]
+  board: Board | null
   dnd: MiniDnd
   onOpenTask(id: string): void
   /** Given only for the expanded closed block: folds it back into the row. */
@@ -360,7 +389,7 @@ function MiniSection({
         <div style={styles.miniEmpty}>{L('（空）', '(empty)')}</div>
       ) : (
         tasks.map((task) => (
-          <MiniRow key={task.id} task={task} dragging={dnd.dragId === task.id} dnd={dnd} onOpen={() => onOpenTask(task.id)} />
+          <MiniRow key={task.id} task={task} board={board} dragging={dnd.dragId === task.id} dnd={dnd} onOpen={() => onOpenTask(task.id)} />
         ))
       )}
       {picker}
@@ -368,8 +397,16 @@ function MiniSection({
   )
 }
 
-/** One compact task row: #N · title (truncated) · assignee · dot · ◆value. */
-function MiniRow({ task, dragging, dnd, onOpen }: { task: Task; dragging: boolean; dnd: MiniDnd; onOpen(): void }): JSX.Element {
+/** One compact task row: #N · title (truncated) · assignee · dot · ◆value.
+ *  Collaboration marks (v0.5.4): a quiet stale dot after the ref when the card
+ *  has sat in its column past the SLA, and an amber badge when it is parked on
+ *  someone — a row waiting on the human must not look like ordinary work. */
+function MiniRow({ task, board, dragging, dnd, onOpen }: { task: Task; board: Board | null; dragging: boolean; dnd: MiniDnd; onOpen(): void }): JSX.Element {
+  const now = Date.now()
+  const staleness = stalenessOf(task, now)
+  const waiting = task.waiting_on
+  const reviewer = task.status === 'review' ? task.reviewer : null
+  const reviewerQuiet = reviewer ? isQuietActor(board, reviewer, now) : false
   return (
     <button
       type="button"
@@ -385,10 +422,32 @@ function MiniRow({ task, dragging, dnd, onOpen }: { task: Task; dragging: boolea
         dnd.setOverColumn(null)
       }}
       onClick={onOpen}
-      title={task.title}
+      title={waiting ? `${task.title} — ${waitLabel(waiting)}: ${waiting.question}` : task.title}
     >
       <span style={styles.miniRef}>{taskRef(task.id)}</span>
+      {staleness.stale && (
+        <span
+          className="tb-stale"
+          title={L('在这一列 {age}，已超过阈值', '{age} in this column — past its threshold', { age: ageLabel(staleness.ageMs) })}
+        />
+      )}
       <span style={styles.miniTitle}>{task.title}</span>
+      {waiting && (
+        <span className="tb-badge-wait" style={styles.miniWait} title={waiting.question}>
+          {waitLabel(waiting)}
+        </span>
+      )}
+      {reviewer && (
+        <span
+          className="tb-badge-outline"
+          style={reviewerQuiet ? { ...styles.miniAssignee, color: WARN } : styles.miniAssignee}
+          title={reviewerQuiet
+            ? L('{who} 欠这次审核，但已久未活动', '{who} owes this review but has been quiet', { who: reviewer })
+            : L('审核人：{who}', 'reviewer: {who}', { who: reviewer })}
+        >
+          {reviewerQuiet ? L('审核 {who}（久未活动）', 'review {who} (inactive)', { who: reviewer }) : L('审核 {who}', 'review {who}', { who: reviewer })}
+        </span>
+      )}
       {task.assignee ? (
         <span className="tb-badge" style={styles.miniAssignee} title={task.assignee}>{task.assignee}</span>
       ) : (
@@ -455,6 +514,8 @@ const styles: Record<string, CSSProperties> = {
   },
   entryIcon: { display: 'block' },
   entryCount: { color: DIM, fontVariantNumeric: 'tabular-nums' },
+  // "N cards are parked on you" — the only amber thing in the stats band.
+  entryWaiting: { color: WARN, fontVariantNumeric: 'tabular-nums', marginLeft: 4 },
   // The overlay frame: fixed full-viewport dimmer (plain alpha like every
   // shell overlay backdrop — no token needed), the drawer pinned right.
   backdrop: {
@@ -495,6 +556,7 @@ const styles: Record<string, CSSProperties> = {
   },
   drawerTitle: { fontSize: 13, fontWeight: 600 },
   drawerCount: { fontSize: 11, color: DIM },
+  drawerWaiting: { fontSize: 11, color: WARN, border: `1px solid ${WARN}`, borderRadius: 999, padding: '0 8px', whiteSpace: 'nowrap' },
   drawerBody: { flex: 1, minHeight: 0, overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8 },
   drawerEmpty: { color: DIM, fontSize: 12, lineHeight: 1.6, padding: 16, textAlign: 'center' },
   miniSec: {
@@ -519,6 +581,7 @@ const styles: Record<string, CSSProperties> = {
   miniRef: { flexShrink: 0, fontSize: 10.5, color: FAINT, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
   miniTitle: { flex: 1, minWidth: 0, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   miniAssignee: { flexShrink: 0 },
+  miniWait: { flexShrink: 0, maxWidth: 120 },
   miniDot: { width: 7, height: 7, borderRadius: 4, flexShrink: 0 },
   miniValue: { flexShrink: 0, fontSize: 10, color: FAINT, border: `1px solid ${FAINT}`, borderRadius: 999, padding: '0 5px', lineHeight: '14px' },
   miniClosedBar: {

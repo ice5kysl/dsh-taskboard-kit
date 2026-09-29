@@ -41,13 +41,23 @@ import {
   TASK_VALUES,
   columnOf,
   compareTasks,
+  type Board,
   type BoardColumn,
   type Task,
   type TaskComment,
   type TaskEvent,
   type TaskPriority,
   type TaskValue,
+  type WaitOn,
 } from '../shared/types.ts'
+import {
+  DEFAULT_QUIET_MS,
+  ageInColumnMs,
+  resolveActor,
+  stalenessOf,
+  waitingOnHuman,
+  type HealthIssue,
+} from '../shared/board.ts'
 import { planDrop, type DropOp } from '../shared/dnd.ts'
 import { knownActors } from './actors.ts'
 import { conventionSnippet, dispatchSnippet, guideProjectDir, hookSnippetClaude, hookSnippetKimi } from './guide.ts'
@@ -71,8 +81,10 @@ import {
   MASK,
   PRIORITY_COLORS,
   TB_CSS,
+  TERTIARY,
+  WARN,
 } from './theme.ts'
-import { ageText, columnLabel, priorityLabel, runPlanOps, taskRef, useSessionCwd, valueText, type SessionListLike } from './view.ts'
+import { columnLabel, priorityLabel, runPlanOps, taskRef, useSessionCwd, valueText, type SessionListLike } from './view.ts'
 
 // taskRef moved to view.ts (shared with the mini board); keep the export path.
 export { taskRef } from './view.ts'
@@ -197,12 +209,64 @@ const EVENT_LABELS: Record<TaskEvent, [string, string]> = {
   done: ['完成', 'done'],
   reopened: ['重开', 'reopened'],
   closed: ['关闭', 'closed'],
+  blocked: ['挂起等待', 'waiting'],
+  unblocked: ['解除等待', 'released'],
   updated: ['更新', 'updated'],
 }
 
 function eventLabel(event: TaskEvent): string {
   const pair = EVENT_LABELS[event]
   return pair ? L(pair[0], pair[1]) : event
+}
+
+// ------------------------------------------------- collaboration derivations
+// Thin, view-shaped wrappers over the shared derived math (src/shared/board.ts)
+// plus the two labels only the browser face needs. Kept here (and re-imported
+// by MiniBoard) so both surfaces read the same answer — never two opinions
+// about what is late or who owes what.
+
+/** '3d2h' / '5m' — compact duration, the host's ageLabel shape (duplicated
+ *  locally on purpose: importing src/host would drag node built-ins into the
+ *  browser bundle). */
+export function ageLabel(ms: number): string {
+  const minutes = Math.max(0, Math.floor(ms / 60_000))
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h${minutes % 60 > 0 ? `${minutes % 60}m` : ''}`
+  const days = Math.floor(hours / 24)
+  return `${days}d${hours % 24 > 0 ? `${hours % 24}h` : ''}`
+}
+
+/** 「等人类 / 等 Agent / 等外部」 + who, for the card and drawer badges. */
+export function waitLabel(waiting: WaitOn): string {
+  const who = waiting.who ? ` ${waiting.who}` : ''
+  switch (waiting.kind) {
+    case 'human': return L('等人类{who}', 'waiting on human{who}', { who })
+    case 'agent': return L('等 Agent{who}', 'waiting on agent{who}', { who })
+    case 'external': return L('等外部{who}', 'waiting on external{who}', { who })
+  }
+}
+
+/**
+ * Has this actor gone quiet? Evidence, not a guess: the roster's
+ * `last_seen_at` is the only source. An actor the roster has never heard of,
+ * that has never touched the board, or that last acted longer than the quiet
+ * window ago is quiet. HINT ONLY — the panel never reassigns on this.
+ */
+export function isQuietActor(board: Board | null, name: string | null | undefined, now: number = Date.now()): boolean {
+  if (!board || !name) return false
+  const entry = resolveActor(board, name)
+  if (!entry || !entry.last_seen_at) return true
+  const seen = Date.parse(entry.last_seen_at)
+  return Number.isNaN(seen) || now - seen > DEFAULT_QUIET_MS
+}
+
+/** The waiting cards the HUMAN must look at (the strip's data source).
+ *  `waitingOnHuman` covers every parked card; the human's list is only the
+ *  ones actually parked on a human — 等 Agent / 等外部 belong to the agents. */
+export function humanWaiting(board: Board | null, now: number = Date.now()): HealthIssue[] {
+  if (!board) return []
+  return waitingOnHuman(board, now).filter((issue) => issue.task.waiting_on?.kind === 'human')
 }
 
 // ------------------------------------------------------------------ panel
@@ -265,6 +329,9 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   const selectedId = state.selectedId
   const selected: Task | null = selectedId && board ? board.tasks[selectedId] ?? null : null
   const pickerTask: Task | null = assignPickerId && board ? board.tasks[assignPickerId] ?? null : null
+  // The human's own list: cards parked on a PERSON. (等 Agent / 等外部 are the
+  // agents' business — they carry a card badge, not a place in this strip.)
+  const waitingHuman = useMemo(() => humanWaiting(board), [board])
   const drawerOpen = createOpen || selected !== null
   const closeDrawer = (): void => {
     setCreateOpen(false)
@@ -361,6 +428,9 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
             ×
           </button>
         </div>
+      )}
+      {waitingHuman.length > 0 && (
+        <HumanStrip items={waitingHuman} state={state} store={store} />
       )}
       {!state.cwd ? (
         <div style={styles.center}>
@@ -466,6 +536,103 @@ function TopBar({ state, store, total, onCreate, onGuide }: { state: TaskboardSt
   )
 }
 
+/**
+ * The human's strip — the one surface on this board that speaks to the person
+ * instead of to an agent. It exists because "在等人类决定" used to be
+ * indistinguishable from "待认领": a card parked on a person is not work
+ * anyone can pick up, and it must not rot unnoticed in a lane.
+ *
+ * Every row lists the card, who is waiting, how long, and the FULL question
+ * verbatim — it has to be answerable without opening anything. The row's main
+ * button opens the card's drawer; 回复 unfolds an inline answer box that posts
+ * the answer as a comment and then releases the wait (comment → unblock, in
+ * that order), so the waiting agent is told the answer and the card leaves
+ * this list in one gesture.
+ */
+function HumanStrip({ items, state, store }: { items: HealthIssue[]; state: TaskboardState; store: TaskboardStore }): JSX.Element {
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const busy = state.busy
+
+  const answer = async (id: string): Promise<void> => {
+    const text = (drafts[id] ?? '').trim()
+    if (!text || busy) return
+    // The store owns the two-step write (comment → unblock, in that order) so
+    // the panel, the tests and any future surface share one implementation.
+    if (await store.answerWaiting(id, text)) {
+      setDrafts((prev) => ({ ...prev, [id]: '' }))
+      setExpandedId(null)
+    }
+  }
+
+  return (
+    <section style={styles.humanStrip} className="tb-human-strip">
+      <div style={styles.humanHead}>
+        <span style={styles.humanTitle}>{L('◷ {n} 张卡在等你决定', '◷ {n} card(s) waiting on you', { n: items.length })}</span>
+        <span style={styles.humanHint}>
+          {L('回答后点「回复并解除等待」——留言入档并解除挂起，等你的 Agent 会收到通知。', 'Answer and hit 回复并解除等待 — the reply joins the thread, the wait is released, and the waiting agent is notified.')}
+        </span>
+      </div>
+      <ul style={styles.humanList}>
+        {items.map((issue) => {
+          const task = issue.task
+          const waiting = task.waiting_on
+          if (!waiting) return null
+          const open = expandedId === task.id || state.selectedId === task.id
+          const overdue = stalenessOf(task).waitOverdue
+          const draft = drafts[task.id] ?? ''
+          return (
+            <li key={task.id} style={styles.humanItem}>
+              <div style={styles.humanItemHead}>
+                <button type="button" className="tb-human-card" onClick={() => store.select(task.id)} title={task.title}>
+                  <span style={styles.humanRef}>{taskRef(task.id)}</span>
+                  <span style={styles.humanItemTitle}>{task.title}</span>
+                </button>
+                <span style={styles.humanMeta}>
+                  {L('等 {who} · 已等 {age}', 'waiting on {who} · {age}', {
+                    who: waiting.who ?? L('人类', 'human'),
+                    age: ageLabel(issue.ageMs),
+                  })}
+                </span>
+                {overdue && (
+                  <span style={styles.humanOverdue} title={L('等待已超过升级阈值', 'the wait passed its escalation threshold')}>
+                    {L('已超时', 'overdue')}
+                  </span>
+                )}
+                <button type="button" className="tb-btn" onClick={() => setExpandedId(open ? null : task.id)}>
+                  {open ? L('收起', 'Hide') : L('回复', 'Reply')}
+                </button>
+              </div>
+              <div style={styles.humanQuestion} className="tb-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(waiting.question) }} />
+              {open && (
+                <div style={styles.humanComposer}>
+                  <textarea
+                    className="tb-textarea"
+                    rows={2}
+                    value={draft}
+                    placeholder={L('写下你的决定或答复（会作为评论留在这张卡上）…', 'Write your decision or answer (it lands on this card as a comment)…')}
+                    onChange={(event) => setDrafts((prev) => ({ ...prev, [task.id]: event.target.value }))}
+                  />
+                  <div style={styles.humanComposerFoot}>
+                    <button
+                      type="button"
+                      className="tb-btn tb-btn-primary"
+                      disabled={busy || !draft.trim()}
+                      onClick={() => void answer(task.id)}
+                    >
+                      {busy ? L('提交中…', 'Sending…') : L('回复并解除等待', 'Reply & release')}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </section>
+  )
+}
+
 /** One swim lane: header (name + count + quick-add) above its sorted cards.
  *  The lane is also the drop target: dragOver highlights it (class-based,
  *  token colors), drop compiles into a planDrop sequence by the panel.
@@ -529,7 +696,7 @@ function ColumnView({
           <div style={styles.columnEmpty}>{L('（空）', '(empty)')}</div>
         ) : (
           tasks.map((task) => (
-            <TaskCard key={task.id} task={task} selected={task.id === state.selectedId} onOpen={() => store.select(task.id)} dnd={dnd} />
+            <TaskCard key={task.id} task={task} board={state.board} selected={task.id === state.selectedId} onOpen={() => store.select(task.id)} dnd={dnd} />
           ))
         )}
       </div>
@@ -572,9 +739,20 @@ function ClosedStrip({ count, dnd, onExpand }: { count: number; dnd: LaneDnd; on
 /** One task card: a compact meta row (priority dot · value badge · #N ref at
  *  the right end), then the full-width title row, then assignee badge, age,
  *  tags. Cards are the drag source: the task id rides dataTransfer, and the
- *  card turns translucent while it is being dragged. */
-function TaskCard({ task, selected, onOpen, dnd }: { task: Task; selected: boolean; onOpen(): void; dnd: LaneDnd }): JSX.Element {
+ *  card turns translucent while it is being dragged.
+ *
+ *  Collaboration marks ride the card quietly (v0.5.4): the age badge counts
+ *  time in the CURRENT column (creation time says nothing about the review
+ *  lane), a faint dot appears once that age passes the column's SLA, and
+ *  reviewer / waiting-on get their own badges — a card parked on a person must
+ *  never look like a card anyone can pick up. */
+function TaskCard({ task, board, selected, onOpen, dnd }: { task: Task; board: Board | null; selected: boolean; onOpen(): void; dnd: LaneDnd }): JSX.Element {
   const dragging = dnd.dragId === task.id
+  const now = Date.now()
+  const staleness = stalenessOf(task, now)
+  const waiting = task.waiting_on
+  const reviewer = task.status === 'review' ? task.reviewer : null
+  const reviewerQuiet = reviewer ? isQuietActor(board, reviewer, now) : false
   return (
     <button
       type="button"
@@ -615,8 +793,39 @@ function TaskCard({ task, selected, onOpen, dnd }: { task: Task; selected: boole
         ) : (
           <span className="tb-badge-outline">{L('待认领', 'unclaimed')}</span>
         )}
-        <span style={styles.cardAge} title={task.created_at}>{ageText(task.created_at)}</span>
+        <span
+          style={styles.cardAge}
+          title={L('在当前列 {age} · 创建于 {created}', '{age} in this column · created {created}', { age: ageLabel(staleness.ageMs), created: task.created_at })}
+        >
+          {ageLabel(staleness.ageMs)}
+        </span>
+        {staleness.stale && (
+          <span
+            className="tb-stale"
+            title={L('在这一列待了 {age}，已超过该列 {sla} 的阈值', '{age} in this column — past its {sla} threshold', { age: ageLabel(staleness.ageMs), sla: ageLabel(staleness.slaMs ?? 0) })}
+          />
+        )}
       </div>
+      {(waiting || reviewer) && (
+        <div style={styles.cardMarks}>
+          {waiting && (
+            <span className="tb-badge-wait" title={waiting.question}>
+              {waitLabel(waiting)} · {ageLabel(Math.max(0, now - (Date.parse(waiting.since) || now)))}
+            </span>
+          )}
+          {reviewer && (
+            <span
+              className="tb-badge-outline"
+              style={reviewerQuiet ? { ...styles.reviewerBadge, color: WARN } : styles.reviewerBadge}
+              title={reviewerQuiet
+                ? L('{who} 欠这次审核，但花名册里它已久未活动', '{who} owes this review but has been quiet per the roster', { who: reviewer })
+                : L('审核人：{who}', 'reviewer: {who}', { who: reviewer })}
+            >
+              {reviewerQuiet ? L('审核 {who}（久未活动）', 'review {who} (inactive)', { who: reviewer }) : L('审核 {who}', 'review {who}', { who: reviewer })}
+            </span>
+          )}
+        </div>
+      )}
       {task.tags.length > 0 && (
         <div style={styles.cardTags}>
           {task.tags.slice(0, 3).map((tag) => (
@@ -641,8 +850,8 @@ function TaskCard({ task, selected, onOpen, dnd }: { task: Task; selected: boole
  * drawer with a `style` override (its default positioning is the board
  * panel's right edge).
  */
-export function DetailDrawer({ task, state, store, actors, onClose, style }: { task: Task; state: TaskboardState; store: TaskboardStore; actors: string[]; onClose(): void; style?: CSSProperties }): JSX.Element {
-  const [tab, setTab] = useState<'detail' | 'comments' | 'activity'>('detail')
+export function DetailDrawer({ task, state, store, actors, onClose, style, initialTab }: { task: Task; state: TaskboardState; store: TaskboardStore; actors: string[]; onClose(): void; style?: CSSProperties; initialTab?: 'detail' | 'comments' | 'activity' }): JSX.Element {
+  const [tab, setTab] = useState<'detail' | 'comments' | 'activity'>(initialTab ?? 'detail')
   const [editing, setEditing] = useState(false)
   const [titleDraft, setTitleDraft] = useState(task.title)
   const [detailDraft, setDetailDraft] = useState(task.detail)
@@ -653,6 +862,9 @@ export function DetailDrawer({ task, state, store, actors, onClose, style }: { t
   const [commentDraft, setCommentDraft] = useState('')
   const busy = state.busy
   const column = columnOf(task)
+  const staleness = stalenessOf(task)
+  const waiting = task.waiting_on
+  const reviewerQuiet = task.reviewer ? isQuietActor(state.board, task.reviewer) : false
   const log = useMemo(() => [...task.log].sort((a, b) => a.at.localeCompare(b.at)), [task.log])
 
   const update = (patch: Parameters<TaskboardStore['update']>[0]): void => {
@@ -754,6 +966,37 @@ export function DetailDrawer({ task, state, store, actors, onClose, style }: { t
             <span>{L('由 {by} 创建', 'created by {by}', { by: task.created_by })}</span>
             <span>{relTime(task.created_at)}</span>
           </div>
+
+          {/* Collaboration facts (v0.5.4): how long this card has sat where it
+              is, who owes the verdict, and who it is parked on. */}
+          <div style={styles.drawerMeta}>
+            <span
+              title={L('在当前列 {age} · 创建于 {created}', '{age} in this column · created {created}', { age: ageLabel(staleness.ageMs), created: task.created_at })}
+            >
+              {L('在当前列 {age}', '{age} in this column', { age: ageLabel(staleness.ageMs) })}
+              {staleness.stale ? L(' · 已超时', ' · overdue') : ''}
+            </span>
+            {column === 'review' && (
+              <span style={reviewerQuiet ? { color: WARN } : undefined}>
+                {task.reviewer
+                  ? (reviewerQuiet
+                    ? L('审核人 {who}（久未活动）', 'reviewer {who} (inactive)', { who: task.reviewer })
+                    : L('审核人 {who}', 'reviewer {who}', { who: task.reviewer }))
+                  : L('审核人未指定——没人欠这次审核', 'no reviewer set — nobody owes this verdict')}
+              </span>
+            )}
+          </div>
+          {waiting && (
+            <div style={styles.waitBox}>
+              <div style={styles.humanItemHead}>
+                <span className="tb-badge-wait" title={waiting.question}>
+                  {waitLabel(waiting)} · {ageLabel(Math.max(0, Date.now() - (Date.parse(waiting.since) || Date.now())))}
+                </span>
+                {staleness.waitOverdue && <span style={styles.humanOverdue}>{L('已超时', 'overdue')}</span>}
+              </div>
+              <div style={styles.humanQuestion} className="tb-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(waiting.question) }} />
+            </div>
+          )}
 
           <div style={styles.drawerActions}>
             {column === 'pool' && (
@@ -1444,6 +1687,49 @@ const styles: Record<string, CSSProperties> = {
   cardRef: { flexShrink: 0, marginLeft: 'auto', fontSize: 10.5, color: FAINT, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
   cardMeta: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 },
   cardAge: { marginLeft: 'auto', color: FAINT, fontSize: 10, flexShrink: 0 },
+  // Collaboration marks under the meta row: waiting-on and reviewer badges.
+  // They wrap rather than truncate — "who owes this" must stay readable.
+  cardMarks: { display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 },
+  reviewerBadge: { maxWidth: '100%' },
+  // The human strip: the only warn-tinted surface on the board (amber, never
+  // alarm-red — the shell has no warn-bg token, so the raised surface plus a
+  // warn left rule carries the emphasis).
+  humanStrip: {
+    flexShrink: 0,
+    margin: '8px 12px 0',
+    padding: '8px 12px 10px',
+    borderRadius: 8,
+    border: `1px solid ${BORDER_STRONG}`,
+    borderLeft: `3px solid ${WARN}`,
+    background: BG_RAISED,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+  },
+  humanHead: { display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' },
+  humanTitle: { fontSize: 12.5, fontWeight: 600, color: WARN },
+  humanHint: { fontSize: 10.5, color: DIM },
+  humanList: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 },
+  humanItem: { display: 'flex', flexDirection: 'column', gap: 4, borderTop: `1px solid ${BORDER}`, paddingTop: 7 },
+  humanItemHead: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  humanRef: { flexShrink: 0, fontSize: 10.5, color: FAINT, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+  humanItemTitle: { fontSize: 12.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 },
+  humanMeta: { fontSize: 10.5, color: DIM, flexShrink: 0 },
+  humanOverdue: { fontSize: 10, color: WARN, border: `1px solid ${WARN}`, borderRadius: 999, padding: '0 7px', flexShrink: 0 },
+  humanQuestion: { fontSize: 12, lineHeight: 1.6, color: FG, maxWidth: '70ch' },
+  humanComposer: { display: 'flex', flexDirection: 'column', gap: 5, marginTop: 2 },
+  humanComposerFoot: { display: 'flex', gap: 6 },
+  // The drawer's parked-on box (same warn edge as the strip, sunk surface).
+  waitBox: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    border: `1px solid ${BORDER}`,
+    borderLeft: `3px solid ${WARN}`,
+    borderRadius: 8,
+    padding: '7px 10px',
+    background: BG_SUNK,
+  },
   cardTags: { display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 },
   center: {
     margin: 'auto',

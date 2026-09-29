@@ -19,7 +19,7 @@
  * @module dsh-taskboard-kit/shared/bridge
  */
 
-import type { Board, Task, TaskPriority, TaskValue } from './types.ts'
+import type { ActorKind, Board, Task, TaskPriority, TaskValue } from './types.ts'
 
 export const BRIDGE_PREFIX = '/dsh-taskboard'
 
@@ -49,14 +49,27 @@ export interface ClaimRequest {
  * submit(in_progress→review) · approve(review→done) · reject(review→in_progress) ·
  * done(open|in_progress|review→done) · close(非终态→closed) · reopen(done|closed→open)。
  * 旧名 `cancel` 作为 `close` 的别名继续接受。
+ *
+ * v0.5.4 加了两个**不动状态机**的动作：block / unblock —— 它们只写
+ * `task.waiting_on`（这张卡在等谁），所以"在等人类"不会被误当成"待认领"。
  */
-export type UpdateAction = 'start' | 'stop' | 'submit' | 'approve' | 'reject' | 'done' | 'close' | 'reopen' | 'cancel'
+export type UpdateAction =
+  | 'start' | 'stop' | 'submit' | 'approve' | 'reject' | 'done' | 'close' | 'reopen' | 'cancel'
+  | 'block' | 'unblock'
 
 export interface UpdateRequest {
   cwd: string
   id: string
   action?: UpdateAction
   assignee?: string | null
+  /** 交接审核：submit 时指定审核人；approve/reject 时校验是不是他。 */
+  reviewer?: string | null
+  /** block 参数：在等谁（human / agent / external）。 */
+  wait_kind?: ActorKind | 'external'
+  /** block 参数：等谁（人类名 / Agent 名）。 */
+  wait_who?: string | null
+  /** block 参数：要对方回答什么（会原样进给人类的消息）。 */
+  wait_question?: string
   title?: string
   detail?: string
   priority?: TaskPriority

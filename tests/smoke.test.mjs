@@ -135,13 +135,15 @@ await check('plugin identity: name + inject declare the cordis contract', () => 
   assert.deepEqual([...inject], ['tools', 'sessions'])
 })
 
-await check('registers the six taskboard model tools', () => {
+await check('registers the eight taskboard model tools', () => {
   assert.deepEqual(tools.map((entry) => entry.name).sort(), [
     'taskboard_claim',
     'taskboard_comment',
     'taskboard_create',
     'taskboard_get',
+    'taskboard_inbox',
     'taskboard_list',
+    'taskboard_roster',
     'taskboard_update',
   ])
 })
@@ -154,12 +156,19 @@ await check('mounts the /dsh-taskboard browser bridge on the web server', () => 
   assert.equal(typeof webRoutes[0].handler, 'function')
 })
 
-await check('adds the board rules to the system prompt', () => {
+await check('adds the collaboration protocol to the system prompt', () => {
   assert.equal(promptSections.length, 1)
   assert.equal(promptSections[0].name, 'taskboard:rules')
   assert.equal(promptSections[0].order, 5000)
-  assert.match(promptSections[0].text, /taskboard_list/)
-  assert.match(promptSections[0].text, /taskboard_claim/)
+  const text = promptSections[0].text
+  // The protocol must teach the whole loop, not just the tool names.
+  assert.match(text, /taskboard_inbox/)
+  assert.match(text, /taskboard_claim/)
+  assert.match(text, /action=submit, reviewer=/)
+  assert.match(text, /action=block/)
+  assert.match(text, /unblock/)
+  assert.match(text, /cannot review your own work/)
+  assert.match(text, /never edit the JSON by hand/i)
 })
 
 await check('listens for agent/session-start', () => {
@@ -443,9 +452,11 @@ await check('session start injects a context-only board notice (work is waiting)
   assert.equal(notice.source.form, 'notice')
   // T-2 sits in the pool; T-3 is in_progress (claimed by human above).
   const text = notice.content[0].text
-  assert.ok(text.includes('1 claimable'), text)
-  assert.ok(text.includes('1 in-progress'), text)
-  assert.ok(text.includes('taskboard_list'), text)
+  // The notice is the agent's own actionable slice, not a bare board count.
+  assert.match(text, /taskboard_inbox/, text)
+  assert.match(text, /item\(s\) on you/, text)
+  assert.match(text, /T-\d+/, text)
+  assert.ok(!text.includes('claimable'), `the old bare-count wording is gone: ${text}`)
 })
 
 await rm(ws, { recursive: true, force: true })

@@ -318,6 +318,10 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
       return runDomain(res, async () => (await deps.updateTask(cwd, request.id, {
         ...(request.action !== undefined ? { action: request.action } : {}),
         ...(request.assignee !== undefined ? { assignee: request.assignee } : {}),
+        ...(request.reviewer !== undefined ? { reviewer: request.reviewer } : {}),
+        ...(request.wait_kind !== undefined ? { wait_kind: request.wait_kind } : {}),
+        ...(request.wait_who !== undefined ? { wait_who: request.wait_who } : {}),
+        ...(request.wait_question !== undefined ? { wait_question: request.wait_question } : {}),
         ...(request.title !== undefined ? { title: request.title } : {}),
         ...(request.detail !== undefined ? { detail: request.detail } : {}),
         ...(request.priority !== undefined ? { priority: request.priority } : {}),

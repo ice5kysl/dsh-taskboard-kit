@@ -28,6 +28,23 @@ v0.5.1 已移出此清单：**markdown 渲染**——`src/client/markdown.ts` �
 
 仍未做（写卡给下一轮）：图片（`![alt](url)` 现在会退化成 `!` + 链接）、嵌套列表（缩进被抹平）、任务清单复选框（`- [ ]` 保持字面量）。
 
+v0.5.4 已移出此清单：**多 Agent 协作协议**——规范文本见 `docs/COLLABORATION.md`，精简版进系统提示词
+（`src/host/index.ts` 的 `protocolText()`），CLI `--help` 与面板「? 指南」片段同源。落地的东西：
+
+- `Task.reviewer`（谁欠审核；approve/reject 只归 reviewer / 卡主 / 人类，自审被拒）与 `Task.waiting_on`
+  （在等谁，**与状态正交**：一张卡同时「进行中」和「等人类」是常态，塞进状态机只会逼人撒谎）；
+  `block`/`unblock` 因此是**不动状态机**的动作。
+- 板级 `actors` 名册（`last_seen_at` 是活性唯一证据，别名 `dsh ≡ dsh-agent`）+ `TASKBOARD_ACTOR_ALIASES`
+  / `TASKBOARD_HUMANS` / `TASKBOARD_SIBLING_NAMES`（同实例多会话：算我的，但动作会通知我）。
+- `src/shared/board.ts`：host 与 client 共用的派生层——列龄（取最后一次**改变列**的事件，留言不算，
+  否则「留言刷活」会掩盖停滞）、每列 SLA、`boardHealth`（交接断了 / 审核没人认领 / 在等人类 / 列陈旧，
+  **只让事实可见，绝不自动裁决**）、`inboxFor`（按急迫度排序的行动清单）。
+- 看板从「等你来查」变成「主动推给你」：会话开始注入**自己那一份** inbox；watcher 增加**时钟自检**
+  （文件 watcher 看不到「三天没人碰这张卡」这个最主要的失效模式）；等人类超 SLA 触发升级与
+  `TASKBOARD_NOTIFY_CMD` 外发通知（看板不依赖 msg9，接什么由使用者决定）。
+
+**明确不做**（协作面）：不自动 approve / reject / close / 改派；不做跨 workspace 看板；不做服务端。
+
 ## bridge 错误分层
 
 领域错误（conflict / not-found / invalid-input / invalid-transition）→ HTTP 200 + `{ ok:false, code }` 信封；传输层问题（不可信调用方、缺 mutate 头、坏 JSON、超限、未知路由）→ 真实 HTTP 状态码 + 同款信封。

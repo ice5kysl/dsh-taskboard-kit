@@ -71,6 +71,15 @@ export interface TaskboardStore {
   update(input: UpdateInput): Promise<boolean>
   /** Add an information comment (state untouched); resolves true on success. */
   comment(input: CommentInput): Promise<boolean>
+  /**
+   * Answer a card parked on a person: post the answer as a comment, then
+   * release the wait (`comment` → `unblock`, in THAT order; v0.5.4). The
+   * comment is the durable record, the release takes the card off the human's
+   * "等你决定" list. Stops at the first failed write, so a failed release can
+   * never swallow the answer. Resolves false with `error` set on failure and
+   * for empty text (nothing to answer with).
+   */
+  answerWaiting(id: string, text: string): Promise<boolean>
 }
 
 export interface StoreOptions {
@@ -149,6 +158,14 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
     }
   }
 
+  /** comment → unblock, in that order: the human strip's answer action. */
+  async function answerWaiting(id: string, text: string): Promise<boolean> {
+    const body = text.trim()
+    if (!body) return false
+    if (!(await mutate((cwd) => bridge.comment({ cwd, id, text: body })))) return false
+    return mutate((cwd) => bridge.update({ cwd, id, action: 'unblock' }))
+  }
+
   return {
     getState: get,
     subscribe(listener) {
@@ -216,6 +233,7 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
     comment(input) {
       return mutate((cwd) => bridge.comment({ ...input, cwd }))
     },
+    answerWaiting,
   }
 }
 
