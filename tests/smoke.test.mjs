@@ -436,8 +436,10 @@ await check('session start injects a context-only board notice (work is waiting)
   assert.equal(injected.length, 1, 'expected one injected notice')
   const notice = injected[0]
   assert.equal(notice.role, 'user')
-  assert.equal(notice.source.kind, 'plugin')
-  assert.equal(notice.source.plugin, 'taskboard-kit')
+  // v4 producer-owned source kind — matches dsh's v3→v4 migrator output for
+  // the retired { kind: 'plugin', plugin: 'taskboard-kit' } wrapper.
+  assert.equal(notice.source.kind, 'plugin:taskboard-kit')
+  assert.equal('plugin' in notice.source, false)
   assert.equal(notice.source.form, 'notice')
   // T-2 sits in the pool; T-3 is in_progress (claimed by human above).
   const text = notice.content[0].text

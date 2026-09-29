@@ -6,6 +6,10 @@ One local task board per dsh workspace. Agents create, claim and progress tasks 
 
 [中文文档](./README.zh-CN.md)
 
+## Compatibility
+
+- **dsh ≥ 0.1.7** — fully supported since **v0.5.3**: the session cwd rides the `sessionId` slot prop (0.1.7 removed `current` from the session list state), the composer entry rides the rebuilt compact dock layout, and injected board notices use the v4 producer-owned source kind (`plugin:taskboard-kit`) that 0.1.7's persistence requires. Older dsh versions keep working through legacy fallbacks.
+
 ## What you get
 
 - **Six model tools** the agent can call in any session of the workspace:

@@ -6,6 +6,10 @@
 
 [English README](./README.md)
 
+## 兼容性
+
+- **dsh ≥ 0.1.7** — 自 **v0.5.3** 起完整支持：会话 cwd 改吃 `sessionId` 插槽 prop（0.1.7 从会话列表 state 里移除了 `current`）；看板入口适配 0.1.7 的紧凑居中 dock 布局；注入的看板通知改用 0.1.7 持久化层要求的 v4 生产者 source kind（`plugin:taskboard-kit`）。旧版 dsh 通过兜底逻辑继续可用。
+
 ## 包含什么
 
 - **6 个 model tools**，Agent 在该 workspace 的任何会话里都能调用：

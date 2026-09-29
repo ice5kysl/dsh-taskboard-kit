@@ -68,7 +68,10 @@ interface PluginNotice {
   role: 'user'
   id: string
   content: { type: 'text'; text: string }[]
-  source: { kind: 'plugin'; plugin: string; form: 'notice'; summary: string }
+  /** v4 producer-owned source kind — dsh 0.1.7's persistence refuses the
+   *  retired `kind: 'plugin'` wrapper; `plugin:<name>` is exactly what its
+   *  v3→v4 migrator generates for this source. */
+  source: { kind: 'plugin:taskboard-kit'; form: 'notice'; summary: string }
 }
 
 /** The live-agent slice the session-start hook delivers to. */
@@ -93,7 +96,7 @@ function pluginNotice(uuid: string, text: string, summary: string): PluginNotice
     role: 'user',
     id: uuid,
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: 'taskboard-kit', form: 'notice', summary: summary.slice(0, 120) },
+    source: { kind: 'plugin:taskboard-kit', form: 'notice', summary: summary.slice(0, 120) },
   }
 }
 
