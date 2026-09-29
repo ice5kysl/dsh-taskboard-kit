@@ -61,8 +61,22 @@ export function planDrop(task: Pick<Task, 'status' | 'assignee'>, target: BoardC
       if (task.status === 'in_progress') return []
       if (task.status === 'open' && !task.assignee) return [{ kind: 'claim' }]
       if (task.status === 'open') return [{ kind: 'update', patch: { action: 'start' } }]
-      if (task.status === 'review') return [{ kind: 'update', patch: { action: 'reject' } }]
-      return viaReopen({ action: 'start' })
+      if (task.status === 'review') {
+        // `reject` keeps the assignee — an unowned review card would land in
+        // 进行中 with nobody holding it, where `claim` refuses it forever
+        // (claim needs `open`). Send it back to the pool and claim it instead.
+        return task.assignee
+          ? [{ kind: 'update', patch: { action: 'reject' } }]
+          : [
+              { kind: 'update', patch: { action: 'reject' } },
+              { kind: 'update', patch: { action: 'stop' } },
+              { kind: 'claim' },
+            ]
+      }
+      // done|closed: reopen keeps the assignee, so an unowned card must be
+      // CLAIMED after the reopen — `reopen` + `start` would leave 进行中 with
+      // no owner (the same dead end as above).
+      return task.assignee ? viaReopen({ action: 'start' }) : [...viaReopen({}), { kind: 'claim' }]
     case 'review':
       if (task.status === 'review' || FINISHED.has(task.status)) return []
       if (task.status === 'in_progress') return [{ kind: 'update', patch: { action: 'submit' } }]

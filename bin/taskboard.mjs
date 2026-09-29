@@ -72,25 +72,65 @@ function parseValueFlag(raw) {
   return TASK_VALUES.includes(num) ? num : undefined
 }
 
+/** Flags that take a value; a bare `--flag` for one of these is a usage error. */
+const VALUE_FLAGS = new Set([
+  'action', 'assignee', 'by', 'cwd', 'days', 'detail', 'limit', 'note', 'on', 'pool', 'priority', 'question',
+  'reviewer', 'status', 'tags', 'text', 'title', 'value', 'waiting', 'who',
+])
+/** Switches; every other `--name` must be given a value. */
+const BOOLEAN_FLAGS = new Set(['json'])
+
 function parseArgs(argv) {
   const flags = {}
   const positional = []
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
-    if (arg.startsWith('--')) {
-      const key = arg.slice(2)
-      const next = argv[i + 1]
-      if (next === undefined || next.startsWith('--')) {
-        flags[key] = true
-      } else {
-        flags[key] = next
-        i += 1
-      }
-    } else {
+    if (!arg.startsWith('--')) {
       positional.push(arg)
+      continue
     }
+    // `--key=value` is the unambiguous form — and the only one that can carry
+    // a value starting with `--` (e.g. `--detail="--- 待办 ---"`). A bare
+    // `--json` is a switch; any other bare `--key` takes the next token as its
+    // value, whatever it looks like.
+    const eq = arg.indexOf('=')
+    if (eq > 2) {
+      flags[arg.slice(2, eq)] = arg.slice(eq + 1)
+      continue
+    }
+    const key = arg.slice(2)
+    if (BOOLEAN_FLAGS.has(key)) {
+      flags[key] = true
+      continue
+    }
+    const next = argv[i + 1]
+    if (next === undefined) {
+      flags[key] = true // missing value: reported by checkFlags below
+      continue
+    }
+    flags[key] = next
+    i += 1
   }
   return { positional, flags }
+}
+
+/**
+ * Reject the two silent-data-loss shapes: a value flag with no value
+ * (`--note`), and a flag nobody implements (`--priorty high` used to be
+ * ignored, so `create` quietly produced a medium-priority task).
+ */
+function checkFlags(flags) {
+  for (const [key, value] of Object.entries(flags)) {
+    if (!VALUE_FLAGS.has(key) && !BOOLEAN_FLAGS.has(key)) {
+      console.error(`taskboard: unknown flag "--${key}"`)
+      return false
+    }
+    if (value === true && VALUE_FLAGS.has(key)) {
+      console.error(`taskboard: --${key} requires a value`)
+      return false
+    }
+  }
+  return true
 }
 
 function line(task) {
@@ -135,8 +175,11 @@ async function main() {
   const { positional, flags } = parseArgs(process.argv.slice(2))
   const [command, ...rest] = positional
   const cwd = typeof flags.cwd === 'string' ? flags.cwd : process.cwd()
-  const by = typeof flags.by === 'string' ? flags.by : (process.env.TASKBOARD_ACTOR ?? 'cli-agent')
+  // An empty actor must never claim/attribute anything: `--by ""` (or an empty
+  // TASKBOARD_ACTOR) used to produce an in_progress task owned by nobody.
+  const by = (typeof flags.by === 'string' ? flags.by : process.env.TASKBOARD_ACTOR ?? 'cli-agent').trim() || 'cli-agent'
   const asJson = flags.json === true
+  if (command !== undefined && !checkFlags(flags)) return EXIT.invalid
 
   switch (command) {
     case 'path':

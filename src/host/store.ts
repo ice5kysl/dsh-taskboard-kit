@@ -19,6 +19,7 @@
  * @module dsh-taskboard-kit/store
  */
 
+import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import type { ErrorCode, UpdateAction } from '../shared/bridge.ts'
@@ -84,32 +85,52 @@ export async function loadBoard(cwd: string): Promise<Board> {
   let parsed: Board
   try {
     parsed = JSON.parse(raw) as Board
-  } catch (error) {
-    // Never silently empty a corrupt board: keep a copy for manual recovery.
-    const backup = `${file}.corrupt-${Date.now()}`
-    await writeFile(backup, raw, { mode: 0o600 }).catch(() => {})
+  } catch {
+    // Never silently empty a corrupt board: keep ONE copy for manual recovery.
+    // Exactly one, and only if none exists yet: the backup lands in the same
+    // `.dsh/` directory the board watcher listens to, so a fresh copy per
+    // failed parse (every poll, every retry) re-triggered the watcher, which
+    // read the board again — an unbounded write loop. `wx` makes the second
+    // and later attempts a no-op, so the loop cannot start.
+    await writeFile(`${file}.corrupt`, raw, { mode: 0o600, flag: 'wx' }).catch(() => {})
     throw new StoreError(
       'internal',
-      `taskboard file is not valid JSON (a copy was kept at ${backup}): ${(error as Error).message}`,
+      'taskboard file is not valid JSON (the raw bytes were kept beside it as taskboard.json.corrupt); fix or remove it',
     )
   }
   if (!parsed || parsed.version !== 1) {
-    throw new StoreError('internal', `unsupported taskboard version in ${file} (expected 1)`)
+    throw new StoreError('internal', 'unsupported taskboard version (expected 1)')
+  }
+  // A structurally broken board must be an explicit error, not a raw TypeError
+  // somewhere down the call chain (and never a silent overwrite).
+  if (!parsed.tasks || typeof parsed.tasks !== 'object' || Array.isArray(parsed.tasks)) {
+    throw new StoreError('internal', 'taskboard file has no "tasks" object; refusing to treat it as an empty board')
   }
   // Schema drift normalization (version stays 1 for added/renamed fields):
   //   v0.2 added comments — hydrate it in place;
   //   v0.3 renamed cancelled → closed (status AND log events) and added value;
   //   v0.5.4 added reviewer / waiting_on (per task) and actors (per board).
   parsed.actors ??= {}
-  for (const task of Object.values(parsed.tasks ?? {})) {
+  // Everything a consumer reads without a guard is hydrated here, and the
+  // record key is the task's address — a drifting `id` is healed back to it.
+  let maxSeq = 0
+  for (const [key, task] of Object.entries(parsed.tasks)) {
+    if (!task || typeof task !== 'object') {
+      throw new StoreError('internal', `taskboard entry ${key} is not an object`)
+    }
+    if (task.id !== key) task.id = key
     if (!Array.isArray(task.comments)) task.comments = []
+    if (!Array.isArray(task.log)) task.log = []
+    if (!Array.isArray(task.tags)) task.tags = []
     if (task.value === undefined) task.value = null
     if ((task.status as string) === 'cancelled') task.status = 'closed'
     if (task.reviewer === undefined) task.reviewer = null
     if (task.waiting_on === undefined) task.waiting_on = null
-    for (const entry of task.log ?? []) {
+    for (const entry of task.log) {
       if ((entry.event as string) === 'cancelled') entry.event = 'closed'
     }
+    const seq = /^T-(\d+)$/.exec(key)
+    if (seq) maxSeq = Math.max(maxSeq, Number(seq[1]))
   }
   // Roster backfill for boards written before v0.5.4 (or by a harness that
   // never touched the roster): the log and the comment thread are *evidence of
@@ -145,6 +166,12 @@ export async function loadBoard(cwd: string): Promise<Board> {
     if (entry.last_seen_at === null) entry.last_seen_at = at
   }
 
+  // `next_seq` must never point at an existing task: createTask allocates
+  // `T-<next_seq>` and `board.tasks[id] = task` would overwrite that task in
+  // place, silently (a restored backup or a hand-merged board does this).
+  const next = parsed.next_seq
+  const base = typeof next === 'number' && Number.isInteger(next) && next > 0 ? next : 1
+  parsed.next_seq = Math.max(base, maxSeq + 1)
   // Workspace moves (the directory was relocated since the board was written):
   // report the CURRENT cwd from here on. Lazy on purpose — read paths never
   // take the lock, and every mutation saves the loaded board back, so the
@@ -162,15 +189,30 @@ export async function saveBoard(cwd: string, board: Board): Promise<void> {
   await mkdir(dirname(file), { recursive: true })
   // Write-then-rename: a crash mid-write must not leave a truncated board.
   const temp = `${file}.tmp-${process.pid}-${(tempCounter += 1)}`
-  await writeFile(temp, `${JSON.stringify(board, null, 2)}\n`, { mode: 0o600 })
-  await rename(temp, file)
+  try {
+    await writeFile(temp, `${JSON.stringify(board, null, 2)}\n`, { mode: 0o600 })
+    await rename(temp, file)
+  } catch (error) {
+    // A failed write/rename must not leave `.tmp-*` litter behind: the file
+    // would sit in the watched `.dsh/` directory forever.
+    await rm(temp, { force: true }).catch(() => {})
+    throw error
+  }
 }
 
 // -------------------------------------------------------------------- lock
 // In-process queue first (the common case is one dsh process per workspace),
-// then a cross-process O_EXCL lock file. A lock whose mtime is older than
-// LOCK_STALE_MS — or whose pid is gone — is a crashed holder's residue and is
-// removed before retrying.
+// then a cross-process O_EXCL lock file.
+//
+// Staleness is judged pid-FIRST: a signallable pid means the holder is alive,
+// so its lock is never stolen (a suspended laptop, a slow disk or a debug
+// breakpoint must not hand the board to a second writer). Only an unreadable
+// pid — the writer died between creating the file and filling it in — falls
+// back to the mtime heuristic.
+//
+// The lock file also carries a random token, and release unlinks it only while
+// that token is still ours: a lock that was reclaimed meanwhile belongs to its
+// new holder and must survive us.
 
 const LOCK_STALE_MS = 10_000
 const LOCK_RETRY_MS = 100
@@ -196,29 +238,54 @@ export function withBoardLock<T>(cwd: string, task: () => Promise<T>): Promise<T
   return run
 }
 
+/** The pid recorded in a lock file, or undefined when it cannot be read. */
+async function lockHolderPid(lockPath: string): Promise<number | undefined> {
+  const raw = await readFile(lockPath, 'utf8').catch(() => '')
+  try {
+    const pid = Number(JSON.parse(raw).pid)
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined
+  } catch {
+    return undefined
+  }
+}
+
 async function acquireBoardLock(cwd: string): Promise<() => Promise<void>> {
   const lockPath = `${boardFilePath(cwd)}.lock`
   await mkdir(dirname(lockPath), { recursive: true })
   for (let attempt = 0; ; attempt += 1) {
+    const token = randomUUID()
     let handle: Awaited<ReturnType<typeof open>> | undefined
     try {
       handle = await open(lockPath, 'wx', 0o600)
-      await handle.writeFile(JSON.stringify({ pid: process.pid, at: new Date().toISOString() }))
+      await handle.writeFile(JSON.stringify({ pid: process.pid, at: new Date().toISOString(), token }))
       await handle.close()
       return async () => {
-        await rm(lockPath, { force: true })
+        // Compare-and-delete: if the lock was reclaimed while we held it, the
+        // file now belongs to someone else — removing it would let a third
+        // writer in next to them.
+        const owner = await readFile(lockPath, 'utf8')
+          .then((raw) => String(JSON.parse(raw).token ?? ''))
+          .catch(() => '')
+        if (owner === token) await rm(lockPath, { force: true })
       }
     } catch (error) {
       await handle?.close().catch(() => {})
+      // A lock file we created but could not fill in must not be left behind:
+      // it records our own live pid, so nobody (including us) would ever call
+      // it stale.
+      if (handle) await rm(lockPath, { force: true }).catch(() => {})
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
       if (await isStaleLock(lockPath)) {
         await rm(lockPath, { force: true })
         continue
       }
       if (attempt >= LOCK_MAX_ATTEMPTS) {
+        const holder = await lockHolderPid(lockPath)
         throw new StoreError(
           'internal',
-          `taskboard is locked by another process (${lockPath}); still busy after ~${(LOCK_MAX_ATTEMPTS * LOCK_RETRY_MS) / 1000}s`,
+          holder === undefined
+            ? `taskboard is locked (${lockPath}); still busy after ~${(LOCK_MAX_ATTEMPTS * LOCK_RETRY_MS) / 1000}s and the holder is unknown`
+            : `taskboard is locked by live pid ${holder} (${lockPath}); still busy after ~${(LOCK_MAX_ATTEMPTS * LOCK_RETRY_MS) / 1000}s`,
         )
       }
       await new Promise((resolveSleep) => setTimeout(resolveSleep, LOCK_RETRY_MS))
@@ -233,22 +300,24 @@ async function isStaleLock(lockPath: string): Promise<boolean> {
   } catch {
     return true // the lock vanished between our checks; the next retry takes it
   }
-  if (Date.now() - info.mtimeMs > LOCK_STALE_MS) return true
-  const raw = await readFile(lockPath, 'utf8').catch(() => '')
-  let pid = NaN
-  try {
-    pid = Number(JSON.parse(raw).pid)
-  } catch {
-    /* unreadable content: judge by mtime alone */
-  }
-  if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
+  const pid = await lockHolderPid(lockPath)
+  if (pid !== undefined) {
+    // A lock naming US can only be a leak (nothing else writes our pid) or a
+    // pid reused after a reboot — so the mtime decides: a fresh one may still
+    // be a critical section of ours, an ancient one never is. Never steal from
+    // ourselves on the strength of liveness alone, or such a lock would block
+    // this process forever.
+    if (pid === process.pid) return Date.now() - info.mtimeMs > LOCK_STALE_MS
     try {
       process.kill(pid, 0)
-    } catch {
-      return true // the holder is dead
+      return false // alive — EPERM included: unsignalable is not dead
+    } catch (error) {
+      // Only ESRCH proves the holder is gone; anything else (EPERM, EINVAL …)
+      // must count as alive, so a live holder is never preempted.
+      return (error as NodeJS.ErrnoException).code === 'ESRCH'
     }
   }
-  return false
+  return Date.now() - info.mtimeMs > LOCK_STALE_MS
 }
 
 // ------------------------------------------------------------- input parsing
@@ -261,18 +330,36 @@ const ACTIONS: readonly UpdateAction[] = [
   'start', 'stop', 'submit', 'approve', 'reject', 'done', 'close', 'reopen', 'cancel', 'block', 'unblock',
 ]
 
+// Caps that keep a board readable and every poll cheap: the file is re-read
+// whole by the panel and parsed on every mutation, and nothing else prunes it.
+const MAX_TITLE_LENGTH = 500
+const MAX_DETAIL_LENGTH = 200_000
+const MAX_TEXT_LENGTH = 50_000
+const MAX_TAG_LENGTH = 100
+const MAX_TAGS = 50
+
+/** `T-<n>` — the only shape that may ever reach a lookup. */
+const TASK_ID = /^T-\d+$/
+
 function requireId(id: unknown): string {
-  if (typeof id !== 'string' || id.trim() === '') {
-    throw new StoreError('invalid-input', 'task id is required')
+  const value = typeof id === 'string' ? id.trim() : ''
+  // Shape first: `__proto__`, `constructor` and friends resolve through the
+  // prototype chain and must never be treated as a task record.
+  if (!TASK_ID.test(value)) {
+    throw new StoreError('invalid-input', `task id must look like T-1 (got ${JSON.stringify(id)})`)
   }
-  return id.trim()
+  return value
 }
 
 function requireTitle(title: unknown): string {
   if (typeof title !== 'string' || title.trim() === '') {
     throw new StoreError('invalid-input', 'title is required and must be a non-empty string')
   }
-  return title.trim()
+  const value = title.trim()
+  if (value.length > MAX_TITLE_LENGTH) {
+    throw new StoreError('invalid-input', `title must be at most ${MAX_TITLE_LENGTH} characters`)
+  }
+  return value
 }
 
 function parsePriority(priority: unknown): TaskPriority | undefined {
@@ -288,12 +375,22 @@ function parseTags(tags: unknown): string[] | undefined {
   if (!Array.isArray(tags) || tags.some((tag) => typeof tag !== 'string')) {
     throw new StoreError('invalid-input', 'tags must be an array of strings')
   }
-  return [...new Set(tags.map((tag) => tag.trim()).filter((tag) => tag !== ''))]
+  const cleaned = [...new Set(tags.map((tag) => tag.trim()).filter((tag) => tag !== ''))]
+  if (cleaned.length > MAX_TAGS) {
+    throw new StoreError('invalid-input', `at most ${MAX_TAGS} tags are allowed`)
+  }
+  if (cleaned.some((tag) => tag.length > MAX_TAG_LENGTH)) {
+    throw new StoreError('invalid-input', `each tag must be at most ${MAX_TAG_LENGTH} characters`)
+  }
+  return cleaned
 }
 
 function parseDetail(detail: unknown): string | undefined {
   if (detail === undefined) return undefined
   if (typeof detail !== 'string') throw new StoreError('invalid-input', 'detail must be a string')
+  if (detail.length > MAX_DETAIL_LENGTH) {
+    throw new StoreError('invalid-input', `detail must be at most ${MAX_DETAIL_LENGTH} characters`)
+  }
   return detail
 }
 
@@ -327,8 +424,12 @@ function parseValue(value: unknown): TaskValue | null | undefined {
 }
 
 function mustTask(board: Board, id: string): Task {
-  const task = board.tasks[id]
-  if (!task) throw new StoreError('not-found', `no such task: ${id}`)
+  // Own properties only: `board.tasks['__proto__']` resolves through the
+  // prototype chain and would hand back Object.prototype itself — the guard
+  // `!task` passes, and the caller then writes fields onto the global
+  // prototype of this process.
+  const task = Object.hasOwn(board.tasks, id) ? board.tasks[id] : undefined
+  if (!task || typeof task !== 'object') throw new StoreError('not-found', `no such task: ${id}`)
   return task
 }
 
@@ -457,7 +558,14 @@ export async function createTask(cwd: string, input: CreateTaskInput, by: string
   return withBoardLock(cwd, async () => {
     const board = await loadBoard(cwd)
     const now = new Date().toISOString()
-    const id = `T-${board.next_seq}`
+    // Never allocate an id that already exists: `board.tasks[id] = task` would
+    // overwrite that task in place, silently. loadBoard heals next_seq, this is
+    // the belt to that pair of braces.
+    let id = `T-${board.next_seq}`
+    while (Object.hasOwn(board.tasks, id)) {
+      board.next_seq += 1
+      id = `T-${board.next_seq}`
+    }
     board.next_seq += 1
     const log: TaskLogEntry[] = [logEntry(now, by, 'created')]
     if (assignee) log.push(logEntry(now, by, 'assigned'))
@@ -628,7 +736,15 @@ export async function updateTask(
   const priority = parsePriority(patch?.priority)
   const value = parseValue(patch?.value)
   const tags = parseTags(patch?.tags)
-  const note = typeof patch?.note === 'string' && patch.note.trim() !== '' ? patch.note.trim() : undefined
+  let note: string | undefined
+  if (patch?.note !== undefined) {
+    if (typeof patch.note !== 'string') throw new StoreError('invalid-input', 'note must be a string')
+    const trimmed = patch.note.trim()
+    if (trimmed.length > MAX_TEXT_LENGTH) {
+      throw new StoreError('invalid-input', `note must be at most ${MAX_TEXT_LENGTH} characters`)
+    }
+    note = trimmed === '' ? undefined : trimmed
+  }
 
   return withBoardLock(cwd, async () => {
     const board = await loadBoard(cwd)
@@ -799,6 +915,9 @@ export async function addComment(cwd: string, id: string, text: string, by: stri
   const taskId = requireId(id)
   if (typeof text !== 'string' || text.trim() === '') {
     throw new StoreError('invalid-input', 'comment text is required and must be a non-empty string')
+  }
+  if (text.length > MAX_TEXT_LENGTH) {
+    throw new StoreError('invalid-input', `comment text must be at most ${MAX_TEXT_LENGTH} characters`)
   }
   const body = text.trim()
   return withBoardLock(cwd, async () => {

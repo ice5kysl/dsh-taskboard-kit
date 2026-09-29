@@ -20,7 +20,9 @@ Agent ── taskboard_* tools ─┐
 
 ## 明确不做
 
-远程服务端、msg9 依赖、watcher/推送、settings 页、slash 命令、列内拖拽排序。
+远程服务端、msg9 依赖、settings 页、slash 命令、列内拖拽排序。
+
+v0.5.0 已移出此清单：**board watcher / 主动推送**——`src/host/watch.ts` 每个 live session 的 `.dsh/` 目录一个 `fs.watch`，300ms 去抖 + 每 workspace 5s 风暴窗口合并成一条 `agent.inject` 通知（只注入上下文，不打断回合），`TASKBOARD_WATCH=0` 可整体关掉。
 
 v0.2 已移出此清单：**列间拖拽**（`src/shared/dnd.ts` 的 `planDrop` 把拖放编译成 claim/update 操作序列，含为此新增的 `stop` 流转）和**任务评论**（`Task.comments`，tool/bridge/CLI/UI 四通道，只留信息不动状态机）。
 

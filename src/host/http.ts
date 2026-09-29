@@ -26,7 +26,7 @@
 
 import { existsSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import {
@@ -75,6 +75,12 @@ export interface TaskboardBridgeDeps {
   claimTask: typeof claimTask
   updateTask: typeof updateTask
   addComment: typeof addComment
+  /**
+   * Guard for the caller-supplied `cwd`: the workspace roots this host serves.
+   * `false` rejects the request, `true` accepts it, `undefined` means "cannot
+   * tell" and leaves the decision to the structural checks in requireCwd.
+   */
+  isAllowedCwd?(cwd: string): boolean | undefined
   log(message: string): void
 }
 
@@ -90,6 +96,28 @@ export function defaultBridgeDeps(ctx: Context): TaskboardBridgeDeps {
     claimTask,
     updateTask,
     addComment,
+    // The workspace roots this host actually serves: the cwd of a live
+    // session. Read lazily and defensively — when the services are not
+    // reachable (tests, headless, a host shape we do not know) this reports
+    // "unknown" (undefined), which falls back to the shape checks in
+    // requireCwd instead of rejecting every request.
+    isAllowedCwd: (cwd) => {
+      try {
+        const agents = (ctx as unknown as { agents?: { list(): { id: string }[] } }).agents
+        const sessions = (ctx as unknown as { sessions?: { get(id: string): { header?: { cwd?: string } } | undefined } }).sessions
+        if (!agents || !sessions || typeof agents.list !== 'function') return undefined
+        const live = agents.list()
+        if (!Array.isArray(live) || live.length === 0) return undefined
+        const roots = live
+          .map((agent) => sessions.get(agent.id)?.header?.cwd)
+          .filter((root): root is string => typeof root === 'string' && root !== '')
+        if (roots.length === 0) return undefined
+        const target = resolve(cwd)
+        return roots.some((root) => resolve(root) === target)
+      } catch {
+        return undefined
+      }
+    },
     log: (message) => {
       try {
         ctx.logger('taskboard-kit:http').info(message)
@@ -112,7 +140,11 @@ class BridgeError extends Error {
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   const body = JSON.stringify(payload)
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+  })
   res.end(body)
 }
 
@@ -152,24 +184,30 @@ function isLoopbackAddress(address: string): boolean {
 /**
  * Accept a request only from the local GUI or a non-browser local client.
  *
- * A browser `Origin` is authoritative: when present it MUST be same-origin
- * with the `Host` header, so a page on another site cannot drive this bridge
- * through the user's browser (CSRF). Requests with no `Origin` at all — curl,
- * test doubles, other local tools — are accepted only when the CONNECTION
- * comes from loopback (`req.socket.remoteAddress`): the `Host` header is
- * client-supplied, so checking it alone would let any process impersonate the
- * panel. The loopback Host check stays as a secondary guard; a missing
- * remoteAddress only happens with injected test doubles, which keep the old
- * Host-only behaviour.
+ * The `Host` header must ALWAYS be a loopback literal (`localhost`, `127.x`,
+ * `[::1]`) — including when an `Origin` is present. Trusting a self-consistent
+ * `Host`+`Origin` pair is exactly what a DNS-rebinding attack produces: the
+ * attacker's page resolves its own domain to 127.0.0.1, so the browser sends
+ * `Host: evil.com:<port>` with `Origin: http://evil.com:<port>`. Post-rebind
+ * that pair is "same origin" from the browser's point of view, so no CORS
+ * preflight is involved and the custom mutate header is sent freely.
+ *
+ * On top of that:
+ *   • the CONNECTION must come from loopback when `remoteAddress` is known
+ *     (a missing one only happens with injected test doubles);
+ *   • when an `Origin` is present it must still be same-origin with `Host`,
+ *     which — because `Host` is now a loopback literal — also pins the origin
+ *     to a loopback hostname.
  */
 export function isTrustedRequest(req: IncomingMessage): boolean {
-  const host = hostnameOf(req.headers.host)
-  if (!host) return false
-  const origin = req.headers.origin
-  if (origin) return isSameOrigin(origin, req.headers.host ?? '')
+  const hostHeader = req.headers.host ?? ''
+  const host = hostnameOf(hostHeader)
+  if (!host || !isLoopbackHostname(host)) return false
   const remote = req.socket?.remoteAddress
   if (remote && !isLoopbackAddress(remote)) return false
-  return isLoopbackHostname(host)
+  const origin = req.headers.origin
+  if (origin) return isSameOrigin(origin, hostHeader)
+  return true
 }
 
 /** host[:port] / [v6][:port] → the port, or undefined when absent. */
@@ -234,10 +272,27 @@ function requireMutateHeader(req: IncomingMessage): void {
   }
 }
 
-/** The one required field of every mutation body. */
-function requireCwd(body: Record<string, unknown>): string {
-  const cwd = str(body.cwd)
-  if (!cwd) throw new BridgeError(400, 'invalid-input', 'field "cwd" is required')
+/**
+ * The one required field of every mutation body (and of the board read).
+ *
+ * `cwd` selects the board file, so it is validated before any filesystem work:
+ * an absolute path, no `..` segments, and — when the host can tell — a
+ * workspace it actually serves (`deps.isAllowedCwd`). Without the last check a
+ * caller could address any `<dir>/.dsh/taskboard.json` on the machine.
+ */
+function requireCwd(deps: TaskboardBridgeDeps, raw: unknown): string {
+  const value = str(raw)
+  if (!value) throw new BridgeError(400, 'invalid-input', 'field "cwd" is required')
+  if (!isAbsolute(value)) {
+    throw new BridgeError(400, 'invalid-input', '"cwd" must be an absolute path')
+  }
+  if (value.split(/[\\/]/).includes('..')) {
+    throw new BridgeError(400, 'invalid-input', '"cwd" must not contain ".."')
+  }
+  const cwd = resolve(value)
+  if (deps.isAllowedCwd?.(cwd) === false) {
+    throw new BridgeError(403, 'forbidden', 'cwd is not a workspace served by this dsh instance')
+  }
   return cwd
 }
 
@@ -269,8 +324,7 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
     // that never touched the board simply gets an empty one back. `cli` /
     // `board_file` tell the panel's guide where the CLI and the data live.
     if (method === 'GET' && path === `${BRIDGE_PREFIX}/board`) {
-      const cwd = str(url.searchParams.get('cwd'))
-      if (!cwd) throw new BridgeError(400, 'invalid-input', 'query parameter "cwd" is required')
+      const cwd = requireCwd(deps, url.searchParams.get('cwd'))
       try {
         const cli = cliPath()
         return sendJson(res, 200, {
@@ -290,7 +344,7 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
     if (method === 'POST' && path === `${BRIDGE_PREFIX}/create`) {
       requireMutateHeader(req)
       const body = await readJsonBody(req)
-      const cwd = requireCwd(body)
+      const cwd = requireCwd(deps, body.cwd)
       const request = body as unknown as CreateRequest
       return runDomain(res, () => deps.createTask(cwd, {
         title: request.title,
@@ -305,7 +359,7 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
     if (method === 'POST' && path === `${BRIDGE_PREFIX}/claim`) {
       requireMutateHeader(req)
       const body = await readJsonBody(req)
-      const cwd = requireCwd(body)
+      const cwd = requireCwd(deps, body.cwd)
       const request = body as unknown as ClaimRequest
       return runDomain(res, () => deps.claimTask(cwd, request.id, HUMAN_ACTOR))
     }
@@ -313,7 +367,7 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
     if (method === 'POST' && path === `${BRIDGE_PREFIX}/update`) {
       requireMutateHeader(req)
       const body = await readJsonBody(req)
-      const cwd = requireCwd(body)
+      const cwd = requireCwd(deps, body.cwd)
       const request = body as unknown as UpdateRequest
       return runDomain(res, async () => (await deps.updateTask(cwd, request.id, {
         ...(request.action !== undefined ? { action: request.action } : {}),
@@ -334,7 +388,7 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
     if (method === 'POST' && path === `${BRIDGE_PREFIX}/comment`) {
       requireMutateHeader(req)
       const body = await readJsonBody(req)
-      const cwd = requireCwd(body)
+      const cwd = requireCwd(deps, body.cwd)
       const request = body as unknown as CommentRequest
       return runDomain(res, () => deps.addComment(cwd, request.id, request.text, HUMAN_ACTOR))
     }
@@ -359,7 +413,10 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
         }
         const message = (error as Error)?.message ?? String(error)
         deps.log(`bridge error: ${message}`)
-        return fail(res, 500, 'internal', message)
+        // Never echo an unexpected failure to the caller: the message can carry
+        // absolute paths and fragments of file content, and the panel renders
+        // an `ok:false` body verbatim. The detail stays in the host log.
+        return fail(res, 500, 'internal', 'internal error')
       }
     },
   }

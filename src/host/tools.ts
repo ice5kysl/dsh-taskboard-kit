@@ -331,7 +331,7 @@ export function registerTaskboardTools(ctx: Context): void {
       'instead of leaving it looking claimable. Returns the allocated id (T-<n>).',
     parameters: {
       title: { type: 'string', required: true, description: 'One-line task title.' },
-      detail: { type: 'string', description: 'Markdown body with the full context (rendered as plain text in the panel).' },
+      detail: { type: 'string', description: 'Markdown body with the full context — the panel renders it (GFM: headings, lists, code blocks, quotes, tables, --- rules).' },
       assignee: { type: 'string', description: 'Delegate to this actor; omit for the claimable pool.' },
       priority: { type: 'string', enum: ['high', 'medium', 'low'], description: 'Default: medium.' },
       value: { type: 'number', enum: [0.5, 1, 2, 3, 5, 8], description: 'Value points — one of 0.5 1 2 3 5 8; omit if unestimated.' },
@@ -418,13 +418,15 @@ export function registerTaskboardTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'taskboard_update',
     description:
-      'Update a task you own: move it through its lifecycle ' +
+      'Update a task: move it through its lifecycle ' +
       '(action start/stop/submit/approve/reject/done/close/reopen), park it on someone with action=block / ' +
       'action=unblock, reassign it, name the reviewer with reviewer=, edit title/detail/priority/value/tags, ' +
       'and attach a note to the log entry. Report progress as you go — the human watches the same board in the ' +
       'kanban tab. Rules the board enforces: submit hands the card to a named reviewer (never yourself); ' +
       'approve/reject are reserved for that reviewer, the task\'s creator or the human; a card waiting on ' +
-      'someone cannot be claimed. To leave information without changing state, use taskboard_comment instead.',
+      'someone cannot be claimed. Everything else is advisory — \`by\` is only recorded, so the human or a lead ' +
+      'agent can always override; still, prefer acting on the task you hold. ' +
+      'To leave information without changing state, use taskboard_comment instead.',
     parameters: {
       id: { type: 'string', required: true, description: 'Task id, e.g. T-1.' },
       action: { type: 'string', enum: ['start', 'stop', 'submit', 'approve', 'reject', 'done', 'close', 'reopen', 'cancel', 'block', 'unblock'], description: 'start: open→in_progress; stop: in_progress→open; submit: in_progress→review (names a reviewer); approve: review→done; reject: review→in_progress (say why in note); done: open|in_progress|review→done; close: open|in_progress|review|done→closed (cancel is its legacy alias); reopen: done|closed→open; block: record that the card is waiting on someone (status unchanged); unblock: the wait is over.' },
