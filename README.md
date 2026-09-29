@@ -67,6 +67,29 @@ Each workspace gets `<workspace>/.dsh/taskboard.json`:
 
 Because the file lives in the workspace, every harness and every human working in the same directory sees the same board. Commit it or gitignore it — your call. All mutations go through a lock file with stale-lock recovery and atomic tmp+rename writes, so concurrent agents (or the panel) can never tear the file. `claim` is adjudicated inside the lock: N concurrent claims → exactly one succeeds, the rest get a conflict.
 
+## Upgrading to 0.6.0 (read this if you used an older board)
+
+**`done` is no longer terminal — `closed` is.** Before 0.6.0 the flow ended at `done`
+and `closed` meant "abandoned". That made "finished but nobody closed it out" invisible:
+cards sat in `done` forever and no rule said anyone owed a step.
+
+Now `done` means *finished and approved, still owes a settle*: the card stays on the
+board and still counts as open work until someone `close`s it. Findings that follow
+from that change:
+
+- a「待收口」strip lists done-but-unsettled cards with a one-click settle;
+- a done card past 72h is reported as stale (it used to never be);
+- `taskboard_inbox` tells an owner "your card is done but unsettled", with the command;
+- the stats view reports **median cycle** as `created → done` (the work) and
+  **settle lag** as `done → closed` (the paperwork) — two numbers, because one
+  combined number made a fast board look slow whenever closing lagged.
+
+Abandoning work is still a `close` — say why in the note; there is no separate
+"abandoned" status. Old board files load unchanged (`cancelled` → `closed`, missing
+`value` / `comments` / `actors` are hydrated on the next write). If your existing board
+has a pile of `done` cards, they now show up as work awaiting a settle — that is the
+intended reading, not a bug.
+
 ## Status model
 
 | column | rule |
