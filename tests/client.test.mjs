@@ -1018,6 +1018,31 @@ await check('panel: the「统计」view renders KPIs, charts and tables from the
   assert.ok(html.includes('>3<'), 'the open count reflects `done` counting as open')
 })
 
+await check('panel: the view switch renders as TWO groups (lanes) + (stats)', async () => {
+  const board = collabBoard([{ id: 'T-1', title: 'x', status: 'in_progress', assignee: 'kimi' }])
+  const { store } = await renderBoard(board)
+  const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+
+  // Two groups, each in its own bordered box: the lane views (which rearrange
+  // the same cards) are separated from stats (which shows numbers instead).
+  const groupCount = (html.match(/role="group"/g) ?? []).length
+  assert.equal(groupCount, 2, 'exactly two groups')
+
+  // Group 1 holds the two lane views, group 2 holds stats — order matters:
+  // the lane views stay adjacent so switching between them feels like one
+  // control, and stats sits apart as the different mode it is.
+  const first = html.indexOf('role="group"')
+  const second = html.indexOf('role="group"', first + 1)
+  const g1 = html.slice(first, second)
+  const g2 = html.slice(second)
+  assert.ok(g1.includes('By status') && g1.includes('By owner'), 'group 1 = the two lane views')
+  assert.ok(!g1.includes('Stats'), 'stats is NOT in the lane group')
+  assert.ok(g2.includes('Stats'), 'group 2 = stats')
+  assert.ok(!g2.includes('By owner'), 'the lane views are not duplicated into group 2')
+
+  // All three remain reachable as tabs.
+  assert.equal((html.match(/role="tab"/g) ?? []).length, 3, 'three tabs total')
+})
 await check('panel: an empty board keeps its 「no tasks」 state even in the stats view', async () => {
   const board = collabBoard([])
   const { store } = await renderBoard(board)

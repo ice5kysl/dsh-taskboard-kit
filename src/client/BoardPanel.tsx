@@ -605,26 +605,41 @@ function TopBar({ state, store, total, onCreate, onGuide }: { state: TaskboardSt
  * same cards — switching only re-groups, so nothing is lost or refetched.
  */
 function ViewSwitch({ mode, onSwitch }: { mode: BoardGrouping; onSwitch(mode: BoardGrouping): void }): JSX.Element {
-  const options: Array<{ value: BoardGrouping; label: string; title: string }> = [
-    { value: 'column', label: L('按进度', 'By status'), title: L('按状态分列：待认领 / 已指派 / 进行中 / 待审核 / 待收口 / 已结清', 'Lanes by status: pool / assigned / in progress / in review / to settle / settled') },
-    { value: 'owner', label: L('按负责人', 'By owner'), title: L('按负责人分列，看清每个人头上挂了哪些任务', 'Lanes by owner — what is on each person\'s plate') },
-    { value: 'stats', label: L('统计', 'Stats'), title: L('宏观统计：现状、每日流量、分布、负责人负载与周期', 'The macro read: current state, daily flow, distributions, per-owner load and cycle time') },
+  // Two groups, separated by a rule: 逐卡 (the two lane views, which render the
+  // cards) and 宏观 (stats, which renders numbers). The split is not cosmetic —
+  // you pick within a group to change how the SAME cards are arranged, and
+  // across groups to change what you are looking at entirely.
+  const groups: Array<Array<{ value: BoardGrouping; label: string; title: string }>> = [
+    [
+      { value: 'column', label: L('按进度', 'By status'), title: L('按状态分列：待认领 / 已指派 / 进行中 / 待审核 / 待收口 / 已结清', 'Lanes by status: pool / assigned / in progress / in review / to settle / settled') },
+      { value: 'owner', label: L('按负责人', 'By owner'), title: L('按负责人分列，看清每个人头上挂了哪些任务', 'Lanes by owner — what is on each person\'s plate') },
+    ],
+    [
+      { value: 'stats', label: L('统计', 'Stats'), title: L('宏观统计：现状、每日流量、分布、负责人负载与周期', 'The macro read: current state, daily flow, distributions, per-owner load and cycle time') },
+    ],
   ]
   return (
+    // Two SEPARATE boxes, not one box with a rule inside it: a rule between two
+    // segments of the same pill is indistinguishable from the segment borders,
+    // which is exactly how it read before. A real gap makes the grouping obvious.
     <div style={styles.viewSwitch} role="tablist" aria-label={L('看板视角', 'Board view')}>
-      {options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          role="tab"
-          aria-selected={mode === option.value}
-          className={mode === option.value ? 'tb-seg active' : 'tb-seg'}
-          style={mode === option.value ? { ...styles.seg, ...styles.segActive } : styles.seg}
-          title={option.title}
-          onClick={() => onSwitch(option.value)}
-        >
-          {option.label}
-        </button>
+      {groups.map((group) => (
+        <div key={group[0]!.value} style={styles.segGroup} role="group">
+          {group.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              role="tab"
+              aria-selected={mode === option.value}
+              className={mode === option.value ? 'tb-seg active' : 'tb-seg'}
+              style={mode === option.value ? { ...styles.seg, ...styles.segActive } : styles.seg}
+              title={option.title}
+              onClick={() => onSwitch(option.value)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
       ))}
     </div>
   )
@@ -1854,13 +1869,15 @@ const styles: Record<string, CSSProperties> = {
   },
   columnTitle: { fontSize: 12, fontWeight: 600 },
   // The segmented view switch in the top bar (按进度 / 按负责人).
-  viewSwitch: {
-    display: 'flex',
+  // The two groups sit side by side with a real gap; each carries its own
+  // border so "which group am I in" needs no rule to explain it.
+  viewSwitch: { display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 },
+  segGroup: {
+    display: 'inline-flex',
     alignItems: 'center',
     border: `1px solid ${BORDER}`,
     borderRadius: 7,
     overflow: 'hidden',
-    flexShrink: 0,
   },
   seg: {
     border: 'none',
@@ -1872,7 +1889,7 @@ const styles: Record<string, CSSProperties> = {
     cursor: 'pointer',
     whiteSpace: 'nowrap',
   },
-  segActive: { background: HOVER_BG, color: FG, fontWeight: 600 },
+  segActive: { background: HOVER_BG, color: FG, fontWeight: 600, boxShadow: `inset 0 0 0 1px ${BORDER}` },
   // A quiet-owner marker in an owner lane's header.
   quietDot: { width: 6, height: 6, borderRadius: 3, background: WARN, flexShrink: 0 },
   // The「含已完成」checkbox shown only in the owner view.
