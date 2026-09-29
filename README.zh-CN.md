@@ -21,7 +21,13 @@
   - `taskboard_comment` — 给任务留言（实现发现 / 交接说明 / 测试反馈），不改任务状态
   - `taskboard_get` — 任务全文 + 事件时间线 + 留言串 + 列龄 / SLA / 审核人 / 在等谁
   - `taskboard_roster` — 名册：谁真的在场（最后一次动手是什么时候、别名）
-- **「看板」会话页签**：六条泳道（待认领 · 已指派 · 进行中 · 待审核 · 已完成 · 已关闭），卡片带优先级 / 价值度 / 负责人 / **当前列停留时长** / **陈旧点** / **审核人** / **在等谁**；顶部一条 **「◷ N 张卡在等你决定」** strip（完整问题原文 + 一键「回复并解除等待」）；详情抽屉里有事件流水、留言与协作事实，一键认领 / 开始 / 提交 / 通过 / 打回 / 关闭 / 改派。
+- **「看板」会话页签**，三个可切换的视角（共享同一份数据）：
+  - **按进度**：六条泳道（待认领 · 已指派 · 进行中 · 待审核 · 待收口 · 已结清），卡片带优先级 / 价值度 / 负责人 / **当前列停留时长** / **陈旧点** / **审核人** / **在等谁**；顶部一条 **「◷ N 张卡在等你决定」** strip（完整问题原文 + 一键「回复并解除等待」）；详情抽屉里有事件流水、留言与协作事实，一键认领 / 开始 / 提交 / 通过 / 打回 / 收口 / 改派。
+  - **按负责人**：一个负责人一条泳道（别名自动归并），一眼看清每个人头上挂了什么。
+  - **统计**：宏观读数——KPI（未结清 / 待收口 / 进行中 / 卡住 / 中位周期 / 收口延迟 / 打回率）、
+    每日新建 vs 结清（叠未结清累计折线）、状态与优先级分布、各负责人负载与周期、各列停留时长。
+- **「开启看板」向导**：尚未开启看板的工作区给一键开启——建 `.dsh/taskboard.json`
+  并写入本工作区的 `.dsh/BOARD-PROTOCOL.md`（规范）。两者都已存在时都不会被覆盖。
 - **多 Agent 协作规范**：完整规范见 [`docs/COLLABORATION.md`](./docs/COLLABORATION.md)；它的精简版在会话开始写入系统提示词，CLI `--help` 与面板「? 指南」里的片段同源。
 - **会话开始感知**：Agent 收到的是**自己那一份行动清单**（不是我欠审核、谁在等我、哪张卡被打回、哪张派出去没人接），不是一句干巴巴的计数。
 - **看板变化推送**：对每个 live 会话的板文件做 fs.watch——任务被指派给你、你的任务有了审核结论、**有人把审核 hand off 给你**、**有人开始等你**、**有卡开始等人类**、你的任务有新留言时自动通知（只注入上下文，绝不唤醒）；5 秒风暴窗口内的连续变化合并成一条通知。
@@ -42,8 +48,8 @@
 | 已指派 | `open` 且有负责人——已委派、未开始 |
 | 进行中 | 已认领或已开始 |
 | 待审核 | 已提交（submit），等 **`reviewer`** 通过 / 打回 |
-| 已完成 | 审核通过（或直接 `done`） |
-| 已关闭 | 放弃的任务——`close`（面板默认折叠，toggle 可显示） |
+| 待收口 | 审核通过（或直接 `done`）——**不是终态**，还欠一次收口 |
+| 已结清 | 已收口——`close`（面板默认折叠，toggle 可显示） |
 
 两条**与状态正交**的协作轴（v0.5.4，都不新增状态）：
 
@@ -54,7 +60,12 @@
 
 板级还有 `actors` **名册**（谁出现过、最后一次动手、别名 `dsh ≡ dsh-agent`）——用来回答「这活派给一个已经不在场的 Agent 了吗」。
 
-流转图：`open → in_progress → review → done`；任何非终态可 `closed`；`done | closed → open`（reopen）。按动作说：`open → in_progress`（claim / start）、`in_progress → open`（stop）、`in_progress → review`（submit）、`review → done`（approve）、`review → in_progress`（reject）、`open|in_progress|review → done`、`open|in_progress|review|done → closed`（close，旧名 `cancel` 是它的别名）、`done|closed → open`（reopen）。状态名刻意对齐 msg9 任务模型，未来接服务端看板时语义不变。旧版本写出的板文件无感加载：`cancelled` 状态/日志事件归一为 `closed`，缺的 `value` / `comments` 字段自动补齐。
+**只有 `closed` 是终态**：`done` 的含义是「干完且审核通过、但还没结清」，卡仍留在看板上、仍算未结清，
+需要卡主 / PO / 人类收口 `close`。分两步是因为审核通过 ≠ 事情了结（可能还要部署、等上游、补文档）。
+「这事不做了」也走 `close`，但**必须在 note 里写清原因**——没有单独的 abandoned 状态，
+「做完了」与「放弃了」的差别只存在于留言里。面板顶部有「待收口」条，一键收口，防止干完了没人收口。
+
+流转图：`open → in_progress → review → done → closed`；`done | closed → open`（reopen）。按动作说：`open → in_progress`（claim / start）、`in_progress → open`（stop）、`in_progress → review`（submit）、`review → done`（approve）、`review → in_progress`（reject）、`open|in_progress|review → done`、`open|in_progress|review|done → closed`（close，旧名 `cancel` 是它的别名）、`done|closed → open`（reopen）。状态名刻意对齐 msg9 任务模型，未来接服务端看板时语义不变。旧版本写出的板文件无感加载：`cancelled` 状态/日志事件归一为 `closed`，缺的 `value` / `comments` 字段自动补齐。
 
 每个任务还有**价值度**（value points，斐波那契刻度 ½ / 1 / 2 / 3 / 5 / 8，`null` = 未评估），用来回答"这张卡值多少"——创建或更新时设置，CLI 里 `--value 1/2` 表示 ½、`--value none` 清除。
 
