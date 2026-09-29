@@ -223,6 +223,10 @@ taskboard_update <id> --action unblock
 1. **面板「等你」清单**（始终可用，零配置）：看板页顶部一条 `◷ N 张卡在等你决定`，逐卡显示
    `等谁 / 已等多久 / 超时标记 / 完整问题原文`；点开即可看详情，输入回复后按「回复并解除等待」
    （先写 comment、再 unblock，顺序有测试保证）。mini 看板上也有 `◷N` 计数。
+   ![面板「等你」清单](images/waiting-strip.png)
+   *（面板用固定夹具板渲染的示意：顶部「◷ N 张卡在等你决定」给出等谁、等了多久、是否超时与问题原文；
+   卡片上的 `等人类 iceskysl · 3d` / `等 Agent kimi · 5h` / `审核 kimi（久未活动）` 都是同一份派生数据。）*
+
 2. **外发通知 hook**：`TASKBOARD_NOTIFY_CMD` —— 卡片开始等人类、或等超 SLA 时执行。
    卡片以 JSON 从 stdin 传入，同时注入 `TASKBOARD_TASK_ID` / `TASKBOARD_QUESTION` /
    `TASKBOARD_NOTIFY_REASON`（`blocked` / `overdue`）等环境变量。
