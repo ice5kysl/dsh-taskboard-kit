@@ -63,7 +63,7 @@ import { knownActors } from './actors.ts'
 import { conventionSnippet, dispatchSnippet, guideProjectDir, hookSnippetClaude, hookSnippetKimi } from './guide.ts'
 import { L } from './locale.ts'
 import { renderMarkdown } from './markdown.ts'
-import type { TaskboardState, TaskboardStore } from './store.ts'
+import type { BoardGrouping, TaskboardState, TaskboardStore } from './store.ts'
 import {
   ACCENT,
   BG,
@@ -84,7 +84,7 @@ import {
   TERTIARY,
   WARN,
 } from './theme.ts'
-import { columnLabel, priorityLabel, runPlanOps, taskRef, useSessionCwd, valueText, type SessionListLike } from './view.ts'
+import { columnLabel, escapeTarget, groupByOwner, priorityLabel, runPlanOps, taskRef, useSessionCwd, valueText, type OwnerGroup, type SessionListLike } from './view.ts'
 
 // taskRef moved to view.ts (shared with the mini board); keep the export path.
 export { taskRef } from './view.ts'
@@ -295,17 +295,20 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
     void store.refresh()
   }, [store])
 
-  // ESC aborts a pending assignment (no request fires).
+  // ESC aborts a pending assignment (no request fires). Held back while the
+  // guide is up: that overlay owns the key first (escapeTarget's layer order).
   useEffect(() => {
     if (!assignPickerId) return
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setAssignPickerId(null)
+      if (event.key !== 'Escape') return
+      if (escapeTarget({ guide: guideOpen, picker: true, drawer: false }, event) !== 'picker') return
+      setAssignPickerId(null)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [assignPickerId])
+  }, [assignPickerId, guideOpen])
 
-  // ESC closes the guide overlay.
+  // ESC closes the guide overlay (the topmost layer).
   useEffect(() => {
     if (!guideOpen) return
     const onKey = (event: KeyboardEvent): void => {
@@ -327,6 +330,11 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
     [tasks],
   )
   const selectedId = state.selectedId
+  /** The「按负责人」lanes (only computed while that view is active). */
+  const ownerGroups = useMemo(
+    () => (state.groupBy === 'owner' && board ? groupByOwner(board, { includeDone: state.includeDone }) : []),
+    [state.groupBy, state.includeDone, board],
+  )
   const selected: Task | null = selectedId && board ? board.tasks[selectedId] ?? null : null
   const pickerTask: Task | null = assignPickerId && board ? board.tasks[assignPickerId] ?? null : null
   // The human's own list: cards parked on a PERSON. (等 Agent / 等外部 are the
@@ -337,6 +345,25 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
     setCreateOpen(false)
     store.select(null)
   }
+
+  // ESC closes the right-hand drawer (the create form and the task detail),
+  // matching the mini board's unwind: one layer at a time, innermost first.
+  // The guide can sit on top of the drawer, so it swallows the first Escape
+  // (its own effect above) while this one is held back by `guideOpen` — a
+  // single keypress must never tear down two layers at once.
+  // The drawer hosts real inputs, so the guard keeps ESC from stealing a key a
+  // focused control already handled: such a control calls preventDefault and
+  // the drawer stays put.
+  useEffect(() => {
+    if (!drawerOpen || guideOpen || assignPickerId) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      setCreateOpen(false)
+      store.select(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [drawerOpen, guideOpen, assignPickerId, store])
 
   /**
    * Execute one shared `planDrop` op sequence in order through the store
@@ -447,6 +474,14 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
             {L('+ 新建任务', '+ New task')}
           </button>
         </div>
+      ) : state.groupBy === 'owner' ? (
+        <div style={styles.lanes}>
+          <OwnerLanes
+            groups={ownerGroups}
+            state={state}
+            onOpen={(id) => store.select(id)}
+          />
+        </div>
       ) : (
         <div style={styles.lanes}>
           {columns.map(({ column, tasks: list }) =>
@@ -511,7 +546,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   )
 }
 
-/** Top bar: title, workspace, count, refresh, guide, new task. */
+/** Top bar: title, workspace, count, view switch, refresh, guide, new task. */
 function TopBar({ state, store, total, onCreate, onGuide }: { state: TaskboardState; store: TaskboardStore; total: number; onCreate(): void; onGuide(): void }): JSX.Element {
   return (
     <header style={styles.topbar}>
@@ -523,6 +558,17 @@ function TopBar({ state, store, total, onCreate, onGuide }: { state: TaskboardSt
       )}
       <span style={styles.topbarCount}>{L('{n} 个任务', '{n} tasks', { n: total })}</span>
       <span style={styles.topbarSpacer} />
+      <ViewSwitch mode={state.groupBy} onSwitch={(mode) => store.setGroupBy(mode)} />
+      {state.groupBy === 'owner' && (
+        <label style={styles.doneToggle} title={L('负责人视角默认只显示进行中的任务', 'The owner view hides finished tasks by default')}>
+          <input
+            type="checkbox"
+            checked={state.includeDone}
+            onChange={(event) => store.setIncludeDone(event.target.checked)}
+          />
+          {L('含已完成', 'Include done')}
+        </label>
+      )}
       <button type="button" className="tb-iconbtn" onClick={onGuide} title={L('使用指南', 'Guide')}>
         ?
       </button>
@@ -533,6 +579,36 @@ function TopBar({ state, store, total, onCreate, onGuide }: { state: TaskboardSt
         {L('+ 新建任务', '+ New task')}
       </button>
     </header>
+  )
+}
+
+/**
+ * The board's two groupings, as a segmented control: 按进度 (the six status
+ * lanes) and 按负责人 (one lane per owner). Both render the same data with the
+ * same cards — switching only re-groups, so nothing is lost or refetched.
+ */
+function ViewSwitch({ mode, onSwitch }: { mode: BoardGrouping; onSwitch(mode: BoardGrouping): void }): JSX.Element {
+  const options: Array<{ value: BoardGrouping; label: string; title: string }> = [
+    { value: 'column', label: L('按进度', 'By status'), title: L('按状态分列：待认领 / 已指派 / 进行中 / 待审核 / 已完成 / 已关闭', 'Lanes by status: pool / assigned / in progress / in review / done / closed') },
+    { value: 'owner', label: L('按负责人', 'By owner'), title: L('按负责人分列，看清每个人头上挂了哪些任务', 'Lanes by owner — what is on each person\'s plate') },
+  ]
+  return (
+    <div style={styles.viewSwitch} role="tablist" aria-label={L('看板视角', 'Board view')}>
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="tab"
+          aria-selected={mode === option.value}
+          className={mode === option.value ? 'tb-seg active' : 'tb-seg'}
+          style={mode === option.value ? { ...styles.seg, ...styles.segActive } : styles.seg}
+          title={option.title}
+          onClick={() => onSwitch(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
   )
 }
 
@@ -705,6 +781,83 @@ function ColumnView({
   )
 }
 
+/**
+ * The「按负责人」lanes: one column per owner, so "每个人头上挂了哪些任务" is
+ * answerable at a glance.
+ *
+ * Deliberately READ-ONLY: cards open their drawer, but the lanes are not drop
+ * targets. Dragging between status lanes means "change status" (planDrop); a
+ * drag between owner lanes would mean "reassign", a different verb with its
+ * own picker flow — shipping half of it would make the same gesture do two
+ * unrelated things depending on the view.
+ *
+ * The header carries the lane's meaning: nobody's plate (待认领), a real owner
+ * (with a quiet dot when the roster says they have gone silent), and 等人类 —
+ * the lane that answers "到底卡在谁那" when the owner is an agent waiting on you.
+ */
+function OwnerLanes({
+  groups,
+  state,
+  onOpen,
+}: {
+  groups: OwnerGroup[]
+  state: TaskboardState
+  onOpen(id: string): void
+}): JSX.Element {
+  if (groups.length === 0) {
+    return (
+      <div style={styles.center}>
+        <p style={styles.centerText}>
+          {state.includeDone
+            ? L('这个板还没有任务。', 'This board has no tasks yet.')
+            : L('没有进行中的任务。勾选「含已完成」可以看到全部。', 'No live tasks. Tick「含已完成」to include finished ones.')}
+        </p>
+      </div>
+    )
+  }
+  return (
+    <>
+      {groups.map((group) => (
+        <section key={group.key} style={styles.column} className="tb-column">
+          <div style={styles.columnHead}>
+            <span style={styles.columnTitle}>{ownerLabel(group)}</span>
+            <span style={styles.columnCount}>{group.tasks.length}</span>
+            {group.kind === 'actor' && group.quiet && (
+              <span style={styles.quietDot} title={L('这个负责人很久没动静了', 'This owner has been quiet for a while')} />
+            )}
+            <span style={styles.topbarSpacer} />
+            {group.kind === 'human' && (
+              <span style={styles.laneHint} title={L('这些卡在等你决定——在上方「等你」条里可以直接回复', 'These are waiting on YOU — answer them in the「等你」strip above')}>
+                {L('等你', 'you')}
+              </span>
+            )}
+          </div>
+          <div style={styles.columnBody}>
+            {group.tasks.map((task) => (
+              <TaskCard
+                key={task.id}
+                task={task}
+                board={state.board}
+                selected={task.id === state.selectedId}
+                onOpen={() => onOpen(task.id)}
+              />
+            ))}
+          </div>
+        </section>
+      ))}
+    </>
+  )
+}
+
+/** Lane header text for an owner group. */
+function ownerLabel(group: OwnerGroup): string {
+  switch (group.kind) {
+    case 'unassigned': return L('待认领', 'Unassigned')
+    case 'human': return L('等人类 · {name}', 'Waiting on human · {name}', { name: group.label })
+    case 'actor': return group.label
+  }
+}
+
 /** The collapsed closed column: a narrow vertical strip on the board's right
  *  edge. It stays a live drop target (a drop here = close the task); a click
  *  expands the lane. */
@@ -746,8 +899,8 @@ function ClosedStrip({ count, dnd, onExpand }: { count: number; dnd: LaneDnd; on
  *  lane), a faint dot appears once that age passes the column's SLA, and
  *  reviewer / waiting-on get their own badges — a card parked on a person must
  *  never look like a card anyone can pick up. */
-function TaskCard({ task, board, selected, onOpen, dnd }: { task: Task; board: Board | null; selected: boolean; onOpen(): void; dnd: LaneDnd }): JSX.Element {
-  const dragging = dnd.dragId === task.id
+function TaskCard({ task, board, selected, onOpen, dnd }: { task: Task; board: Board | null; selected: boolean; onOpen(): void; dnd?: LaneDnd }): JSX.Element {
+  const dragging = dnd?.dragId === task.id
   const now = Date.now()
   const staleness = stalenessOf(task, now)
   const waiting = task.waiting_on
@@ -758,13 +911,15 @@ function TaskCard({ task, board, selected, onOpen, dnd }: { task: Task; board: B
       type="button"
       className={selected ? 'tb-card active' : 'tb-card'}
       style={{ opacity: dragging ? 0.5 : 1 }}
-      draggable
-      onDragStart={(event) => {
+      // No `dnd` ⇒ the card is not a drag source. The「按负责人」view is a
+      // projection of ownership, not a status board (see OwnerLanes).
+      draggable={dnd !== undefined}
+      onDragStart={dnd === undefined ? undefined : (event) => {
         event.dataTransfer.setData('text/plain', task.id)
         event.dataTransfer.effectAllowed = 'move'
         dnd.setDragId(task.id)
       }}
-      onDragEnd={() => {
+      onDragEnd={dnd === undefined ? undefined : () => {
         dnd.setDragId(null)
         dnd.setOverColumn(null)
       }}
@@ -1627,6 +1782,47 @@ const styles: Record<string, CSSProperties> = {
     flexShrink: 0,
   },
   columnTitle: { fontSize: 12, fontWeight: 600 },
+  // The segmented view switch in the top bar (按进度 / 按负责人).
+  viewSwitch: {
+    display: 'flex',
+    alignItems: 'center',
+    border: `1px solid ${BORDER}`,
+    borderRadius: 7,
+    overflow: 'hidden',
+    flexShrink: 0,
+  },
+  seg: {
+    border: 'none',
+    background: 'transparent',
+    color: DIM,
+    fontFamily: 'inherit',
+    fontSize: 11.5,
+    padding: '3px 10px',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  segActive: { background: HOVER_BG, color: FG, fontWeight: 600 },
+  // A quiet-owner marker in an owner lane's header.
+  quietDot: { width: 6, height: 6, borderRadius: 3, background: WARN, flexShrink: 0 },
+  // The「含已完成」checkbox shown only in the owner view.
+  doneToggle: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    fontSize: 11.5,
+    color: DIM,
+    flexShrink: 0,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  laneHint: {
+    fontSize: 10,
+    color: WARN,
+    border: `1px solid ${WARN}`,
+    borderRadius: 999,
+    padding: '0 6px',
+    whiteSpace: 'nowrap',
+  },
   columnCount: {
     fontSize: 10,
     color: DIM,

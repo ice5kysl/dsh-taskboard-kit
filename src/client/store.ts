@@ -21,6 +21,9 @@ import type { Board } from '../shared/types.ts'
 import type { ClaimRequest, CommentRequest, CreateRequest, UpdateRequest } from '../shared/bridge.ts'
 import { createBridgeClient, type BridgeClient } from './api.ts'
 
+/** The board tab's two groupings: by progress column, or by owner. */
+export type BoardGrouping = 'column' | 'owner'
+
 export interface TaskboardState {
   /** 'loading' until the first refresh of the current cwd settles. */
   status: 'loading' | 'ready' | 'error'
@@ -34,6 +37,16 @@ export interface TaskboardState {
   selectedId: string | null
   /** Whether the closed column is expanded (default: a collapsed strip). */
   showClosed: boolean
+  /**
+   * How the board tab groups work: by progress (the six swim-lanes) or by
+   * owner (one lane per assignee). Purely a view choice — no data changes.
+   */
+  groupBy: BoardGrouping
+  /**
+   * Whether finished (done/closed) tasks appear in the「按负责人」view. Off by
+   * default: history would bury the live work the owner view exists to show.
+   */
+  includeDone: boolean
   /** Whether the status-bar mini board drawer is open (shared between the
    *  entry pill and the shell.overlay drawer — the two halves of one surface). */
   miniOpen: boolean
@@ -60,6 +73,10 @@ export interface TaskboardStore {
   refresh(): Promise<void>
   select(id: string | null): void
   setShowClosed(on: boolean): void
+  /** Switch the board tab between the progress lanes and the owner lanes. */
+  setGroupBy(mode: BoardGrouping): void
+  /** Show/hide finished tasks in the owner view. */
+  setIncludeDone(on: boolean): void
   /** Toggle the composer-side mini board drawer. */
   setMiniOpen(open: boolean): void
   clearError(): void
@@ -94,6 +111,8 @@ const INITIAL: TaskboardState = {
   board: null,
   selectedId: null,
   showClosed: false,
+  groupBy: 'column',
+  includeDone: false,
   miniOpen: false,
   busy: false,
   cli: null,
@@ -212,6 +231,12 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
     },
     setShowClosed(on) {
       set({ showClosed: on })
+    },
+    setGroupBy(mode) {
+      set({ groupBy: mode })
+    },
+    setIncludeDone(on) {
+      set({ includeDone: on })
     },
     setMiniOpen(open) {
       // The mini drawer's own selection is component-local and unmounts with

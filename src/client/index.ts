@@ -55,10 +55,11 @@ export type { DropOp } from '../shared/dnd.ts'
 export { knownActors } from './actors.ts'
 export { conventionSnippet, dispatchSnippet, guideProjectDir, hookSnippetClaude, hookSnippetKimi } from './guide.ts'
 export { renderMarkdown } from './markdown.ts'
-export { openTaskCount, runPlanOps } from './view.ts'
+export { openTaskCount, runPlanOps, groupByOwner, isFinal, escapeTarget, UNASSIGNED_KEY } from './view.ts'
+export type { BoardLayer, OwnerGroup } from './view.ts'
 export { L } from './locale.ts'
 export type { BridgeClient } from './api.ts'
-export type { TaskboardState, TaskboardStore, StoreOptions } from './store.ts'
+export type { BoardGrouping, TaskboardState, TaskboardStore, StoreOptions } from './store.ts'
 
 /** Minimal service faces this plugin consumes (typed locally at the boundary). */
 interface SlotsLike {

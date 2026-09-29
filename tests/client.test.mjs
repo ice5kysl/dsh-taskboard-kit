@@ -261,6 +261,91 @@ await check('knownActors: union of all four sources, cleaned and sorted', () => 
   assert.deepEqual(client.knownActors({ version: 1, workspace: '/work/b', next_seq: 1, tasks: {} }), [])
 })
 
+// ------------------------------------------------- 按负责人 (by-owner) view
+
+/** A task fixture with the fields the owner grouping reads. */
+const ownerTask = (over) => ({
+  id: 'T-x', title: 't', detail: '', status: 'open', priority: 'medium',
+  assignee: null, tags: [], created_by: 'human', created_at: '2026-09-20T09:00:00Z',
+  updated_at: '2026-09-20T09:00:00Z', log: [], comments: [],
+  reviewer: null, waiting_on: null, value: null, ...over,
+})
+
+await check('groupByOwner: one lane per owner, pool first and 等人类 last', () => {
+  assert.equal(typeof client.groupByOwner, 'function')
+  const board = {
+    version: 1, workspace: '/work/a', next_seq: 9,
+    actors: {
+      dsh: { kind: 'agent', aliases: ['dsh-agent', 'dsh-web'], first_seen_at: '2026-09-01T00:00:00Z', last_seen_at: new Date().toISOString() },
+      kimi: { kind: 'agent', aliases: [], first_seen_at: '2026-09-01T00:00:00Z', last_seen_at: new Date().toISOString() },
+    },
+    tasks: {
+      'T-1': ownerTask({ id: 'T-1', assignee: 'dsh' }),
+      'T-2': ownerTask({ id: 'T-2', assignee: 'dsh-agent' }),   // alias → same lane
+      'T-3': ownerTask({ id: 'T-3', assignee: 'kimi' }),
+      'T-4': ownerTask({ id: 'T-4', assignee: null }),          // the pool
+      'T-5': ownerTask({ id: 'T-5', assignee: 'kimi', waiting_on: { kind: 'human', who: 'human', question: 'q', since: '2026-09-20T09:00:00Z' } }),
+    },
+  }
+  const groups = client.groupByOwner(board)
+  // Order: 待认领 → owners (alphabetical) → 等人类.
+  assert.deepEqual(groups.map((g) => g.kind), ['unassigned', 'actor', 'actor', 'human'])
+  // `label` carries the RAW owner name; the「等人类 ·」prefix is added by the
+  // panel's ownerLabel() at render time, so the data layer stays presentation-free.
+  assert.deepEqual(groups.map((g) => g.label), ['', 'dsh', 'kimi', 'kimi'])
+  assert.equal(groups[0].key, client.UNASSIGNED_KEY)
+  // The human lane shares kimi's name but not its key — the two can coexist.
+  assert.notEqual(
+    groups.find((g) => g.kind === 'actor' && g.label === 'kimi').key,
+    groups.find((g) => g.kind === 'human').key,
+  )
+
+  const dsh = groups.find((g) => g.label === 'dsh')
+  // Aliases fold into ONE lane instead of splitting across dsh / dsh-agent.
+  assert.deepEqual(dsh.tasks.map((t) => t.id).sort(), ['T-1', 'T-2'])
+  assert.equal(groups.find((g) => g.kind === 'unassigned').tasks[0].id, 'T-4')
+  // kimi has BOTH: work it is doing (T-3) and work blocked on the human (T-5).
+  // They are different lanes — a blocked card is not part of anyone's active
+  // load, and the two must never be summed into one pile.
+  assert.deepEqual(groups.find((g) => g.kind === 'actor' && g.label === 'kimi').tasks.map((t) => t.id), ['T-3'])
+  assert.deepEqual(groups.find((g) => g.kind === 'human').tasks.map((t) => t.id), ['T-5'])
+})
+
+await check('groupByOwner: hides finished work by default, includeDone restores it', () => {
+  const board = {
+    version: 1, workspace: '/work/a', next_seq: 5, actors: {},
+    tasks: {
+      'T-1': ownerTask({ id: 'T-1', assignee: 'kimi', status: 'in_progress' }),
+      'T-2': ownerTask({ id: 'T-2', assignee: 'kimi', status: 'done' }),
+      'T-3': ownerTask({ id: 'T-3', assignee: 'kimi', status: 'closed' }),
+    },
+  }
+  const live = client.groupByOwner(board)
+  assert.deepEqual(live.flatMap((g) => g.tasks.map((t) => t.id)), ['T-1'])
+  const all = client.groupByOwner(board, { includeDone: true })
+  assert.deepEqual(all.flatMap((g) => g.tasks.map((t) => t.id)).sort(), ['T-1', 'T-2', 'T-3'])
+  // isFinal is the filter's unit and agrees with the columns.
+  assert.equal(client.isFinal(ownerTask({ status: 'done' })), true)
+  assert.equal(client.isFinal(ownerTask({ status: 'closed' })), true)
+  assert.equal(client.isFinal(ownerTask({ status: 'review' })), false)
+  // A null board and an empty board both yield no lanes (the caller shows its own empty state).
+  assert.deepEqual(client.groupByOwner(null), [])
+  assert.deepEqual(client.groupByOwner({ version: 1, workspace: '/w', next_seq: 1, tasks: {} }), [])
+})
+
+await check('groupByOwner: lanes are ordered by priority then age, like the status view', () => {
+  const board = {
+    version: 1, workspace: '/work/a', next_seq: 5, actors: {},
+    tasks: {
+      'T-1': ownerTask({ id: 'T-1', assignee: 'kimi', priority: 'low', created_at: '2026-09-01T00:00:00Z' }),
+      'T-2': ownerTask({ id: 'T-2', assignee: 'kimi', priority: 'high', created_at: '2026-09-25T00:00:00Z' }),
+      'T-3': ownerTask({ id: 'T-3', assignee: 'kimi', priority: 'medium', created_at: '2026-09-10T00:00:00Z' }),
+    },
+  }
+  const [lane] = client.groupByOwner(board)
+  assert.deepEqual(lane.tasks.map((t) => t.id), ['T-2', 'T-3', 'T-1'])
+})
+
 // --------------------------------------------------------- guide snippets
 
 await check('guide snippets: interpolate cli/cwd, degrade on a null cli', () => {
@@ -776,6 +861,75 @@ await check('activity timeline: blocked / unblocked carry real labels', async ()
   assert.ok(html.includes('>waiting<'), 'blocked renders a localized label')
   assert.ok(html.includes('>released<'), 'unblocked renders a localized label')
   assert.ok(html.includes('等主人排期'), 'the log note rides the row')
+})
+
+await check('panel: the「按负责人」view renders owner lanes, the switch and the done toggle', async () => {
+  const board = collabBoard([
+    { id: 'T-1', title: 'pool work', status: 'open', assignee: null },
+    { id: 'T-2', title: 'kimi building it', status: 'in_progress', assignee: 'kimi' },
+    { id: 'T-3', title: 'dsh alias card', status: 'in_progress', assignee: 'dsh-agent' },
+    {
+      id: 'T-4', title: 'kimi blocked on you', status: 'in_progress', assignee: 'kimi',
+      waiting_on: { kind: 'human', who: 'iceskysl', question: '撤掉还是重定义？', since: new Date(Date.now() - 3600_000).toISOString() },
+    },
+  ])
+  const { store, html } = await renderBoard(board)
+
+  // Default view is still the six status lanes — the owner view is opt-in.
+  assert.ok(html.includes('In progress'), 'status lanes render by default')
+  assert.ok(html.includes('By owner'), 'the view switch is offered')
+  assert.ok(!html.includes('Include done'), 'the done toggle is hidden in the status view')
+
+  // Switch to the owner view and re-render through the same store.
+  store.setGroupBy('owner')
+  const ownerHtml = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+  assert.ok(ownerHtml.includes('Unassigned'), 'the pool gets its own lane')
+  assert.ok(ownerHtml.includes('>kimi<'), 'kimi has a lane')
+  // dsh-agent folds into dsh's lane: one lane, not two.
+  assert.equal((ownerHtml.match(/>dsh</g) ?? []).length, 1, 'aliases fold to ONE dsh lane')
+  assert.ok(ownerHtml.includes('Waiting on human · kimi'), 'the blocked lane is labelled as such')
+  assert.ok(ownerHtml.includes('Include done'), 'the done toggle appears in the owner view')
+  // The owner view is a projection, not a status board: cards are not draggable.
+  assert.ok(ownerHtml.includes('draggable="false"'), 'owner-view cards are not drag sources')
+
+  // Finished work is hidden by default and comes back with the toggle. The
+  // markers are distinctive because the toggle's own title mentions "finished".
+  const withDone = collabBoard([
+    { id: 'T-1', title: 'stillLiveMarker', status: 'in_progress', assignee: 'kimi' },
+    { id: 'T-2', title: 'finishedMarker', status: 'done', assignee: 'kimi' },
+  ])
+  const second = await renderBoard(withDone)
+  second.store.setGroupBy('owner')
+  const hidden = renderToStaticMarkup(React.createElement(client.BoardPanel, { store: second.store }))
+  assert.ok(hidden.includes('stillLiveMarker'), 'live cards render')
+  assert.ok(!hidden.includes('finishedMarker'), 'done cards are hidden by default')
+  second.store.setIncludeDone(true)
+  const shown = renderToStaticMarkup(React.createElement(client.BoardPanel, { store: second.store }))
+  assert.ok(shown.includes('finishedMarker'), 'the toggle brings finished cards back')
+})
+
+await check('escapeTarget: one Escape closes exactly ONE layer, topmost first', () => {
+  assert.equal(typeof client.escapeTarget, 'function')
+  const layers = (over) => ({ guide: false, picker: false, drawer: false, ...over })
+
+  // The z-order is guide (30) > picker (25) > drawer (21); unwind follows it.
+  assert.equal(client.escapeTarget(layers({ guide: true, picker: true, drawer: true })), 'guide')
+  assert.equal(client.escapeTarget(layers({ picker: true, drawer: true })), 'picker')
+  assert.equal(client.escapeTarget(layers({ drawer: true })), 'drawer')
+  // Nothing open → nothing to close (the key stays with the page).
+  assert.equal(client.escapeTarget(layers({})), null)
+
+  // The drawer is the ONLY layer that coexists with the others (guide and
+  // picker both float above it), so it must never win while one is up — that
+  // is what would make a single keypress tear down two layers.
+  assert.notEqual(client.escapeTarget(layers({ guide: true, drawer: true })), 'drawer')
+  assert.notEqual(client.escapeTarget(layers({ picker: true, drawer: true })), 'drawer')
+
+  // A focused input that already consumed the key keeps it: nothing closes.
+  assert.equal(client.escapeTarget(layers({ guide: true, picker: true, drawer: true }), { defaultPrevented: true }), null)
+  assert.equal(client.escapeTarget(layers({ drawer: true }), { defaultPrevented: true }), null)
+  // …and an event that did NOT consume it still unwinds normally.
+  assert.equal(client.escapeTarget(layers({ drawer: true }), { defaultPrevented: false }), 'drawer')
 })
 
 // ------------------------------------------------------------------ done

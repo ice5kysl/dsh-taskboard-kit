@@ -8,7 +8,8 @@
 
 import { useCallback } from 'react'
 import type { Board, BoardColumn, Task, TaskPriority, TaskValue } from '../shared/types.ts'
-import { columnOf } from '../shared/types.ts'
+import { columnOf, compareTasks } from '../shared/types.ts'
+import { DEFAULT_QUIET_MS, actorKey, actorKeyOf, actorSeenAt } from '../shared/board.ts'
 import type { DropOp } from '../shared/dnd.ts'
 import { L } from './locale.ts'
 import type { TaskboardStore } from './store.ts'
@@ -93,6 +94,143 @@ export function openTaskCount(board: Board | null): number {
     if (column !== 'done' && column !== 'closed') count += 1
   }
   return count
+}
+
+/** A task is in a final column (done/closed) — the "含已完成" filter's unit. */
+export function isFinal(task: Task): boolean {
+  const column = columnOf(task)
+  return column === 'done' || column === 'closed'
+}
+
+/**
+ * One lane of the「按负责人」view: a group of tasks that belong to the same
+ * owner. `kind` says WHY they are grouped, and drives the header treatment:
+ *
+ *   • `unassigned` — `assignee === null`: the pool, nobody's head yet;
+ *   • `human`      — parked on a person (`waiting_on.kind === 'human'`): the
+ *                   "到底卡在谁那" lane, which is not the same question as
+ *                   "who owns it" — the owner may be an agent waiting on you;
+ *   • `actor`      — an ordinary owner (agent or human assignee).
+ */
+export interface OwnerGroup {
+  /** Canonical (alias-folded) actor key, or the `unassigned` sentinel. */
+  key: string
+  /** Display name (the canonical roster name when the board knows one). */
+  label: string
+  kind: 'unassigned' | 'actor' | 'human'
+  tasks: Task[]
+  /** Whether the owner has gone quiet (roster evidence only); `false` if unknown. */
+  quiet: boolean
+}
+
+/** The sentinel key of the pool lane (never collides with a real actor name). */
+export const UNASSIGNED_KEY = '\u0000unassigned'
+
+/** Prefix of a waiting-on-human lane's key: same owner, different lane. */
+const HUMAN_LANE_PREFIX = '\u0000human:'
+
+/** Lane order of the `kind`s: work-on-nobody first, then owners, human last. */
+const OWNER_KIND_ORDER: Record<OwnerGroup['kind'], number> = { unassigned: 0, actor: 1, human: 2 }
+
+/**
+ * Group the board's tasks by owner, for the「按负责人」view.
+ *
+ * Alias-aware: names are folded through the roster (`actorKeyOf`), so
+ * `dsh` / `dsh-agent` / `dsh-web` land in ONE lane instead of three — the same
+ * contract the roster uses everywhere else. Cards in a lane keep the board's
+ * own ordering (`compareTasks`), so priority/age read the same in both views.
+ *
+ * Options:
+ *   • `includeDone` (default false) — finished tasks would otherwise bury the
+ *     live ones; the lane header carries the toggle.
+ *
+ * Lanes are ordered: 待认领 → owners (alphabetical) → 等人类. Nothing is
+ * dropped: a lane exists only when it has at least one task, and an empty
+ * board yields an empty list (the caller renders its own empty state).
+ */
+export function groupByOwner(
+  board: Board | null,
+  options: { includeDone?: boolean; quietMs?: number; now?: number } = {},
+): OwnerGroup[] {
+  if (!board) return []
+  const includeDone = options.includeDone ?? false
+  const now = options.now ?? Date.now()
+  const quietMs = options.quietMs ?? DEFAULT_QUIET_MS
+
+  const groups = new Map<string, OwnerGroup>()
+  const lane = (key: string, label: string, kind: OwnerGroup['kind']): OwnerGroup => {
+    let found = groups.get(key)
+    if (!found) {
+      found = { key, label, kind, tasks: [], quiet: false }
+      groups.set(key, found)
+    }
+    return found
+  }
+
+  for (const task of Object.values(board.tasks)) {
+    if (!includeDone && isFinal(task)) continue
+    if (!task.assignee) {
+      lane(UNASSIGNED_KEY, '', 'unassigned').tasks.push(task)
+      continue
+    }
+    // Fold aliases to one canonical owner, and display the roster's own name.
+    const key = actorKeyOf(board, task.assignee)
+    const label = displayNameOf(board, task.assignee)
+    // A card parked on a person is NOT part of its owner's active load — the
+    // owner is blocked, not working. It gets its own lane instead, so it can
+    // never be mistaken for work in flight. The `!` prefix keeps that lane's
+    // key distinct from the owner's own lane (they share the owner's name).
+    const onHuman = task.waiting_on?.kind === 'human'
+    const entry = onHuman
+      ? lane(`${HUMAN_LANE_PREFIX}${key}`, label, 'human')
+      : lane(key, label, 'actor')
+    entry.tasks.push(task)
+  }
+
+  for (const group of groups.values()) {
+    group.tasks.sort(compareTasks)
+    if (group.kind === 'actor') {
+      const seenAt = actorSeenAt(board, group.label)
+      group.quiet = typeof seenAt === 'string' && now - Date.parse(seenAt) > quietMs
+    }
+  }
+
+  return [...groups.values()].sort((a, b) => {
+    const byKind = OWNER_KIND_ORDER[a.kind] - OWNER_KIND_ORDER[b.kind]
+    if (byKind !== 0) return byKind
+    return a.label.localeCompare(b.label)
+  })
+}
+
+/** The roster's canonical name for an actor when it knows one, else the alias. */
+function displayNameOf(board: Board, name: string): string {
+  const key = actorKeyOf(board, name)
+  for (const entryName of Object.keys(board.actors ?? {})) {
+    if (actorKey(entryName) === key) return entryName
+  }
+  return name
+}
+
+/** The overlay stack of the board tab, topmost last. */
+export type BoardLayer = 'guide' | 'picker' | 'drawer'
+
+/**
+ * Which layer an Escape keypress should close.
+ *
+ * One keypress closes exactly ONE layer, innermost/topmost first — never two
+ * at once. The order below follows the panel's own z-index stack (guide 30 >
+ * picker 25 > drawer 21), so unwinding matches what the user sees on screen.
+ *
+ * A focused input that already consumed the Escape (`defaultPrevented`) wins:
+ * the control keeps the key and nothing closes. Returns `null` when there is
+ * nothing to close.
+ */
+export function escapeTarget(layers: Record<BoardLayer, boolean>, event?: { defaultPrevented?: boolean }): BoardLayer | null {
+  if (event?.defaultPrevented) return null
+  if (layers.guide) return 'guide'
+  if (layers.picker) return 'picker'
+  if (layers.drawer) return 'drawer'
+  return null
 }
 
 /**
