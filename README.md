@@ -118,7 +118,7 @@ Each task still carries **value points** (Fibonacci scale ½ / 1 / 2 / 3 / 5 / 8
 ## Install
 
 ```bash
-dsh plugin --profile web add dsh-taskboard-kit@0.7.0
+dsh plugin --profile web add dsh-taskboard-kit@0.7.1
 # restart dsh web, open any session, and the「看板」tab is there
 ```
 
@@ -126,8 +126,10 @@ dsh plugin --profile web add dsh-taskboard-kit@0.7.0
 supply-chain `minimumReleaseAge` gate: a version published minutes ago is held
 back, and a bare `add dsh-taskboard-kit` then silently installs an older one —
 you would get a board whose `done` is still treated as terminal without any hint.
-Naming `@0.7.0` opts that release out of the gate and installs what you asked for.
+Naming `@0.7.1` opts that release out of the gate and installs what you asked for.
 Once a release is more than a day old, a bare `add` finds it too.
+
+**0.7.1 makes the quiet text readable and the cards tighter.** The card's quiet tier used `--dsw-alias-label-dimmed` — a shell token that is near-invisible by design (`#e1e5ee` on light, `#43454a` on dark; ≈1.1:1 / 1.3:1), so task refs (`#18`), value points (`◆2`) and column ages were unreadable in BOTH themes. They now use `--dsw-alias-label-tertiary` (`#81858c` / `#adb2b8`). Cards were reshaped from **five rows to three** (`#N` and `◆value` moved onto the meta row, owner + waiting/reviewer badges share one row), lanes went `260 → 240px`, and spacing/line-height tightened: **a card is ~22% shorter on the same board (125px → 97px average)**, so one lane shows ~9 cards per screen instead of ~7. The waiting chip may wrap internally so the "how long has this been waiting" half never gets ellipsized away.
 
 **0.7.0 = markdown fidelity + two security hardenings.** The drawer's rendering gained four things: **images** (`![alt](url)`, http/https only), **nested lists** (two levels by indentation, the child list opening inside the parent `<li>`), **read-only task checkboxes** (`- [ ]` / `- [x]`), and a block-level comment container (tables/lists no longer sit inside a `span`). Two guardrails were tightened at the same time: the **cwd whitelist is now direction-aware** — a mutation (`POST`) may only create a board in a boardless directory when the host positively says it serves that workspace, while reads keep the older contract (the panel must be able to read a workspace whose session is not live and whose board does not exist yet); and the **trust gate now compares the scheme** (an `https://…` Origin is no longer treated as this plain-http origin). Three remaining audit minors came along too: a mistyped `--cwd` is no longer indistinguishable from an empty board, the lock wait budget now outlasts the stale window, and the scheme check above.
 
