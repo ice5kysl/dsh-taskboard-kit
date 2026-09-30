@@ -118,7 +118,7 @@ Each task still carries **value points** (Fibonacci scale ½ / 1 / 2 / 3 / 5 / 8
 ## Install
 
 ```bash
-dsh plugin --profile web add dsh-taskboard-kit@0.6.2
+dsh plugin --profile web add dsh-taskboard-kit@0.7.0
 # restart dsh web, open any session, and the「看板」tab is there
 ```
 
@@ -126,8 +126,10 @@ dsh plugin --profile web add dsh-taskboard-kit@0.6.2
 supply-chain `minimumReleaseAge` gate: a version published minutes ago is held
 back, and a bare `add dsh-taskboard-kit` then silently installs an older one —
 you would get a board whose `done` is still treated as terminal without any hint.
-Naming `@0.6.2` opts that release out of the gate and installs what you asked for.
+Naming `@0.7.0` opts that release out of the gate and installs what you asked for.
 Once a release is more than a day old, a bare `add` finds it too.
+
+**0.7.0 = markdown fidelity + two security hardenings.** The drawer's rendering gained four things: **images** (`![alt](url)`, http/https only), **nested lists** (two levels by indentation, the child list opening inside the parent `<li>`), **read-only task checkboxes** (`- [ ]` / `- [x]`), and a block-level comment container (tables/lists no longer sit inside a `span`). Two guardrails were tightened at the same time: the **cwd whitelist is now direction-aware** — a mutation (`POST`) may only create a board in a boardless directory when the host positively says it serves that workspace, while reads keep the older contract (the panel must be able to read a workspace whose session is not live and whose board does not exist yet); and the **trust gate now compares the scheme** (an `https://…` Origin is no longer treated as this plain-http origin). Three remaining audit minors came along too: a mistyped `--cwd` is no longer indistinguishable from an empty board, the lock wait budget now outlasts the stale window, and the scheme check above.
 
 **0.6.2 fixes stylesheet ownership.** The status-bar「Board · N ◷M」pill could
 occasionally collapse into a browser-default `<button>` (grey fill and border, the
