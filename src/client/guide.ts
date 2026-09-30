@@ -84,7 +84,7 @@ Rules (full spec: the plugin's docs/COLLABORATION.md):
   )
 }
 
-/** The dispatch template (方式 B/C: msg9 mail or a paste into their session). */
+/** The dispatch template (方式 B/C: mail or a paste into their session — the channel is the sender's choice). */
 export function dispatchSnippet(cli: string | null, cwd: string): string {
   const bin = cli ?? CLI_FALLBACK
   return L(

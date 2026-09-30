@@ -245,7 +245,7 @@ async function main() {
         return EXIT.ok
       }
       const sections = [
-        ['⏳ 在等人类决定（面板顶部可见；不看面板就用 msg9 叫人）', result.waitingHuman],
+        ['⏳ 在等人类决定（面板顶部可见；不看面板就用你的通知通道叫人）', result.waitingHuman],
         ['🔗 在等另一个 Agent / 外部（去催那个人，别干等）', result.waitingOther],
         ['🔍 在 review 但没有审核人（改派或 comment 说明）', result.unownedReview],
         ['👻 派给了久未/从未出现的 Agent（改派或收回池子）', result.orphaned],
@@ -341,7 +341,7 @@ async function main() {
         if (!asJson) {
           console.log(result.delivered
             ? 'notified the human via TASKBOARD_NOTIFY_CMD'
-            : 'parked on the human — visible in the panel; ping them via msg9 if they may not be looking')
+            : 'parked on the human — visible in the panel; ping them via your notify channel if they may not be looking')
         }
       }
       return EXIT.ok

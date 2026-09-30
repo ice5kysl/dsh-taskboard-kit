@@ -63,7 +63,7 @@ export {
 } from './store.ts'
 export { resolveCwd } from './workspace.ts'
 export { L } from './locale.ts'
-export { noticePayload, notifyHuman, msg9HookExample, type HumanNotice, type NotifyResult } from './notify.ts'
+export { noticePayload, notifyHuman, notifyHookExample, msg9HookExample, type HumanNotice, type NotifyResult } from './notify.ts'
 export { TASK_VALUES } from '../shared/types.ts'
 export {
   HUMAN_ACTOR,
@@ -193,7 +193,8 @@ function protocolText(): string {
       '',
       '### 卡住了：说清在等谁（action=block / unblock）',
       '- 等人类决定：`--action block --on human --question "一句能直接转发给我主人的问句"`。',
-      '  它会进「等人类」清单，人类在面板顶部就能看到并当场回复；**同时你有责任用 msg9 主动叫人**。',
+      '  它会进「等人类」清单，人类在面板顶部就能看到并当场回复；**同时你有责任主动叫人**',
+      '  （用你自己的通知通道：msg9 / 桌面通知 / webhook / 邮件，或让运维配 `TASKBOARD_NOTIFY_CMD`）。',
       '- 等另一个 Agent：`--action block --on agent --who <名字> --question "..."`。',
       '- 对方答复后用 `--action unblock`（答复写进 comment），然后接着干。',
       '- 等谁的卡**不能被认领**：在等决定 ≠ 没人要。',
@@ -245,7 +246,8 @@ function protocolText(): string {
       '',
       '### Stuck? Say who you are waiting on (action=block / unblock)',
       '- Waiting on a human: `--action block --on human --question "a one-liner that can be forwarded as-is"`.',
-      '  It lands in the「waiting on you」list the human sees at the top of the panel — and **it is your job to ping them via msg9**.',
+      '  It lands in the「waiting on you」list the human sees at the top of the panel — and **it is your job to ping them**',
+      '  (via whatever channel you have: msg9 / a desktop notification / a webhook / mail, or `TASKBOARD_NOTIFY_CMD`).',
       '- Waiting on another agent: `--action block --on agent --who <name> --question "..."`.',
       '- When the answer lands: `--action unblock` (put the answer in a comment), then carry on.',
       '- A card waiting on someone **cannot be claimed**: parked ≠ unowned.',
@@ -357,8 +359,8 @@ export function apply(ctx: Context): void {
           if (!result.delivered) log.info(`human wait overdue on ${task.id} (no TASKBOARD_NOTIFY_CMD wired; panel only)`)
         })
         const text = L(
-          '[看板催办] {id} 已经等在人类身上 {age} 了：「{question}」\n用 msg9 再叫一次人；或者把不依赖他的部分拆出来先做掉（不要空等）。',
-          '[board escalation] {id} has been waiting on the human for {age}: "{question}"\nPing them again via msg9, or split off the part you can advance (do not idle on it).',
+          '[看板催办] {id} 已经等在人类身上 {age} 了：「{question}」\n再叫一次人（你的通知通道：msg9 / 桌面通知 / webhook）；或者把不依赖他的部分拆出来先做掉（不要空等）。',
+          '[board escalation] {id} has been waiting on the human for {age}: "{question}"\nPing them again via your notify channel (msg9 / desktop notification / webhook), or split off the part you can advance (do not idle on it).',
           { id: task.id, age: ageLabel(waitedMs), question },
         )
         for (const agent of agents.list()) {

@@ -505,7 +505,11 @@ await check('a human wait past its SLA is flagged as overdue (the escalation tri
   const items = lib.inboxFor(await lib.loadBoard(ws), 'dsh')
   const humanItem = items.find((item) => item.kind === 'human_blocked')
   assert.ok(humanItem, 'the agent must be told to go ping the human')
-  assert.match(humanItem.suggest, /msg9/)
+  // The board names the CONCEPT (a notify channel the agent owns), never one
+  // vendor: a workspace with no msg9 must not read the suggestion as a
+  // prerequisite. msg9 may appear as an example, never as the requirement.
+  assert.match(humanItem.suggest, /通知通道/, 'the agent is told to use ITS channel, not a hard-coded one')
+  assert.match(humanItem.suggest, /msg9/, 'msg9 survives as one example, not as a prerequisite')
   await rm(ws, { recursive: true, force: true })
 })
 

@@ -130,10 +130,16 @@ export async function notifyHuman(notice: HumanNotice, deps: NotifyDeps): Promis
 }
 
 /**
- * The shell command an agent can wire as `TASKBOARD_NOTIFY_CMD` to push a
- * blocked card to a msg9 inbox: the payload's question and id become the mail
- * body. Documented rather than hard-coded — the board never learns msg9.
+ * A ready-made `TASKBOARD_NOTIFY_CMD`: pipe the payload's question and id into
+ * a msg9 inbox. msg9 is **one wiring among many** — the board itself never
+ * learns any specific channel (see the module comment above), so swap the
+ * command for `notify-send`, a webhook `curl`, or a mail client and nothing
+ * here or in the board changes.
  */
-export function msg9HookExample(inbox: string): string {
+export function notifyHookExample(inbox: string): string {
   return `TASKBOARD_NOTIFY_CMD='printf "%s\\n" "[看板] $TASKBOARD_TASK_ID 需要你决定（$TASKBOARD_NOTIFY_REASON）" "$TASKBOARD_QUESTION" | msg9 send --to ${inbox} --subject "看板 ${'$'}TASKBOARD_TASK_ID 等你决定"'`
 }
+
+/** @deprecated Renamed to {@link notifyHookExample}: the delivery channel is
+ *  the operator's choice, not the board's. Kept so 0.6.0 importers keep working. */
+export const msg9HookExample = notifyHookExample

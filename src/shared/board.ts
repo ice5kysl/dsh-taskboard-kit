@@ -470,7 +470,7 @@ export function inboxFor(board: Board, actor: string, options?: InboxOptions): I
           task,
           ageMs: Math.max(0, now - (Date.parse(waiting.since) || now)),
           rank: RANK.human_blocked,
-          suggest: `通知人类（msg9）：${task.id} 在等决定 —— ${waiting.question}`,
+          suggest: `通知人类（用你的通知通道，如 msg9）：${task.id} 在等决定 —— ${waiting.question}`,
           actor: waiting.who ?? undefined,
         })
         continue

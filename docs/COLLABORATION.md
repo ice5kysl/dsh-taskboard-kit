@@ -26,7 +26,7 @@
    结构校验都在 store 里；手改会绕过并发保护。
 2. 一切操作走 `taskboard_*` 工具（dsh 内）或 `bin/taskboard.mjs`（任何 shell）。
    浏览器面板走同一套 bridge，人类的操作记为 actor `human`。
-3. **看板是状态的事实源，msg9 是叫人的通道。** 不要把状态讨论留在聊天里、把结论只写在看板上不进 commit；
+3. **看板是状态的事实源，通知通道是叫人的手段。** 不要把状态讨论留在聊天里、把结论只写在看板上不进 commit；
    也不要指望人类去看聊天记录——该人类拍板的事必须落到卡片上（§9）。
 
 ## 2. 角色与身份
@@ -195,7 +195,7 @@ taskboard_update <id> --action unblock
 
 1. **等谁的卡不能被认领**（`claim` 会被拒并说明原因）。「在等决定」≠「没人要」——这是 `T-8` 的教训。
 2. `wait_question` 必须是**一句能原样转发给人**的问句。写「看看」「你觉得呢」等于没写。
-3. **等人类不等于可以撒手**：block 之后**你有责任叫人**（msg9 / 通知 hook），并在超时后按 §11 升级。
+3. **等人类不等于可以撒手**：block 之后**你有责任叫人**（你自己的通知通道 / 通知 hook），并在超时后按 §11 升级。
 4. 只有三种情况值得把卡挂到人类身上：**对外动作**（发布、部署、发信）、**资源**（钱、账号、额度）、
    **方向取舍**（做哪个、砍哪个）。其余的自己决定并记录下来。
 
@@ -235,7 +235,7 @@ taskboard_update <id> --action unblock
 ```
 ① 自己能做完的 → 做完，submit
 ② 依赖另一个 Agent → block --on agent，并在等超 8h 后催一次；对方消失 → 改派（卡主的责任）
-③ 依赖人类 → block --on human + msg9 叫人；等超 24h → 升级催办（面板 + 外发 hook + Agent 再叫一次）
+③ 依赖人类 → block --on human + 主动叫人（msg9 / 桌面通知 / webhook，见 §12）；等超 24h → 升级催办（面板 + 外发 hook + Agent 再叫一次）
 ④ 真无法推进 → 保持 blocked，把「能自己推进的部分」拆成新卡先做掉，不要整张卡空等
 ```
 
@@ -255,13 +255,13 @@ taskboard_update <id> --action unblock
 2. **外发通知 hook**：`TASKBOARD_NOTIFY_CMD` —— 卡片开始等人类、或等超 SLA 时执行。
    卡片以 JSON 从 stdin 传入，同时注入 `TASKBOARD_TASK_ID` / `TASKBOARD_QUESTION` /
    `TASKBOARD_NOTIFY_REASON`（`blocked` / `overdue`）等环境变量。
-   钩子失败**只记日志，绝不让写板失败**。例：
+   钩子失败**只记日志，绝不让写板失败**。接什么通道由你决定，例（换成 `notify-send` / `curl` webhook 同样成立）：
    ```bash
    TASKBOARD_NOTIFY_CMD='printf "%s\n" "$TASKBOARD_TASK_ID 等你决定" "$TASKBOARD_QUESTION" \
      | msg9 send --to dsh@proj.ice.msg9.io --subject "看板 $TASKBOARD_TASK_ID 等你决定"'
    ```
 3. **Agent 自己去叫**：watcher 会把「有卡在等人类」注给该 workspace 的活跃会话，
-   有 msg9 工具的 Agent 应当直接发信——**这是 Agent 的责任，不是看板的责任**（看板不知道人类的地址）。
+   Agent 应当用**自己手上有的通道**直接叫人（msg9 / 邮件 / 任何能触达人类的方式）——**这是 Agent 的责任，不是看板的责任**（看板不知道人类的地址，也不预设通道）。
 
 人类在面板上的操作记为 `human`，被允许做任何裁决；人类做的修改同样会推给相关 Agent。
 
@@ -287,7 +287,7 @@ taskboard_update <id> --action unblock
 | 自己 `done` 自己的活 | 没有验收，卡主不知情 | `submit` + `reviewer` |
 | `submit` 不写交接留言 | 审核人无法验收 | 配一条 `taskboard_comment` |
 | `reject` 不写原因 | 作者只能猜 | `--note` 写清哪里不够 |
-| 把「等人类排期」的卡扔在池子里 | 看起来像没人要的活，人类也不知道 | `block --on human` + msg9 |
+| 把「等人类排期」的卡扔在池子里 | 看起来像没人要的活，人类也不知道 | `block --on human` + 主动叫人 |
 | 用留言把卡「刷活」 | 列龄被清零，陈旧检测失效 | 留言不改列龄；该 `submit`/`block`/`close` 就改状态 |
 | 派活给久未露面的名字 | 孤儿卡 | 先 `taskboard_roster` |
 | 手改 `.dsh/taskboard.json` | 破坏锁与原子性 | 走工具/CLI |
@@ -296,8 +296,12 @@ taskboard_update <id> --action unblock
 ## 15. 与 msg9 任务模型的关系
 
 状态名（`open` / `in_progress` / `done`）刻意对齐 msg9 的任务模型，未来接服务端看板时语义不变。
-本 kit **不依赖** msg9：看板是本地文件，外发通知是可选 hook。二者的分工是——
-**看板记事实，msg9 叫人。**
+本 kit **不依赖** msg9，也**不依赖任何特定通知通道**：看板是本地文件，外发通知是可选 hook
+（`TASKBOARD_NOTIFY_CMD`，接 msg9 / 桌面通知 / webhook 由你自己决定）。二者的分工是——
+**看板记事实，通知通道叫人。**
+
+> 本文档早期版本把 msg9 写成了唯一通道——那是针对本机装了消息插件（dsh-msg9-kit）的环境写的操作手册。
+> msg9 只是**一个例子**，不是前置条件：没装消息插件的工作区，面板「等你」清单 + 自监控 hook 已经闭环。
 
 ## 16. 仍未做（明确留在这一轮之外）
 

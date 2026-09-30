@@ -270,8 +270,8 @@ export function registerTaskboardTools(ctx: Context): void {
           : ''
         const waitingLine = health.waitingHuman.length > 0
           ? L(
-            '\n⏳ 在等人类决定：{list}（用 taskboard_inbox 看详情，再用 msg9 叫人）',
-            '\n⏳ waiting on the human: {list} (taskboard_inbox has the detail, then ping them via msg9)',
+            '\n⏳ 在等人类决定：{list}（用 taskboard_inbox 看详情，再用你的通知通道叫人）',
+            '\n⏳ waiting on the human: {list} (taskboard_inbox has the detail, then ping them via your notify channel)',
             { list: health.waitingHuman.map((issue) => issue.task.id).join(', ') },
           )
           : ''
@@ -491,7 +491,7 @@ export function registerTaskboardTools(ctx: Context): void {
           })
           extra.push(result.delivered
             ? L('已通过 TASKBOARD_NOTIFY_CMD 外发通知人类', 'the human was notified out-of-band via TASKBOARD_NOTIFY_CMD')
-            : L('已进入「等人类」清单（面板可见）；若人类不看面板，用 msg9 主动告一声', 'parked on the human (visible in the panel); if they may not look, ping them via msg9'))
+            : L('已进入「等人类」清单（面板可见）；若人类不看面板，用你的通知通道主动告一声', 'parked on the human (visible in the panel); if they may not look, ping them via your notify channel'))
         }
         const tail = extra.length > 0 ? `\n${extra.join('\n')}` : ''
         return L(

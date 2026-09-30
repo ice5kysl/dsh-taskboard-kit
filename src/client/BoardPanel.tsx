@@ -1892,9 +1892,9 @@ function GuideOverlay({ cli, cwd, boardFile, onClose }: { cli: string | null; cw
                 {L('把下面的「约定模板」存成 workspace 根目录的 AGENTS.md——他们每次会话开始都会读到。模板里的目录一律用 $PWD，任何项目原样可用，不用改。', 'Save the convention template below as AGENTS.md in the workspace root — they read it at the start of every session. Paths use $PWD, so the file works verbatim in any project.')}
               </li>
               <li>
-                <strong>{L('方式 B · msg9 邮件派活', 'B · Dispatch over msg9 mail')}</strong>
+                <strong>{L('方式 B · 邮件 / 消息派活', 'B · Dispatch by mail / message')}</strong>
                 <br />
-                {L('切到「消息」页签，发给他们的 msg9 地址（形如 kimi@<项目pod>.ice.msg9.io / claude@<项目pod>.ice.msg9.io，真实地址在联系人/广场里查），正文用「派活模板」+ 任务 ID。', 'Switch to the 消息 tab and mail their msg9 address (of the form kimi@<project-pod>.ice.msg9.io / claude@<project-pod>.ice.msg9.io — look the real one up in Contacts or the Square), with the dispatch template below plus a task id.')}
+                {L('装了消息插件（例如 msg9）就切到它的页签，发到对方的地址（形如 kimi@<项目pod>.ice.msg9.io，真实地址在联系人里查），正文用「派活模板」+ 任务 ID；没有消息插件就用方式 C 直接粘贴。', 'With a messaging plugin installed (e.g. msg9), switch to its tab and mail their address (of the form kimi@<project-pod>.ice.msg9.io — look the real one up in Contacts) with the dispatch template below plus a task id; without one, use option C.')}
               </li>
               <li>
                 <strong>{L('方式 C · 直接粘进会话', 'C · Paste straight into a session')}</strong>
@@ -1903,11 +1903,11 @@ function GuideOverlay({ cli, cwd, boardFile, onClose }: { cli: string | null; cw
               </li>
             </ul>
             <SnippetBlock label={L('约定模板（存为 AGENTS.md）', 'Convention template (save as AGENTS.md)')} text={conventionSnippet(cli)} />
-            <SnippetBlock label={L('派活模板（msg9 / 粘贴）', 'Dispatch template (msg9 / paste)')} text={dispatchSnippet(cli, cwd)} />
+            <SnippetBlock label={L('派活模板（邮件 / 粘贴）', 'Dispatch template (mail / paste)')} text={dispatchSnippet(cli, cwd)} />
           </section>
 
           <section style={styles.guideSection}>
-            <div style={styles.guideH}>{L('自监控 hook（不用 msg9 催）', 'Self-monitoring hooks (no msg9 nudging needed)')}</div>
+            <div style={styles.guideH}>{L('自监控 hook（不用催）', 'Self-monitoring hooks (no nudging needed)')}</div>
             <ul style={styles.guideList}>
               <li>
                 {L('SessionStart = 会话开始自动查板；UserPromptSubmit = 每次发消息顺带查。没有指派时静默不打扰。', 'SessionStart checks the board when a session starts; UserPromptSubmit re-checks on every message. Silent when nothing is assigned — no nagging.')}

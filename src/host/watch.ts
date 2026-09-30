@@ -242,7 +242,7 @@ function waitLine(id: string, task: Task): string {
   const who = wait.who ? `(${wait.who})` : ''
   const question = excerpt(wait.question)
   if (wait.kind === 'human') {
-    return `${id} · waiting on the HUMAN${who}: ${question} · ${quoted(task)} — ping them (msg9) if they may not be looking`
+    return `${id} · waiting on the HUMAN${who}: ${question} · ${quoted(task)} — ping them (your notify channel) if they may not be looking`
   }
   return `${id} · waiting on ${wait.kind}${who}: ${question} · ${quoted(task)}`
 }
