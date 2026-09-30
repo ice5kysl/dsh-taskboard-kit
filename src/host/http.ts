@@ -131,26 +131,35 @@ export function defaultBridgeDeps(ctx: Context): TaskboardBridgeDeps {
     updateTask,
     addComment,
     // The workspace roots this host actually serves: the cwd of a live
-    // session. Read lazily and defensively — when the services are not
-    // reachable (tests, headless, a host shape we do not know) this reports
-    // "unknown" (undefined), which falls back to the shape checks in
-    // requireCwd instead of rejecting every request.
+    // session. Read lazily and defensively.
+    //
+    // ⚠️ 两种"空"必须分开（kimi 2026-09-30 真机复测发现的洞）：
+    //   a) 服务**拿不到**（测试环境、headless、启动窗口、抛异常）⇒ `undefined` = 未知，
+    //      退化成 requireCwd 的形状检查，**不拒绝每个请求**；
+    //   b) 服务拿得到、但 `list()` **确实为空** ⇒ 这是**确定的事实而非未知**：
+    //      此刻没有任何 live 会话 ⇒ 白名单是空集 ⇒ `false`。
+    //   旧实现把两者都当 undefined，于是**零 live 会话时白名单整体退场** ——
+    //   而"没人在用 dsh"恰恰是守护最该在场的场景（本机任意进程可往任意可写目录建板）。
     isAllowedCwd: (cwd) => {
       try {
         const agents = injectedAgents
           ?? (ctx as unknown as { agents?: AgentsLike }).agents
         const sessions = injectedSessions
           ?? (ctx as unknown as { sessions?: SessionsLike }).sessions
+        // (a) 服务不可达 ⇒ 未知 ⇒ 交回形状检查
         if (!agents || !sessions || typeof agents.list !== 'function') return undefined
         const live = agents.list()
-        if (!Array.isArray(live) || live.length === 0) return undefined
+        // 拿得到但形状不对 ⇒ 视为不可达（同 a）
+        if (!Array.isArray(live)) return undefined
+        // (b) 服务可达 ⇒ 结果可信 ⇒ 空集就是空集（不再当"未知"）
         const roots = live
           .map((agent) => sessions.get(agent.id)?.header?.cwd)
           .filter((root): root is string => typeof root === 'string' && root !== '')
-        if (roots.length === 0) return undefined
+        if (roots.length === 0) return false
         const target = resolve(cwd)
         return roots.some((root) => resolve(root) === target)
       } catch {
+        // 抛异常 = 探测失败 ⇒ 未知（与"可达但为空"区分开）
         return undefined
       }
     },

@@ -203,6 +203,80 @@ await check('a workspace with a board file is served even when its session is no
   }
 })
 
+await check('★ zero live sessions is a FACT, not "unknown" — a fresh dir is still refused', async () => {
+  // kimi 2026-09-30 真机复测抓到的洞：`live.length === 0 → undefined`
+  // 把「服务拿不到」与「确定零会话」混为一谈，于是**没人用 dsh 时白名单整体退场** ——
+  // 而"没人在用"恰恰是守护最该在场的场景（本机任意进程可往任意可写目录建板）。
+  //
+  // 这个用例按**生产形状**接线：fake ctx 只在 inject 里给 agents/sessions，
+  // 且 list() 返回**空数组**（服务可达、事实为空）。
+  const { mkdtemp, rm, mkdir, writeFile } = await import('node:fs/promises')
+  const { existsSync } = await import('node:fs')
+  const fresh = await mkdtemp(join(tmpdir(), 'dsh-taskboard-nolive-'))
+  const withBoard = await mkdtemp(join(tmpdir(), 'dsh-taskboard-hasboard-'))
+  try {
+    const fakeCtx = {
+      logger: () => ({ info: () => {} }),
+      inject: (deps, callback) => {
+        if (deps[0] === 'agents') {
+          // 服务可达，但此刻确实没有任何 live 会话
+          callback({
+            agents: { list: () => [] },
+            sessions: { get: () => undefined },
+          })
+        }
+      },
+    }
+    const deps = defaultBridgeDeps(fakeCtx)
+    assert.equal(
+      deps.isAllowedCwd(fresh),
+      false,
+      'reachable but empty ⇒ false（确定的事实，不是"未知"）',
+    )
+
+    // 端到端：全新目录必须被拒，且**不写盘**
+    const board = createTaskboardBridge(deps)
+    const refused = res()
+    await board.handle({
+      method: 'POST',
+      url: '/dsh-taskboard/create',
+      headers: { host: '127.0.0.1:3080', 'x-taskboard': 'mutate' },
+      socket: { remoteAddress: '127.0.0.1' },
+      [Symbol.asyncIterator]: async function* () {
+        yield Buffer.from(JSON.stringify({ cwd: fresh, title: 'must not be written' }))
+      },
+    }, refused)
+    assert.equal(refused.status, 403, '零 live 会话 + 全新目录 ⇒ 403')
+    assert.equal(existsSync(join(fresh, '.dsh', 'taskboard.json')), false, '且没有写任何文件')
+
+    // 反向：已有板文件的目录仍放行（面板指向旧会话的场景不能坏）
+    await mkdir(join(withBoard, '.dsh'), { recursive: true })
+    await writeFile(join(withBoard, '.dsh', 'taskboard.json'), JSON.stringify({
+      version: 1, next_seq: 1, tasks: {}, actors: {},
+    }))
+    const okRes = res()
+    await board.handle({
+      method: 'GET',
+      url: `/dsh-taskboard/board?cwd=${encodeURIComponent(withBoard)}`,
+      headers: { host: '127.0.0.1:3080' },
+      socket: { remoteAddress: '127.0.0.1' },
+      [Symbol.asyncIterator]: async function* () {},
+    }, okRes)
+    assert.equal(okRes.status, 200, '有板文件的目录仍放行（面板不会坏）')
+  } finally {
+    await rm(fresh, { recursive: true, force: true })
+    await rm(withBoard, { recursive: true, force: true })
+  }
+})
+
+await check('unreachable services stay permissive (tests / headless must not break)', async () => {
+  // 与上一条配对：服务**拿不到**时仍是"未知"⇒ undefined ⇒ 交回形状检查。
+  // 两者必须区分开，否则要么守护退场、要么每个请求都 403。
+  const fakeCtx = { logger: () => ({ info: () => {} }) }
+  const deps = defaultBridgeDeps(fakeCtx)
+  assert.equal(deps.isAllowedCwd('/tmp/anything'), undefined, '拿不到服务 ⇒ 未知（permissive）')
+})
+
 await check('the cwd whitelist actually ENGAGES through the real host wiring', async () => {
   // The gap this covers: every other test injects `isAllowedCwd` by hand, so
   // the production wiring was never exercised — and in a live dsh web it
