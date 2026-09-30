@@ -434,6 +434,78 @@ await check('renderMarkdown: real structure for the common syntax', () => {
   assert.ok(md('` **not bold** `').includes('**not bold**'), 'markup inside inline code stays literal')
 })
 
+await check('renderMarkdown: images are real tags, and only over http/https', () => {
+  const md = client.renderMarkdown
+  const img = md('![截图](https://example.com/a.png)')
+  assert.ok(img.includes('<img src="https://example.com/a.png"'), 'http(s) src renders a tag')
+  assert.ok(img.includes('alt="截图"'), 'alt rides along')
+  assert.ok(img.includes('loading="lazy"') && img.includes('referrerpolicy="no-referrer"'), 'no eager fetch, no referrer')
+  assert.ok(!img.includes('<a href'), 'this is an image now — no leftover link')
+  assert.ok(!/!<a/.test(img), 'and the old "!" + link degradation is gone')
+
+  // Scheme whitelist: an image src is a LOAD, so only http/https may pass.
+  for (const bad of ['javascript:alert(1)', 'data:image/png;base64,AAA', 'vbscript:x', 'file:///etc/passwd']) {
+    assert.ok(!md(`![x](${bad})`).includes('<img'), `${bad} never becomes an image tag`)
+  }
+  // Attribute breakout through alt is escaped, not injected.
+  const breakout = md('![a" onerror="alert(1)](https://e.com/x.png)')
+  assert.ok(!breakout.includes('onerror="alert(1)"'), 'alt cannot break out of the attribute')
+  // A plain link is untouched by the new rule (images run before links).
+  assert.ok(md('[site](https://e.com)').includes('<a href="https://e.com"'), 'links still render')
+})
+
+await check('renderMarkdown: lists nest by indentation (two levels max)', () => {
+  const md = client.renderMarkdown
+  assert.equal(md('- 一级\n  - 二级'), '<ul><li>一级<ul><li>二级</li></ul></li></ul>', 'a deeper item opens a child list INSIDE the parent li')
+  assert.equal(md('- a\n  - b\n- c'), '<ul><li>a<ul><li>b</li></ul></li><li>c</li></ul>', 'a shallow item closes both levels')
+  // Deeper than two levels clamps to level 2 (three-level nesting is noise in a card).
+  assert.equal(md('- 一级\n  - 二级\n    - 三级'), '<ul><li>一级<ul><li>二级</li><li>三级</li></ul></li></ul>', 'level 3 clamps to level 2')
+  // Marker kinds are honoured per item: a change opens a sibling list.
+  assert.equal(md('- a\n1. b'), '<ul><li>a</li></ul><ol><li>b</li></ol>', 'a marker-kind change starts a new list')
+  assert.equal(md('- a\n  1. b\n- c'), '<ul><li>a<ol><li>b</li></ol></li><li>c</li></ul>', 'an ordered child nests in the unordered parent')
+  // The flat shapes the old renderer produced are byte-identical.
+  assert.equal(md('- a\n- b'), '<ul><li>a</li><li>b</li></ul>')
+  assert.equal(md('1. a\n2. b'), '<ol><li>a</li><li>b</li></ol>')
+})
+
+await check('renderMarkdown: task boxes are read-only checkboxes (never a write-back)', () => {
+  const md = client.renderMarkdown
+  const open = md('- [ ] 未做')
+  assert.ok(open.includes('<input type="checkbox" disabled>'), 'an open box is a disabled checkbox')
+  assert.ok(!open.includes('checked'), 'and it is not checked')
+  for (const mark of ['x', 'X']) {
+    assert.ok(md(`- [${mark}] 做完`).includes('<input type="checkbox" disabled checked>'), `${mark} → a checked, disabled box`)
+  }
+  // Read-only by construction: no handler, no form — nothing can write back to
+  // the card file, which would create "who changed my card?" cases.
+  assert.ok(!/on[a-z]+=/.test(md('- [x] done')), 'no event handlers ride the rendered box')
+
+  // Prose is not a task list: the rule is anchored to the fragment head.
+  assert.ok(md('结论 [x] 已确认').includes('[x] 已确认'), 'a mid-sentence [x] stays literal')
+  assert.ok(md('[x](https://e.com)').includes('<a href="https://e.com"'), 'a link with a one-char label is not a box')
+
+  // A table CELL head is a fragment head too — the two inline shapes work there.
+  const table = md('| 状态 | 图 |\n|---|---|\n| [x] 完了 | ![图](https://e.com/x.png) |')
+  assert.ok(table.includes('<td><input type="checkbox" disabled checked> 完了</td>'), 'a checkbox renders inside a cell')
+  assert.ok(table.includes('<td><img src="https://e.com/x.png"'), 'and an image renders inside a cell')
+})
+
+await check('panel: a markdown comment renders in a block container (tables are block content)', async () => {
+  const board = collabBoard([
+    {
+      id: 'T-1', title: 'card with a rich comment', status: 'in_progress', assignee: 'dsh',
+      comments: [{ at: new Date().toISOString(), by: 'kimi', text: '| 来源 | 事项 |\n|---|---|\n| dsh | 表格不再塞进 span |' }],
+    },
+  ])
+  const store = client.createTaskboardStore({ bridge: { board: async () => ({ ok: true, board }) }, pollMs: 10 ** 9 })
+  store.setCwd(board.workspace)
+  await store.refresh()
+  store.setMiniOpen(true)
+  const html = renderToStaticMarkup(React.createElement(client.MiniBoardDrawer, { store, initialSelectedId: 'T-1', initialTab: 'comments' }))
+  assert.ok(html.includes('<div class="tb-md"'), 'the comment body is a block-level div')
+  assert.ok(html.includes('<div class="tb-table-wrap"><table>'), 'and its table renders as a table')
+})
+
 await check('renderMarkdown: GFM tables render as real tables (not raw pipes)', () => {
   const md = client.renderMarkdown
 

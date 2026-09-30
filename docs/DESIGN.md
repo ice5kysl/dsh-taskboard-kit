@@ -28,7 +28,14 @@ v0.2 已移出此清单：**列间拖拽**（`src/shared/dnd.ts` 的 `planDrop` 
 
 v0.5.1 已移出此清单：**markdown 渲染**——`src/client/markdown.ts` 是一个零依赖 mini renderer（先转义、只注入自己造的标签，链接限 http/https，bundle 仍只 require react），detail 与评论共用；随后补上了 **GFM 表格**（表头 + `|---|` 分隔行 + `:--`/`--:` 列对齐，单元格沿用同一套 escape-first inline 规则，`\|` 与 code span 内的竖线不切列）、`---` 分隔线与 **setext 标题**（`标题\n---` 按 GFM 出 h2，不会被误当成分隔线），表格样式（`.tb-table-wrap` 横向滚动 + th/td 边框）放在 `TB_CSS` 的 `.tb-md` 段内，两套主题都吃 token。
 
-仍未做（写卡给下一轮）：图片（`![alt](url)` 现在会退化成 `!` + 链接）、嵌套列表（缩进被抹平）、任务清单复选框（`- [ ]` 保持字面量）。
+v0.7.0 交付（T-12，B 项的剩余四条，安全模型不变）：
+
+- **图片** `![alt](url)` → `<img src alt loading="lazy" referrerpolicy="no-referrer">`，`src` 只放行 http/https（`data:` / `javascript:` / `file:` 保持字面量不动）；CSS 限 `max-width:100%; height:auto`。旧行为是退化成 `!` + 链接（inline() 的链接正则先于图片命中），现在是真标签。**图片规则必须跑在链接规则之前** —— `![alt](url)` 里就含 `[alt](url)`。
+- **嵌套列表**：按缩进分两级（更深的压到第 2 层），子列表开在父 `<li>` **内部**（`<ul><li>a<ul>…</ul></li></ul>`，而不是浏览器勉强容忍的 `<li>a</li><ul>…`）；同一层换标记（`-` ↔ `1.`）开新列表。实现是 `renderList` 的栈式开合（`liOpen` 决定何时补 `</li>`）。
+- **任务清单复选框** `- [ ]` / `- [x]` → `<input type="checkbox" disabled [checked]>`，只读、不写回 detail（看板不是编辑器）。规则锚在片段**开头**（`TASK_BOX`），所以正文中间的 `[x]` 保持字面量，而列表项去掉标记后的文本、以及表格单元格，都天然是"片段开头" —— 图片与复选框因此在单元格里同样生效；嵌套列表不可能出现在单元格里（单元格是单行 inline 内容，一行只能有一个条目）。
+- **评论容器**从 `span + white-space:pre-wrap` 改成块级 `div`：表格/列表是块内容，塞在 span 里不规范（`commentText` 的 pre-wrap 一并去掉 —— 渲染器已用 `<br>` 表达软换行，pre-wrap 只会把间距翻倍）。
+
+目视证据：`docs/images/markdown-fidelity.png`（真实 `renderMarkdown` + 真实 `TB_CSS`，Chrome 截图；左侧详情、右侧评论）。
 
 v0.5.4 已移出此清单：**多 Agent 协作协议**——规范文本见 `docs/COLLABORATION.md`，精简版进系统提示词
 （`src/host/index.ts` 的 `protocolText()`），CLI `--help` 与面板「? 指南」片段同源。落地的东西：

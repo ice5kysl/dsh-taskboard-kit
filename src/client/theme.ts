@@ -110,6 +110,10 @@ export const TB_CSS = `
 .tb-md li { margin: 0.12em 0; }
 .tb-md a { color: ${LINK}; text-decoration: none; }
 .tb-md a:hover { text-decoration: underline; }
+/* Images never overflow the drawer (a markdown image is a real tag now), and a
+   task-list checkbox sits on the text baseline instead of shoving the line. */
+.tb-md img { max-width: 100%; height: auto; border-radius: 8px; }
+.tb-md input[type="checkbox"] { vertical-align: -1px; margin: 0 5px 0 0; }
 .tb-md code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; background: ${HOVER_BG}; padding: 1px 5px; border-radius: 5px; }
 .tb-md pre { background: ${BG_SUNK}; border: 1px solid ${BORDER}; border-radius: 8px; padding: 9px 11px; overflow-x: auto; margin: 0.5em 0; line-height: 1.6; tab-size: 2; }
 .tb-md pre code { background: transparent; padding: 0; display: block; white-space: pre; }

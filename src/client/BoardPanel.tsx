@@ -1557,12 +1557,12 @@ export function DetailDrawer({ task, state, store, actors, onClose, style, initi
               {log.map((entry, index) => (
                 <li key={`${entry.at}-${index}`} style={styles.logRow}>
                   <span style={styles.logDot} />
-                  <span style={styles.logMain}>
+                  <div style={styles.logMain}>
                     <span style={styles.logEvent}>{eventLabel(entry.event)}</span>
                     <span style={styles.logBy}>{entry.by}</span>
                     <span style={styles.logTime} title={entry.at}>{relTime(entry.at)}</span>
                     {entry.note ? <span style={styles.logNote}>{entry.note}</span> : null}
-                  </span>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -1579,11 +1579,11 @@ function CommentRow({ comment }: { comment: TaskComment }): JSX.Element {
   return (
     <li style={styles.logRow}>
       <span style={styles.logDot} />
-      <span style={styles.logMain}>
+      <div style={styles.logMain}>
         <span style={styles.logEvent}>{comment.by}</span>
         <span style={styles.logTime} title={comment.at}>{relTime(comment.at)}</span>
-        <span className="tb-md" style={styles.commentText} dangerouslySetInnerHTML={{ __html: renderMarkdown(comment.text) }} />
-      </span>
+        <div className="tb-md" style={styles.commentText} dangerouslySetInnerHTML={{ __html: renderMarkdown(comment.text) }} />
+      </div>
     </li>
   )
 }
@@ -2265,7 +2265,10 @@ const styles: Record<string, CSSProperties> = {
   logBy: { color: DIM },
   logTime: { color: FAINT, fontSize: 10 },
   logNote: { flexBasis: '100%', color: DIM, fontSize: 11, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
-  commentText: { flexBasis: '100%', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
+  // Block container (not a span + pre-wrap): tables/lists are block content and
+  // the renderer already emits <br> for single newlines, so pre-wrap would only
+  // double the spacing. (T-12)
+  commentText: { flexBasis: '100%', fontSize: 12, lineHeight: 1.6, overflowWrap: 'anywhere' },
   commentComposer: { display: 'flex', flexDirection: 'column', gap: 6 },
   tabRow: {
     display: 'flex',

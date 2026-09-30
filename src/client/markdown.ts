@@ -9,11 +9,14 @@
  *   1. inline code spans are extracted into placeholders (their content is
  *      escaped once and never re-interpreted);
  *   2. the remaining text is HTML-escaped (& < > ");
- *   3. the only markup produced afterwards is ours: links (http/https only —
- *      javascript: and friends render as literal text), bold, italic;
+ *   3. the only markup produced afterwards is ours: images (`![alt](url)`,
+ *      http/https only), links (http/https only — javascript: and friends
+ *      render as literal text), bold, italic, and a task checkbox at the head
+ *      of a list item or table cell (`[ ]` / `[x]`, read-only);
  *   4. block level: paragraphs (single newline = <br>), # and setext headings,
- *      -/* and 1. lists, ``` fenced code, > quotes, --- thematic breaks, and
- *      GFM tables (header row + |---| delimiter row + body rows).
+ *      -/* and 1. lists **nested by indentation, two levels max**, ``` fenced
+ *      code, > quotes, --- thematic breaks, and GFM tables (header row +
+ *      |---| delimiter row + body rows).
  *
  * The result is a sanitized HTML string for dangerouslySetInnerHTML — every
  * byte of user input has passed through escapeHtml exactly once, and every
@@ -34,6 +37,14 @@ function escapeHtml(text: string): string {
 /** Only http/https links ever become anchors; anything else stays literal. */
 const SAFE_URL = /^https?:\/\//i
 
+/**
+ * A task-list box at the HEAD of a fragment: `[ ] todo` / `[x] done` — the
+ * shape a `- [ ]` list item leaves behind once its marker is stripped, and the
+ * shape a table cell carries. Anchored, so `[x] done` mid-sentence stays prose
+ * (and `[x](url)` is never a box — the rule wants whitespace after the bracket).
+ */
+const TASK_BOX = /^\[([ xX])\]\s+/
+
 /** Inline formatting of one raw text fragment (already block-positioned). */
 function inline(raw: string): string {
   // 1. Inline code spans ride out the rest of the pipeline as placeholders:
@@ -45,18 +56,93 @@ function inline(raw: string): string {
   })
   // 2. Everything the user wrote becomes inert text.
   text = escapeHtml(text)
-  // 3. Links: [label](url) with a scheme whitelist; target/rel so a link can
+  // 3. Images BEFORE links: `![alt](url)` contains `[alt](url)`, so the link
+  //    rule would otherwise swallow the inner half and leave a stray `!`.
+  //    `alt` and `src` sit inside double-quoted attributes and were escaped in
+  //    step 2 (no raw quotes); only http/https ever loads anything.
+  text = text.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (match, alt: string, url: string) =>
+    SAFE_URL.test(url)
+      ? `<img src="${url}" alt="${alt}" loading="lazy" referrerpolicy="no-referrer">`
+      : match,
+  )
+  // 4. Links: [label](url) with a scheme whitelist; target/rel so a link can
   //    never hijack or phone home from the webview. The url sits inside a
   //    double-quoted attribute and was escaped in step 2 (no raw quotes).
   text = text.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (match, label: string, url: string) =>
     SAFE_URL.test(url) ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>` : match,
   )
-  // 4. Bold before italic so ** wins over *.
+  // 5. Task checkbox — read-only by construction (`disabled`): the board is not
+  //    an editor, and writing back would create "who changed my card?" cases.
+  text = text.replace(TASK_BOX, (_match, mark: string) =>
+    `<input type="checkbox" disabled${mark.toLowerCase() === 'x' ? ' checked' : ''}> `,
+  )
+  // 6. Bold before italic so ** wins over *.
   text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>')
-  // 5. Restore the protected code spans.
+  // 7. Restore the protected code spans.
   text = text.replace(/\u0000(\d+)\u0000/g, (_match, n: string) => codes[Number(n)] ?? '')
   return text
+}
+
+/** One list item: indentation level (1 or 2 — deeper clamps to 2), kind, text. */
+interface ListItem {
+  level: 1 | 2
+  ordered: boolean
+  text: string
+}
+
+/** Leading whitespace width — the only nesting signal this renderer honours. */
+function indentOf(line: string): number {
+  return /^\s*/.exec(line)?.[0].length ?? 0
+}
+
+/**
+ * Render one list block (mixed markers, up to two levels).
+ *
+ * Open lists live on a stack; a deeper item opens a child list INSIDE the
+ * parent's still-open `<li>` (so the markup is valid nesting rather than the
+ * `<ul><li>a</li><ul>…` shape browsers merely tolerate), a marker-kind change
+ * opens a sibling list, and a shallower item unwinds first. Deeper-than-two
+ * indentation is clamped by the caller, and item text runs through {@link inline}
+ * — so `- [x] done` yields a read-only, checked box.
+ */
+function renderList(items: ListItem[]): string {
+  interface Frame {
+    level: number
+    ordered: boolean
+    liOpen: boolean
+  }
+  const stack: Frame[] = []
+  let html = ''
+  const open = (item: ListItem): void => {
+    html += item.ordered ? '<ol>' : '<ul>'
+    stack.push({ level: item.level, ordered: item.ordered, liOpen: false })
+  }
+  const close = (): void => {
+    const frame = stack.pop()
+    if (!frame) return
+    if (frame.liOpen) html += '</li>'
+    html += frame.ordered ? '</ol>' : '</ul>'
+  }
+  for (const item of items) {
+    while (stack.length > 0 && (stack[stack.length - 1]?.level ?? 0) > item.level) close()
+    const top = stack[stack.length - 1]
+    if (!top) open(item)
+    else if (top.level === item.level) {
+      if (top.ordered !== item.ordered) {
+        close()
+        open(item)
+      } else if (top.liOpen) {
+        html += '</li>'
+        top.liOpen = false
+      }
+    } else open(item) // deeper: the child list goes inside the open <li>
+    const frame = stack[stack.length - 1]
+    if (frame) frame.liOpen = true
+    html += `<li>${inline(item.text)}`
+  }
+  while (stack.length > 0) close()
+  return html
 }
 
 /** Text alignment of one table column, derived from its `:---:` delimiter. */
@@ -193,23 +279,22 @@ export function renderMarkdown(source: string): string {
       continue
     }
 
-    if (isUl(line)) {
-      const items: string[] = []
-      while (i < lines.length && isUl(at(i))) {
-        items.push(at(i).replace(/^\s*[-*]\s+/, ''))
+    // Lists: ul/ol and any indentation, one block until a non-list line. The
+    // first line's indent is the baseline; anything deeper is level 2 (deeper
+    // than that clamps to 2 — three-level nesting is noise in a card).
+    if (isUl(line) || isOl(line)) {
+      const items: ListItem[] = []
+      const base = indentOf(line)
+      while (i < lines.length && (isUl(at(i)) || isOl(at(i)))) {
+        const raw = at(i)
+        items.push({
+          level: indentOf(raw) > base ? 2 : 1,
+          ordered: isOl(raw),
+          text: raw.replace(/^\s*(?:[-*]|\d+\.)\s+/, ''),
+        })
         i += 1
       }
-      out.push(`<ul>${items.map((item) => `<li>${inline(item)}</li>`).join('')}</ul>`)
-      continue
-    }
-
-    if (isOl(line)) {
-      const items: string[] = []
-      while (i < lines.length && isOl(at(i))) {
-        items.push(at(i).replace(/^\s*\d+\.\s+/, ''))
-        i += 1
-      }
-      out.push(`<ol>${items.map((item) => `<li>${inline(item)}</li>`).join('')}</ol>`)
+      out.push(renderList(items))
       continue
     }
 
