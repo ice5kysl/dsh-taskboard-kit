@@ -91,20 +91,27 @@
 ## 安装
 
 ```bash
-dsh plugin --profile web add dsh-taskboard-kit@0.6.1
+dsh plugin --profile web add dsh-taskboard-kit@0.6.2
 # 重启 dsh web，打开任意会话，「看板」页签就在
 ```
 
 **务必写死版本号。** `dsh plugin` 转发给 pnpm 11，而 pnpm 11 默认带一道供应链
 `minimumReleaseAge` 闸门：刚发布几分钟的版本会被拦下，此时不带版本的
 `add dsh-taskboard-kit` **会静默装上一个旧版本** —— 你拿到的看板里 `done` 仍被当成终点，
-而且没有任何提示。写上 `@0.6.1` 就是让这次安装绕过闸门、装到你指定的版本。
-等 0.6.1 发布满一天后，不带版本也能装到它。
+而且没有任何提示。写上 `@0.6.2` 就是让这次安装绕过闸门、装到你指定的版本。
+等某个版本发布满一天后，不带版本也能装到它。
 
-**0.6.1 是纯文案版本。** 「叫人类」这件事一律改说成**你自己的通知通道**
-（msg9 / 桌面通知 / webhook / 邮件），不再把 msg9 写成唯一方式。本 kit 从未依赖过 msg9，
-是措辞让人以为依赖了。零行为变化；`msg9HookExample` 改名为 `notifyHookExample`，
-旧名保留为 deprecated 别名。
+**0.6.2 修的是「样式表归属」。** 状态栏那枚「看板 · N ◷M」胶囊**偶尔**会退化成浏览器
+默认按钮（灰底灰边、图标被挤到上一行）。根因不在布局：dsh 的客户端模块加载器会把文档里
+**所有还没有主的 `<style>`** 收编给下一个加载的插件模块，再在它卸载 / 热重载时删掉；
+我们的样式表原本是 React 渲染的（天然无主），于是被别人的一次重载顺手删掉，而 React 还以为
+它还在（fiber 既不会补回，界面上也没有任何报错）。现在 TB_CSS 只由
+`ensureTaskboardStyles()` 注入 `<head>`，出生就带 `data-plugin="dsh-taskboard-kit"`，
+加载器再也抢不走，丢了下次挂载还会自愈。**建议所有 0.6.x 用户升级。**
+
+（0.6.1 是纯文案版本：「叫人类」改说成**你自己的通知通道**（msg9 / 桌面通知 / webhook /
+邮件），不再把 msg9 写成唯一方式；`msg9HookExample` 改名为 `notifyHookExample`，
+旧名保留为 deprecated 别名。零行为变化。）
 
 升级同理：`dsh plugin --profile web add dsh-taskboard-kit@<版本号>`（0.x 锁小版本，
 `dsh plugin update` 不会带你跨版本）。

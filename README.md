@@ -117,7 +117,7 @@ Each task still carries **value points** (Fibonacci scale ½ / 1 / 2 / 3 / 5 / 8
 ## Install
 
 ```bash
-dsh plugin --profile web add dsh-taskboard-kit@0.6.1
+dsh plugin --profile web add dsh-taskboard-kit@0.6.2
 # restart dsh web, open any session, and the「看板」tab is there
 ```
 
@@ -125,14 +125,24 @@ dsh plugin --profile web add dsh-taskboard-kit@0.6.1
 supply-chain `minimumReleaseAge` gate: a version published minutes ago is held
 back, and a bare `add dsh-taskboard-kit` then silently installs an older one —
 you would get a board whose `done` is still treated as terminal without any hint.
-Naming `@0.6.1` opts that release out of the gate and installs what you asked for.
-When 0.6.1 is more than a day old, a bare `add` finds it too.
+Naming `@0.6.2` opts that release out of the gate and installs what you asked for.
+Once a release is more than a day old, a bare `add` finds it too.
 
-**0.6.1 is a copy-only release.** Reaching a human is described as *your* notify
-channel (msg9 / desktop notification / webhook / mail) instead of naming msg9 as
-the way. The kit never depended on msg9 — the wording just made it look like it
-did. No behaviour changed; `msg9HookExample` is now `notifyHookExample` with the
-old name kept as a deprecated alias.
+**0.6.2 fixes stylesheet ownership.** The status-bar「Board · N ◷M」pill could
+occasionally collapse into a browser-default `<button>` (grey fill and border, the
+icon pushed onto its own line). The cause was not layout: dsh's client module loader
+books every *unowned* `<style>` in the document to the next plugin module that
+materializes, and deletes it when that plugin unloads or hot-reloads. Our sheet was
+React-rendered (hence unowned), so a stranger's reload deleted it behind React's back
+— no error, and React never put it back. TB_CSS is now injected into `<head>` by
+`ensureTaskboardStyles()` and is born tagged `data-plugin="dsh-taskboard-kit"`, so the
+loader can never claim it, and a lost tag heals on the next mount. **0.6.x users
+should upgrade.**
+
+(0.6.1 was copy-only: reaching a human is described as *your* notify channel
+(msg9 / desktop notification / webhook / mail) instead of naming msg9 as the way;
+`msg9HookExample` became `notifyHookExample`, old name kept as a deprecated alias.
+No behaviour changed.)
 
 Upgrades: use `dsh plugin --profile web add dsh-taskboard-kit@<version>` with the
 exact version (0.x locks the minor, so `dsh plugin update` will not move you).
