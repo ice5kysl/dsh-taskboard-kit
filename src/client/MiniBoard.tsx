@@ -292,6 +292,7 @@ function MiniBoardDrawerContent({ store, state, initialSelectedId, initialTab }:
                   tasks={list}
                   board={board}
                   dnd={dnd}
+                  busy={state.busy}
                   onOpenTask={(id) => setSelectedId(id)}
                   onCollapse={column === 'closed' ? () => setClosedOpen(false) : undefined}
                   picker={
@@ -342,6 +343,7 @@ function MiniSection({
   tasks,
   board,
   dnd,
+  busy,
   onOpenTask,
   onCollapse,
   picker,
@@ -350,6 +352,8 @@ function MiniSection({
   tasks: Task[]
   board: Board | null
   dnd: MiniDnd
+  /** A mutation in flight — rows stop being drag sources meanwhile (m12). */
+  busy: boolean
   onOpenTask(id: string): void
   /** Given only for the expanded closed block: folds it back into the row. */
   onCollapse?: () => void
@@ -389,7 +393,7 @@ function MiniSection({
         <div style={styles.miniEmpty}>{L('（空）', '(empty)')}</div>
       ) : (
         tasks.map((task) => (
-          <MiniRow key={task.id} task={task} board={board} dragging={dnd.dragId === task.id} dnd={dnd} onOpen={() => onOpenTask(task.id)} />
+          <MiniRow key={task.id} task={task} board={board} dragging={dnd.dragId === task.id} dnd={dnd} busy={busy} onOpen={() => onOpenTask(task.id)} />
         ))
       )}
       {picker}
@@ -401,7 +405,7 @@ function MiniSection({
  *  Collaboration marks (v0.5.4): a quiet stale dot after the ref when the card
  *  has sat in its column past the SLA, and an amber badge when it is parked on
  *  someone — a row waiting on the human must not look like ordinary work. */
-function MiniRow({ task, board, dragging, dnd, onOpen }: { task: Task; board: Board | null; dragging: boolean; dnd: MiniDnd; onOpen(): void }): JSX.Element {
+function MiniRow({ task, board, dragging, dnd, busy, onOpen }: { task: Task; board: Board | null; dragging: boolean; dnd: MiniDnd; busy: boolean; onOpen(): void }): JSX.Element {
   const now = Date.now()
   const staleness = stalenessOf(task, now)
   const waiting = task.waiting_on
@@ -411,7 +415,7 @@ function MiniRow({ task, board, dragging, dnd, onOpen }: { task: Task; board: Bo
     <button
       type="button"
       className={dragging ? 'tb-mini-row dragging' : 'tb-mini-row'}
-      draggable
+      draggable={!busy}
       onDragStart={(event) => {
         event.dataTransfer.setData('text/plain', task.id)
         event.dataTransfer.effectAllowed = 'move'

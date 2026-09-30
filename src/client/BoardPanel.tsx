@@ -979,7 +979,7 @@ function ColumnView({
           <div style={styles.columnEmpty}>{L('（空）', '(empty)')}</div>
         ) : (
           tasks.map((task) => (
-            <TaskCard key={task.id} task={task} board={state.board} selected={task.id === state.selectedId} onOpen={() => store.select(task.id)} dnd={dnd} />
+            <TaskCard key={task.id} task={task} board={state.board} selected={task.id === state.selectedId} onOpen={() => store.select(task.id)} dnd={dnd} busy={state.busy} />
           ))
         )}
       </div>
@@ -1106,7 +1106,7 @@ function ClosedStrip({ count, dnd, onExpand }: { count: number; dnd: LaneDnd; on
  *  lane), a faint dot appears once that age passes the column's SLA, and
  *  reviewer / waiting-on get their own badges — a card parked on a person must
  *  never look like a card anyone can pick up. */
-function TaskCard({ task, board, selected, onOpen, dnd }: { task: Task; board: Board | null; selected: boolean; onOpen(): void; dnd?: LaneDnd }): JSX.Element {
+function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; board: Board | null; selected: boolean; onOpen(): void; dnd?: LaneDnd; busy?: boolean }): JSX.Element {
   const dragging = dnd?.dragId === task.id
   const now = Date.now()
   const staleness = stalenessOf(task, now)
@@ -1119,8 +1119,10 @@ function TaskCard({ task, board, selected, onOpen, dnd }: { task: Task; board: B
       className={selected ? 'tb-card active' : 'tb-card'}
       style={{ opacity: dragging ? 0.5 : 1 }}
       // No `dnd` ⇒ the card is not a drag source. The「按负责人」view is a
-      // projection of ownership, not a status board (see OwnerLanes).
-      draggable={dnd !== undefined}
+      // projection of ownership, not a status board (see OwnerLanes). And a
+      // mutation in flight (busy) suspends dragging too: a drop fired into
+      // the busy gate used to vanish without a word (m12).
+      draggable={dnd !== undefined && !busy}
       onDragStart={dnd === undefined ? undefined : (event) => {
         event.dataTransfer.setData('text/plain', task.id)
         event.dataTransfer.effectAllowed = 'move'

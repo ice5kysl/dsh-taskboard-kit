@@ -20,6 +20,7 @@
 import type { Board } from '../shared/types.ts'
 import type { ClaimRequest, CommentRequest, CreateRequest, UpdateRequest } from '../shared/bridge.ts'
 import { createBridgeClient, type BridgeClient } from './api.ts'
+import { L } from './locale.ts'
 
 /** The board tab's views: the status lanes, the owner lanes, or analytics. */
 export type BoardGrouping = 'column' | 'owner' | 'stats'
@@ -123,6 +124,9 @@ export interface EnableOutcome {
 export interface StoreOptions {
   pollMs?: number
   bridge?: BridgeClient
+  /** Per-request timeout for the default bridge; kept under the poll interval
+   *  so a hung bridge can never stack poll on top of poll (m13). */
+  requestTimeoutMs?: number
 }
 
 const INITIAL: TaskboardState = {
@@ -143,7 +147,7 @@ const INITIAL: TaskboardState = {
 
 /** Build a store. Tests pass a fake bridge; the app uses the default one. */
 export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore {
-  const bridge = options.bridge ?? createBridgeClient()
+  const bridge = options.bridge ?? createBridgeClient({ timeoutMs: options.requestTimeoutMs })
   const pollMs = options.pollMs ?? 15_000
 
   let state: TaskboardState = INITIAL
@@ -153,6 +157,19 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
   let seq = 0
   let subscribers = 0
   let timer: ReturnType<typeof setInterval> | undefined
+  // Poll plumbing (m13): at most one board request in flight; a second caller
+  // coalesces onto it and queues ONE trailing re-read, so a write that landed
+  // after the in-flight read still shows up. Requests carry an AbortSignal so
+  // switching workspaces actually cancels the old read instead of merely
+  // discarding its result.
+  let inflight: Promise<void> | null = null
+  let trailing = false
+  let boardAborter: AbortController | null = null
+  // m19: content freshness is the board file's mtime, not the request order.
+  let lastAppliedMtime = -1
+  // m13: a persistent poll failure is surfaced ONCE — re-setting the same
+  // error every tick resurrected the strip the user had dismissed.
+  let lastPollError: string | null = null
 
   const get = (): TaskboardState => state
   const set = (patch: Partial<TaskboardState>): void => {
@@ -160,32 +177,83 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
     for (const listener of [...listeners]) listener()
   }
 
+  /** A failed reload keeps the board it already has; only a failed FIRST load
+   *  turns the whole panel into an error block. Repeats of the SAME failure
+   *  stay silent (the strip is already up, or was dismissed). */
+  function reportPollError(message: string): void {
+    if (message === lastPollError) return
+    lastPollError = message
+    set({ status: state.board ? 'ready' : 'error', error: message })
+  }
+
+  /** m14: never let a malformed payload paint an "empty board" lie over a
+   *  good one — check the minimal shape before applying anything. */
+  function isBoardShape(board: Board | undefined): board is Board {
+    return !!board && typeof board === 'object' && !!board.tasks && typeof board.tasks === 'object'
+  }
+
   async function refresh(): Promise<void> {
     const cwd = state.cwd
     if (!cwd) return
-    const mine = ++seq
-    const res = await bridge.board(cwd)
-    if (mine !== seq) return
-    if (res.ok) {
-      set({
-        status: 'ready',
-        board: res.board,
-        error: null,
-        cli: res.cli ?? null,
-        boardFile: res.board_file ?? null,
-        boardExists: res.board_exists ?? true,
-      })
-    } else {
-      // A failed reload keeps the board it already has; only a failed FIRST
-      // load turns the whole panel into an error block.
-      set({ status: state.board ? 'ready' : 'error', error: res.error })
+    if (inflight) {
+      trailing = true
+      return inflight
     }
+    const mine = ++seq
+    boardAborter?.abort()
+    const aborter = new AbortController()
+    boardAborter = aborter
+    inflight = (async () => {
+      try {
+        const res = await bridge.board(cwd, aborter.signal)
+        if (mine !== seq) return
+        if (res.ok) {
+          if (!isBoardShape(res.board)) {
+            reportPollError(L(
+              'bridge 返回了残缺的看板数据,已保留上一份。',
+              'The bridge returned a malformed board; kept the last good one.',
+            ))
+            return
+          }
+          if (typeof res.board_mtime === 'number') {
+            // A strictly older snapshot must never overwrite a newer one.
+            if (res.board_mtime < lastAppliedMtime) return
+            lastAppliedMtime = res.board_mtime
+          }
+          lastPollError = null
+          set({
+            status: 'ready',
+            board: res.board,
+            error: null,
+            cli: res.cli ?? null,
+            boardFile: res.board_file ?? null,
+            boardExists: res.board_exists ?? true,
+          })
+        } else {
+          reportPollError(res.error)
+        }
+      } finally {
+        inflight = null
+        boardAborter = null
+        if (trailing) {
+          trailing = false
+          void refresh()
+        }
+      }
+    })()
+    return inflight
   }
 
   /** One mutation flow: busy-gated, error-surfaced, re-reads the board after. */
   async function mutate(call: (cwd: string) => Promise<{ ok: boolean; error?: string }>): Promise<boolean> {
     const cwd = state.cwd
-    if (!cwd || state.busy) return false
+    if (!cwd) return false
+    if (state.busy) {
+      // m12: a change swallowed by the busy gate used to fail SILENTLY (a drop
+      // that did nothing, with no hint why) — say so instead.
+      set({ error: L('上一个操作还没完成,请稍候再试。', 'The previous change is still in flight — try again in a moment.') })
+      return false
+    }
     set({ busy: true, error: null })
     try {
       const res = await call(cwd)
@@ -235,8 +303,12 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
     setCwd(cwd) {
       const next = cwd ?? null
       if (next === state.cwd) return
-      // Invalidate in-flight responses, clear the old workspace's view, load.
+      // Invalidate in-flight responses (and actually cancel the request),
+      // reset the freshness/error baselines, clear the old workspace's view.
       seq += 1
+      boardAborter?.abort()
+      lastAppliedMtime = -1
+      lastPollError = null
       set({
         cwd: next,
         board: null,

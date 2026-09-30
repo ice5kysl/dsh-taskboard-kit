@@ -48,20 +48,28 @@ export interface BridgeOptions {
   base?: string
   /** Transport override (tests inject a fake). */
   fetch?: typeof fetch
+  /**
+   * Per-request timeout; defaults to REQUEST_TIMEOUT_MS. Must stay below the
+   * store's poll interval (15s) or a hung bridge stacks overlapping polls.
+   */
+  timeoutMs?: number
 }
 
-/** How long a bridge call may hang before the panel gives up on it. */
-const REQUEST_TIMEOUT_MS = 15_000
+/** How long a bridge call may hang before the panel gives up on it. Kept
+ *  below the store's default poll interval (15s) so a hung bridge can never
+ *  stack poll on top of poll (m13). */
+const REQUEST_TIMEOUT_MS = 10_000
 
 /** Build the bridge client. */
 export function createBridgeClient(options: BridgeOptions = {}): BridgeClient {
   const base = (options.base ?? BRIDGE_PREFIX).replace(/\/+$/, '')
   const doFetch: typeof fetch = options.fetch ?? ((...args) => fetch(...args))
+  const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS
 
   /** A hung bridge must not wedge the store's busy flag: cap every call. */
   function timeoutSignal(signal?: AbortSignal): { signal: AbortSignal; done(): void } {
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
     if (signal) {
       if (signal.aborted) controller.abort()
       else signal.addEventListener('abort', () => controller.abort(), { once: true })

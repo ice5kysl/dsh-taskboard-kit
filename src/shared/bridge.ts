@@ -103,7 +103,20 @@ export interface ApiError {
  * a different prompt for each — the first needs enabling before any agent can
  * work, the second just needs a task.
  */
-export type BoardResponse = { ok: true; board: Board; cli?: string | null; board_file?: string; board_exists?: boolean } | ApiError
+export type BoardResponse = {
+  ok: true
+  board: Board
+  cli?: string | null
+  board_file?: string
+  board_exists?: boolean
+  /**
+   * mtime (ms) of the board file the snapshot was read from; 0 when no file
+   * exists. Lets the panel discard a snapshot that is strictly OLDER than the
+   * one already applied — request issue order says nothing about content
+   * freshness (m19). Absent on older hosts: clients fall back to the seq guard.
+   */
+  board_mtime?: number
+} | ApiError
 export type TaskResponse = { ok: true; task: Task } | ApiError
 
 /**

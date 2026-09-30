@@ -1351,6 +1351,156 @@ await check('stats: duration text is compact at every scale', () => {
   assert.equal(client.durationText(0), '0m')
 })
 
+// ------------------------------------------- T-10: client-side audit minors
+
+const t10Board = (tasks = {}) => ({ version: 1, workspace: '/w', next_seq: 10, tasks, actors: {} })
+
+await check('m12: a change fired into the busy gate is refused WITH a visible reason', async () => {
+  let releaseCreate
+  const createGate = new Promise((resolve) => { releaseCreate = resolve })
+  const bridge = {
+    board: async () => ({ ok: true, board: t10Board() }),
+    create: async () => { await createGate; return { ok: true, task: {} } },
+    update: async () => ({ ok: true, task: {} }),
+  }
+  const store = client.createTaskboardStore({ bridge, pollMs: 10 ** 9 })
+  store.setCwd('/w')
+  await store.refresh()
+
+  const first = store.create({ title: 'x' }) // occupies the busy slot
+  await new Promise((resolve) => setTimeout(resolve, 0)) // let mutate() raise busy
+  assert.equal(store.getState().busy, true, 'first mutation in flight')
+
+  assert.equal(await store.update({ id: 'T-1', action: 'start' }), false, 'a second change is refused')
+  assert.match(store.getState().error, /in flight|稍候/, 'and the refusal says WHY (no silent drop)')
+
+  releaseCreate()
+  assert.equal(await first, true)
+  assert.equal(store.getState().busy, false, 'busy settles afterwards')
+})
+
+await check('m13: refreshes coalesce onto the in-flight read, with one trailing re-read', async () => {
+  let calls = 0
+  let releaseFirst
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve })
+  const bridge = {
+    board: async () => {
+      calls += 1
+      if (calls === 1) await firstGate
+      return { ok: true, board: t10Board() }
+    },
+  }
+  const store = client.createTaskboardStore({ bridge, pollMs: 10 ** 9 })
+  store.setCwd('/w') // fires read #1 (hangs on the gate)
+  const extra = store.refresh() // must coalesce, not stack
+  assert.equal(calls, 1, 'a refresh while one is in flight fires no new request')
+  releaseFirst()
+  await extra
+  for (let i = 0; i < 50 && calls < 2; i++) await new Promise((resolve) => setTimeout(resolve, 1))
+  assert.equal(calls, 2, 'exactly one trailing re-read fires after the in-flight one settles')
+
+  // And once idle, further refreshes go straight through (no trailing loop).
+  await store.refresh()
+  assert.equal(calls, 3)
+  await store.refresh()
+  assert.equal(calls, 4)
+})
+
+await check('m13: a persistent failure is surfaced once, not resurrected every poll', async () => {
+  let reply = { ok: false, error: 'boom' }
+  const bridge = { board: async () => reply }
+  const store = client.createTaskboardStore({ bridge, pollMs: 10 ** 9 })
+  store.setCwd('/w')
+  await store.refresh()
+  assert.equal(store.getState().error, 'boom', 'the first failure surfaces')
+
+  store.clearError()
+  assert.equal(store.getState().error, null)
+  await store.refresh()
+  assert.equal(store.getState().error, null, 'the SAME failure does not resurrect the dismissed strip')
+
+  reply = { ok: false, error: 'boom-2' }
+  await store.refresh()
+  assert.equal(store.getState().error, 'boom-2', 'a DIFFERENT failure is shown')
+
+  reply = { ok: true, board: t10Board() }
+  await store.refresh()
+  assert.equal(store.getState().error, null, 'recovery clears the strip')
+
+  reply = { ok: false, error: 'boom' }
+  await store.refresh()
+  assert.equal(store.getState().error, 'boom', 'after a recovery the failure reports afresh')
+})
+
+await check('m13: the board read carries an AbortSignal, and setCwd cancels a stale read', async () => {
+  const events = []
+  let releaseFirst
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve })
+  const bridge = {
+    board: async (cwd, signal) => {
+      const reads = events.filter((e) => e[0] === 'read').length
+      events.push(['read', cwd, signal instanceof AbortSignal])
+      if (reads === 0) {
+        signal?.addEventListener('abort', () => events.push(['aborted', cwd]))
+        await firstGate
+      }
+      return { ok: true, board: { ...t10Board(), workspace: cwd } }
+    },
+  }
+  const store = client.createTaskboardStore({ bridge, pollMs: 10 ** 9 })
+  store.setCwd('/w1')
+  await new Promise((resolve) => setTimeout(resolve, 0)) // read #1 (/w1) in flight
+  store.setCwd('/w2') // must cancel the /w1 read
+  releaseFirst()
+  for (let i = 0; i < 50 && store.getState().board?.workspace !== '/w2'; i++) await new Promise((resolve) => setTimeout(resolve, 1))
+  assert.deepEqual(events[0], ['read', '/w1', true], 'the read carries an AbortSignal (no dead plumbing)')
+  assert.ok(events.some((e) => e[0] === 'aborted' && e[1] === '/w1'), 'switching cwd aborts the stale read')
+  assert.ok(events.some((e) => e[0] === 'read' && e[1] === '/w2'), 'the new cwd is read')
+  assert.equal(store.getState().board?.workspace, '/w2')
+})
+
+await check('m14: a malformed ok:true payload never paints an empty-board lie', async () => {
+  const good = t10Board({ 'T-1': { id: 'T-1', title: 'real', status: 'open' } })
+  let reply = { ok: true, board: good }
+  const bridge = { board: async () => reply }
+  const store = client.createTaskboardStore({ bridge, pollMs: 10 ** 9 })
+  store.setCwd('/w')
+  await store.refresh()
+  assert.equal(store.getState().board?.tasks['T-1']?.title, 'real', 'good board applied')
+
+  reply = { ok: true } // board missing entirely
+  await store.refresh()
+  assert.equal(store.getState().board?.tasks['T-1']?.title, 'real', 'the last good board is kept')
+  assert.match(store.getState().error, /malformed|残缺/, 'and the failure is said out loud')
+  assert.equal(store.getState().status, 'ready', 'a board we have stays on screen')
+
+  reply = { ok: true, board: { version: 1 } } // tasks missing — would crash render
+  await store.refresh()
+  assert.equal(store.getState().board?.tasks['T-1']?.title, 'real', 'a tasks-less payload is rejected too')
+})
+
+await check('m19: a strictly older snapshot never overwrites a newer one', async () => {
+  const snap = (n) => t10Board({ [`T-${n}`]: { id: `T-${n}`, title: `snap-${n}`, status: 'open' } })
+  let reply = { ok: true, board: snap(1), board_mtime: 100 }
+  const bridge = { board: async () => reply }
+  const store = client.createTaskboardStore({ bridge, pollMs: 10 ** 9 })
+  store.setCwd('/w')
+  await store.refresh()
+  assert.equal(store.getState().board?.tasks['T-1']?.title, 'snap-1')
+
+  reply = { ok: true, board: snap(2), board_mtime: 50 } // a stale snapshot arrives late
+  await store.refresh()
+  assert.equal(store.getState().board?.tasks['T-1']?.title, 'snap-1', 'strictly older mtime discarded')
+
+  reply = { ok: true, board: snap(3), board_mtime: 150 }
+  await store.refresh()
+  assert.equal(store.getState().board?.tasks['T-3']?.title, 'snap-3', 'newer mtime applied')
+
+  reply = { ok: true, board: snap(4), board_mtime: 150 }
+  await store.refresh()
+  assert.equal(store.getState().board?.tasks['T-4']?.title, 'snap-4', 'equal mtime still applies (same file, idempotent)')
+})
+
 // ------------------------------------------------------------------ done
 
 console.log(failed === 0 ? 'all checks passed' : `${failed} check(s) failed`)

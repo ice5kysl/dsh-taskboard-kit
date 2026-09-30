@@ -24,7 +24,7 @@
  * @module dsh-taskboard-kit/http
  */
 
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -410,6 +410,9 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
           // Reported alongside the board so the panel can tell "no board yet"
           // (offer to enable) apart from "empty board" (offer to create).
           board_exists: existsSync(boardFile),
+          // Content freshness marker: the panel drops a snapshot whose mtime
+          // is strictly older than the one it already applied (m19).
+          board_mtime: existsSync(boardFile) ? statSync(boardFile).mtimeMs : 0,
         })
       } catch (error) {
         if (error instanceof StoreError) {
