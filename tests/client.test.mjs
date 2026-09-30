@@ -65,6 +65,9 @@ await check('bundle: the module-loader envelope names the package', () => {
   assert.equal(client.name, 'taskboard-kit')
   assert.deepEqual([...client.inject], ['slots'])
   assert.equal(client.TASKBOARD_VIEW_ID, 'taskboard')
+  // The CSS ownership protocol needs the two to agree: scripts/build.mjs writes the
+  // envelope id from package.json's name, and the loader compares it with data-plugin.
+  assert.equal(client.CLIENT_PLUGIN_ID, envelope.id, 'CSS owner id === bundle envelope id')
 })
 
 // ------------------------------------------------------------ apply()
@@ -518,18 +521,80 @@ await check('taskRef: T-N shows as #N, anything else verbatim', () => {
 
 // --------------------------------------------------------- theme tokens
 
-await check('theme: the primary button rides the shell link tokens (no white block in dark mode)', () => {
-  // dsh dark theme resolves --dsw-alias-brand-primary to a NEAR-WHITE
-  // monochrome fill — using it as a button fill was the "white block" bug
-  // (twice: once with #fff text, once via button-primary-fill which aliases
-  // brand-primary). The shell's own blue primary button (the composer send
-  // key) measures to --dsw-alias-link in both themes; the pairing is
-  // label-primary-foreground text and button-info-hover for the hover.
-  // The loading view still injects TB_CSS, so no bridge is needed.
+/**
+ * Minimal document for the stylesheet-ownership contract. Only the surface
+ * `ensureTaskboardStyles` + dsh's loader bookkeeping touch: createElement /
+ * head.appendChild / querySelector(All) with the four selectors those two use.
+ */
+function fakeStyleDocument() {
+  const tags = []
+  const matches = (tag, selector) => {
+    let m
+    if (selector === 'style:not([data-plugin])') return tag.getAttribute('data-plugin') === null
+    if (selector === 'style[data-plugin]') return tag.getAttribute('data-plugin') !== null
+    if ((m = /^style\[data-plugin="([^"]*)"\]$/.exec(selector))) return tag.getAttribute('data-plugin') === m[1]
+    if ((m = /^style\[data-plugin-css="([^"]*)"\]$/.exec(selector))) return tag.getAttribute('data-plugin-css') === m[1]
+    throw new Error(`fakeStyleDocument: unsupported selector ${selector}`)
+  }
+  const doc = {
+    tags,
+    head: { appendChild: (node) => (tags.push(node), node) },
+    createElement: () => {
+      const attrs = new Map()
+      const tag = {
+        textContent: '',
+        setAttribute: (name, value) => attrs.set(name, String(value)),
+        getAttribute: (name) => (attrs.has(name) ? attrs.get(name) : null),
+        remove: () => {
+          const at = tags.indexOf(tag)
+          if (at >= 0) tags.splice(at, 1)
+        },
+      }
+      return tag
+    },
+    querySelector: (selector) => tags.find((tag) => matches(tag, selector)) ?? null,
+    querySelectorAll: (selector) => tags.filter((tag) => matches(tag, selector)),
+  }
+  return doc
+}
+
+// The two loader primitives under test, transcribed from
+// @deepseek-ai/dsh-client-modules/lib/client.js.
+const loaderClaimStyles = (doc, id) => {
+  for (const el of doc.querySelectorAll('style:not([data-plugin])')) el.setAttribute('data-plugin', id)
+}
+const loaderRemoveOwnedStyles = (doc, id) => {
+  for (const el of doc.querySelectorAll('style[data-plugin]')) if (el.getAttribute('data-plugin') === id) el.remove()
+}
+
+await check('theme: TB_CSS is injected as a package-owned <head> tag, once, and heals', () => {
+  const doc = fakeStyleDocument()
+  client.ensureTaskboardStyles(doc)
+  assert.equal(doc.tags.length, 1, 'one tag')
+  const tag = doc.tags[0]
+  // Born owned: dsh's loader stamps `data-plugin` on every UNTAGGED <style> and
+  // deletes `style[data-plugin=<pkg>]` on that package's unload. A tag that is
+  // ours from birth can never be claimed by a stranger (T-15).
+  assert.equal(tag.getAttribute('data-plugin'), client.CLIENT_PLUGIN_ID, 'born with our package id')
+  assert.equal(tag.getAttribute('data-plugin-css'), client.CSS_TAG_ID, 'and the loader-inventory fingerprint')
+
+  // Idempotent: every surface mount + the plugin's apply call it again.
+  client.ensureTaskboardStyles(doc)
+  assert.equal(doc.tags.length, 1, 'second call is a no-op')
+  // Self-healing: if the tag ever disappears, the next call puts it back.
+  tag.remove()
+  client.ensureTaskboardStyles(doc)
+  assert.equal(doc.tags.length, 1, 'a lost tag is re-injected on the next mount')
+
+  // No <style> may ride the React tree any more: that is exactly the shape the
+  // loader steals and later deletes behind React's back.
   const store = client.createTaskboardStore({ bridge: { board: async () => ({ ok: false, error: 'x' }) }, pollMs: 10 ** 9 })
   const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
-  const css = (html.match(/<style>([\s\S]*?)<\/style>/) ?? [])[1] ?? ''
-  assert.ok(css.includes('.tb-btn-primary'), 'primary rule injected with the panel')
+  assert.ok(!html.includes('<style'), 'the panel does not render its own <style> tag')
+  assert.ok(!html.includes('--dsw-alias-link'), 'TB_CSS text is not shipped inside the markup')
+
+  const css = tag.textContent
+  assert.ok(css.includes('.tb-btn-primary'), 'the injected sheet carries the button rules')
 
   const primary = (css.match(/\.tb-btn-primary \{([^}]*)\}/) ?? [])[1] ?? ''
   assert.ok(primary.includes('background:var(--dsw-alias-link') || primary.includes('background: var(--dsw-alias-link'), 'fill = the link token (blue in BOTH themes)')
@@ -551,6 +616,30 @@ await check('theme: the primary button rides the shell link tokens (no white blo
     assert.ok(css.includes(selector), `css carries ${selector}`)
   }
   assert.ok(/\.tb-md \.tb-table-wrap \{[^}]*overflow-x:\s*auto/.test(css), 'tables scroll sideways instead of stretching the drawer')
+})
+
+await check('theme: the dsh module loader can neither claim nor delete our stylesheet (T-15)', () => {
+  const doc = fakeStyleDocument()
+  client.ensureTaskboardStyles(doc)
+
+  // A stranger module materializes → its claim pass books every unowned tag.
+  loaderClaimStyles(doc, 'some-other-plugin')
+  assert.equal(doc.tags[0].getAttribute('data-plugin'), client.CLIENT_PLUGIN_ID, 'ours keeps our id (never claimed by a stranger)')
+  // …and later reloads/unloads → it deletes what it believes it owns.
+  loaderRemoveOwnedStyles(doc, 'some-other-plugin')
+  assert.equal(doc.tags.length, 1, "a stranger's reload leaves our stylesheet in place")
+
+  // The old shape proves the mechanism: a <style> rendered inside the React
+  // tree is untagged, so it IS claimed by the next module and then deleted
+  // behind React's back — React never re-adds a node its fiber still believes
+  // in, which is how the whole sheet vanished and the pill fell back to a UA
+  // <button>.
+  const reactOwned = doc.createElement('style')
+  doc.head.appendChild(reactOwned)
+  loaderClaimStyles(doc, 'some-other-plugin')
+  assert.equal(reactOwned.getAttribute('data-plugin'), 'some-other-plugin', 'an untagged tag IS stolen')
+  loaderRemoveOwnedStyles(doc, 'some-other-plugin')
+  assert.equal(doc.tags.includes(reactOwned), false, 'and then deleted — the old failure mode, reproduced')
 })
 
 // --------------------------------------------------------- mini board (composer side)

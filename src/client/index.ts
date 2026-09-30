@@ -31,6 +31,7 @@ import { BoardPanel } from './BoardPanel.tsx'
 import { L } from './locale.ts'
 import { MiniBoardButton, MiniBoardDrawer } from './MiniBoard.tsx'
 import { getTaskboardStore } from './store.ts'
+import { ensureTaskboardStyles } from './theme.ts'
 
 export const name = 'taskboard-kit'
 export const inject = ['slots'] as const
@@ -49,6 +50,7 @@ export { taskRef } from './BoardPanel.tsx'
 export { MiniBoardButton, MiniBoardDrawer } from './MiniBoard.tsx'
 export { createBridgeClient } from './api.ts'
 export { createTaskboardStore, getTaskboardStore } from './store.ts'
+export { TB_CSS, CLIENT_PLUGIN_ID, CSS_TAG_ID, ensureTaskboardStyles } from './theme.ts'
 export { columnOf, compareTasks, isTerminalStatus, needsSettling, TERMINAL_STATUS } from '../shared/types.ts'
 export { planDrop } from '../shared/dnd.ts'
 export type { DropOp } from '../shared/dnd.ts'
@@ -83,6 +85,13 @@ export function apply(raw: Context): void {
   const ctx = raw as unknown as ClientCtxLike
   const log = ctx.logger('taskboard-kit:client')
   const store = getTaskboardStore()
+
+  // One package-owned <head> tag before any surface can render. It is NOT a
+  // React-rendered <style>: the dsh client module loader claims every untagged
+  // <style> in the document for whichever plugin materializes next and deletes
+  // it on that plugin's unload — which silently stripped the status-bar pill
+  // down to a UA <button> (T-15). See ensureTaskboardStyles.
+  ensureTaskboardStyles()
 
   // Keep the board warm before the view is ever opened (no cwd → no-op).
   ctx.effect(() => store.start(), 'taskboard-kit: board poller')

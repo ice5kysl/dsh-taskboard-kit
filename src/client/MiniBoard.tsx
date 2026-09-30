@@ -49,7 +49,7 @@ import { L } from './locale.ts'
 import { AssignPicker, DetailDrawer, ageLabel, humanWaiting, isQuietActor, waitLabel } from './BoardPanel.tsx'
 import type { TaskboardState, TaskboardStore } from './store.ts'
 import { getTaskboardStore } from './store.ts'
-import { BG, BG_RAISED, BORDER, BORDER_STRONG, DIM, FAINT, FG, LINK, ON_PRIMARY, PRIORITY_COLORS, TB_CSS, WARN } from './theme.ts'
+import { BG, BG_RAISED, BORDER, BORDER_STRONG, DIM, FAINT, FG, LINK, ON_PRIMARY, PRIORITY_COLORS, WARN, ensureTaskboardStyles } from './theme.ts'
 import { columnLabel, openTaskCount, priorityLabel, runPlanOps, taskRef, useSessionCwd, valueText, type SessionListLike } from './view.ts'
 
 /** Props handed by the slot: the injected store + the standard session share.
@@ -92,13 +92,20 @@ export function MiniBoardButton(props: MiniBoardProps): JSX.Element {
     store.setCwd(cwd ?? null)
   }, [store, cwd])
 
+  // The pill's look is CSS class-based (hover needs a stylesheet) and the tag
+  // is owned by this package in <head> — never by React. Re-assert on mount:
+  // the pill is the surface that visibly degrades to a UA <button> when the
+  // stylesheet is gone (see ensureTaskboardStyles).
+  useEffect(() => {
+    ensureTaskboardStyles()
+  }, [])
+
   const open = openTaskCount(state.board)
   // Cards parked on the HUMAN — the one number here that is not about agents'
   // throughput. Quiet marker, amber, with the count in the tooltip.
   const waiting = humanWaiting(state.board).length
   return (
     <div style={styles.dockAnchor}>
-      <style>{TB_CSS}</style>
       <button
         type="button"
         className="tb-mini-entry"
@@ -193,6 +200,12 @@ function MiniBoardDrawerContent({ store, state, initialSelectedId, initialTab }:
     void store.refresh()
   }, [store])
 
+  // The drawer's own classes (rows, sections, badges) come from the same
+  // package-owned <head> tag; re-assert on open (see ensureTaskboardStyles).
+  useEffect(() => {
+    ensureTaskboardStyles()
+  }, [])
+
   // Portal'd out of the themed subtree: copy the tokens onto the backdrop
   // (the shared ancestor of both drawer layers) on open, and re-copy if the
   // theme flips while the drawer is open.
@@ -248,7 +261,6 @@ function MiniBoardDrawerContent({ store, state, initialSelectedId, initialTab }:
     <div ref={backdropRef} style={styles.backdrop}>
       {/* Click catcher below both drawer layers (no stopPropagation games). */}
       <div style={styles.catcher} onClick={unwind} />
-      <style>{TB_CSS}</style>
       <aside style={styles.drawer}>
         <div style={styles.drawerHead}>
           <span style={styles.drawerTitle}>{L('看板', 'Board')}</span>

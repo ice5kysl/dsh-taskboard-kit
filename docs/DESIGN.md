@@ -50,3 +50,31 @@ v0.5.4 已移出此清单：**多 Agent 协作协议**——规范文本见 `doc
 ## bridge 错误分层
 
 领域错误（conflict / not-found / invalid-input / invalid-transition）→ HTTP 200 + `{ ok:false, code }` 信封；传输层问题（不可信调用方、缺 mutate 头、坏 JSON、超限、未知路由）→ 真实 HTTP 状态码 + 同款信封。
+
+## 浏览器侧样式表的归属（T-15，0.6.x 的教训）
+
+**规矩：TB_CSS 只允许由 `ensureTaskboardStyles()` 注入 `document.head`，并且出生就带 `data-plugin="dsh-taskboard-kit"` + `data-plugin-css`；永远不要用 React 渲染 `<style>`。**
+
+原因不是审美，是 dsh 客户端的模块加载器（`@deepseek-ai/dsh-client-modules/lib/client.js`）有两条既成行为：
+
+```js
+// 每个插件模块 materialize 完，把文档里所有【还没有主】的 <style> 收编给这个模块
+const claimStyles = (id) => {
+  for (const el of document.querySelectorAll('style:not([data-plugin])')) el.setAttribute('data-plugin', id)
+}
+// 插件卸载 / HMR 重载时，删掉它名下所有样式表
+function removeOwnedStyles(id) {
+  for (const el of document.querySelectorAll('style[data-plugin]')) if (el.getAttribute('data-plugin') === id) el.remove()
+}
+```
+
+React 树里的 `<style>{TB_CSS}</style>` 天然是「无主」的，于是：
+
+1. 任何晚一步 materialize 的插件模块（延迟批次、HMR 重载、市场里开关插件、版本更新）把它记到自己名下；
+2. 那个插件后来重载/卸载 → 我们的样式表被删；
+3. 删除**绕过 React**：fiber 仍以为节点在 DOM 里，于是永远不会补回来 —— 整片 TB_CSS 消失，直到组件重新挂载或刷新页面。
+
+症状就是「有的时候」状态栏的「▤ 看板 · N ◷M」胶囊退化成浏览器默认 `<button>`（1px 灰边 + `#EFEFEF` 底 + 图标被挤到上一行 + 字号/颜色变 UA 默认）：内联样式还在（`· N` 的灰、`◷M` 的琥珀是对的），只有类规则没了 —— 这正是判定「不是布局挤坏、而是样式表整片丢失」的指纹。
+
+dsh 自己的包（ui-conversation 等）建标签时就打 `data-plugin`，所以从不被抢；kit 现在同款做法。`ensureTaskboardStyles` 幂等（按 `data-plugin-css` 去重）且自愈（标签没了下次挂载补回），`apply()` 与每个 surface 挂载都会调一次。回归测试用假 DOM 把 loader 的 claim → remove 两步都跑了一遍（`tests/client.test.mjs`），去掉 `data-plugin` 即红。
+

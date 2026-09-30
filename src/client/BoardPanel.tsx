@@ -24,7 +24,8 @@
  * action goes through `TaskboardStore`, so the model tools, the view and the
  * tests share one implementation of "load / create / claim / update".
  * Colors ride the shell's design tokens; interactive states are class-based
- * (TB_CSS is injected once per panel), no emoji glyphs anywhere.
+ * (TB_CSS is injected once into document.head by `ensureTaskboardStyles`), no
+ * emoji glyphs anywhere.
  *
  * The root-height sync (`useRootHeightSync`) is the same host workaround the
  * msg9 panel ships: dsh web wraps the view body in an overflow-y:auto scroll
@@ -82,9 +83,9 @@ import {
   LINK,
   MASK,
   PRIORITY_COLORS,
-  TB_CSS,
   TERTIARY,
   WARN,
+  ensureTaskboardStyles,
 } from './theme.ts'
 import { columnLabel, escapeTarget, groupByOwner, priorityLabel, runPlanOps, taskRef, useSessionCwd, valueText, type OwnerGroup, type SessionListLike } from './view.ts'
 
@@ -292,6 +293,13 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
     store.setCwd(cwd ?? null)
   }, [store, cwd])
 
+  // The stylesheet lives in <head>, owned by this package (never by React): a
+  // mount re-asserts it, so a tag removed behind our back heals on the next
+  // visit instead of leaving the whole panel unstyled (see ensureTaskboardStyles).
+  useEffect(() => {
+    ensureTaskboardStyles()
+  }, [])
+
   // First paint / returning to the tab: make sure the board is fresh.
   useEffect(() => {
     void store.refresh()
@@ -423,7 +431,6 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   if (!state.cwd) {
     return (
       <div style={styles.root} ref={rootHeightRef}>
-        <style>{TB_CSS}</style>
         <div style={styles.center}>
           <p style={styles.centerText}>{L('进入一个会话后，这里显示该工作区的看板。', 'Open a session to see its workspace board here.')}</p>
         </div>
@@ -434,7 +441,6 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   if (state.status === 'loading' && !board) {
     return (
       <div style={styles.root} ref={rootHeightRef}>
-        <style>{TB_CSS}</style>
         <div style={styles.center}>
           <p style={styles.centerText}>{L('正在加载看板…', 'Loading the board…')}</p>
         </div>
@@ -445,7 +451,6 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   if (state.status === 'error' && !board) {
     return (
       <div style={styles.root} ref={rootHeightRef}>
-        <style>{TB_CSS}</style>
         <div style={styles.center}>
           <p style={styles.errorText}>{L('无法读取看板：{error}', 'Cannot read the board: {error}', { error: state.error ?? '?' })}</p>
           <button type="button" className="tb-btn tb-btn-primary" onClick={() => void store.refresh()}>
@@ -458,7 +463,6 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
 
   return (
     <div style={styles.root} ref={rootHeightRef}>
-      <style>{TB_CSS}</style>
       <TopBar state={state} store={store} total={tasks.length} onCreate={() => setCreateOpen(true)} onGuide={() => setGuideOpen(true)} />
       {state.error && (
         <div style={styles.noticeError}>

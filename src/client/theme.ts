@@ -6,8 +6,10 @@
  *
  * Colors ride the dsh shell's `--dsw-alias-*` design tokens with fallbacks
  * for older shells. Inline styles cannot express :hover / :focus / :disabled,
- * so every interactive element carries a class from `TB_CSS`, injected once
- * per surface via <style>{TB_CSS}</style> (double injection is harmless).
+ * so every interactive element carries a class from `TB_CSS`, injected ONCE
+ * into document.head by {@link ensureTaskboardStyles} — see that function for
+ * why the tag must be born tagged `data-plugin` and must NOT live in the React
+ * tree.
  *
  * Token lessons baked in (see the commit history for the evidence trail):
  *  - brand-primary is the shell's INVERTED monochrome (near-black in light,
@@ -130,3 +132,61 @@ export const TB_CSS = `
 .tb-mini-entry { display: inline-flex; align-items: center; gap: 5px; border: none; border-radius: 24px; background: transparent; color: ${TERTIARY}; padding: 1px 8px; font: inherit; cursor: pointer; white-space: nowrap; }
 .tb-mini-entry:hover { background: ${HOVER_BG}; color: ${DIM}; }
 `
+
+/**
+ * This package's client-module id — the identity dsh's client module loader
+ * stamps on style tags (`data-plugin`) and removes on unload. It MUST equal the
+ * bundle envelope id, which `scripts/build.mjs` writes from `package.json`'s
+ * name; a test pins the two together.
+ */
+export const CLIENT_PLUGIN_ID = 'dsh-taskboard-kit'
+
+/** The stylesheet tag's fingerprint: loader inventory key + our dedupe key. */
+export const CSS_TAG_ID = `${CLIENT_PLUGIN_ID}/theme.css`
+
+/** Minimal DOM face {@link ensureTaskboardStyles} needs (real Document, or a
+ *  test stub — the function is deliberately drivable in tests). */
+export interface StylesDocument {
+  head: { appendChild(node: unknown): unknown }
+  createElement(tag: string): { textContent: string; setAttribute(name: string, value: string): void }
+  querySelector(selector: string): unknown
+}
+
+/**
+ * Inject {@link TB_CSS} into `document.head` once, TAGGED as our own.
+ *
+ * Two rules, both load-bearing (the status-bar pill once rendered as an
+ * unstyled UA `<button>` because of them — T-15, 2026-09-30):
+ *
+ *  1. **Never let React own the tag.** dsh's client module loader claims every
+ *     untagged `<style>` in the document for whichever plugin module
+ *     materializes next:
+ *
+ *         for (const el of document.querySelectorAll('style:not([data-plugin])'))
+ *           el.setAttribute('data-plugin', id)          // dsh-client-modules
+ *
+ *     and deletes `style[data-plugin=<pkg>]` when that package unloads or hot
+ *     reloads. A tag rendered inside the React tree has no `data-plugin`, so it
+ *     gets claimed by a *stranger* and later deleted behind React's back: the
+ *     fiber still believes the node exists, never re-adds it, and the surface
+ *     silently loses the whole stylesheet. The kit's own tags are therefore
+ *     born with `data-plugin` + `data-plugin-css` — the same convention the
+ *     shipped dsh packages use — so the loader never claims them, and our own
+ *     unload removes exactly ours.
+ *  2. **Idempotent + self-healing.** Keyed by `data-plugin-css`, so a second
+ *     call (every surface mount, the client plugin's apply) is a no-op; if the
+ *     tag ever disappears the next call puts it back.
+ *
+ * @param doc - document to inject into; defaults to the browser document and
+ *   is a no-op when there is none (SSR / plain Node).
+ */
+export function ensureTaskboardStyles(doc?: StylesDocument | null): void {
+  const target = doc !== undefined ? doc : typeof document === 'undefined' ? null : (document as unknown as StylesDocument)
+  if (!target) return
+  if (target.querySelector(`style[data-plugin-css=${JSON.stringify(CSS_TAG_ID)}]`)) return
+  const tag = target.createElement('style')
+  tag.setAttribute('data-plugin', CLIENT_PLUGIN_ID)
+  tag.setAttribute('data-plugin-css', CSS_TAG_ID)
+  tag.textContent = TB_CSS
+  target.head.appendChild(tag)
+}
