@@ -117,7 +117,7 @@ Each task still carries **value points** (Fibonacci scale ½ / 1 / 2 / 3 / 5 / 8
 ## Install
 
 ```bash
-dsh plugin --profile web add dsh-taskboard-kit@0.6.0
+dsh plugin --profile web add dsh-taskboard-kit@0.6.1
 # restart dsh web, open any session, and the「看板」tab is there
 ```
 
@@ -125,8 +125,14 @@ dsh plugin --profile web add dsh-taskboard-kit@0.6.0
 supply-chain `minimumReleaseAge` gate: a version published minutes ago is held
 back, and a bare `add dsh-taskboard-kit` then silently installs an older one —
 you would get a board whose `done` is still treated as terminal without any hint.
-Naming `@0.6.0` opts that release out of the gate and installs what you asked for.
-When 0.6.0 is more than a day old, a bare `add` finds it too.
+Naming `@0.6.1` opts that release out of the gate and installs what you asked for.
+When 0.6.1 is more than a day old, a bare `add` finds it too.
+
+**0.6.1 is a copy-only release.** Reaching a human is described as *your* notify
+channel (msg9 / desktop notification / webhook / mail) instead of naming msg9 as
+the way. The kit never depended on msg9 — the wording just made it look like it
+did. No behaviour changed; `msg9HookExample` is now `notifyHookExample` with the
+old name kept as a deprecated alias.
 
 Upgrades: use `dsh plugin --profile web add dsh-taskboard-kit@<version>` with the
 exact version (0.x locks the minor, so `dsh plugin update` will not move you).
