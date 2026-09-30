@@ -31,7 +31,16 @@ import type { TaskPriority } from '../shared/types.ts'
 export const FG = 'var(--dsw-alias-label-primary, #1f2328)'
 export const DIM = 'var(--dsw-alias-label-secondary, #6b7280)'
 export const TERTIARY = 'var(--dsw-alias-label-tertiary, #8a919c)'
-export const FAINT = 'var(--dsw-alias-label-dimmed, #9ca3af)'
+/**
+ * The quietest *readable* tier. NOT `--dsw-alias-label-dimmed`: that shell
+ * token is the near-INVISIBLE tier on purpose — it resolves to #e1e5ee on the
+ * light theme's white and #43454a on the dark theme's #2c2c2e (≈1.1:1 / 1.3:1),
+ * which is fine for a decorative mark and fatal for text. Using it for task
+ * refs (`#17`), value points (`◆2`) and column ages made them unreadable in
+ * BOTH themes (owner report + screenshot, 2026-09-30). The quiet-but-legible
+ * tier is `label-tertiary` (#81858c / #adb2b8).
+ */
+export const FAINT = 'var(--dsw-alias-label-tertiary, #8a919c)'
 export const BG = 'var(--dsw-alias-bg-layer-2, #ffffff)'
 export const BG_SUNK = 'var(--dsw-alias-bg-layer-1, #f5f7fa)'
 export const BG_RAISED = 'var(--dsw-alias-bg-layer-3, #ffffff)'
