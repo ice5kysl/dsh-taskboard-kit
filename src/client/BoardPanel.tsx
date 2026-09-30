@@ -1138,46 +1138,32 @@ function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; bo
       }}
       onClick={onOpen}
     >
-      {/* Meta row: priority dot + value badge + #N ref (right end). The title
-          gets its own full-width row below — nothing squeezes it anymore. */}
+      {/* Row 1 — priority dot + title (2-line clamp). The `#N` ref and the
+          ◆value badge used to own a whole row above the title; they now ride
+          the meta row, which is what turns five rows into three. */}
       <div style={styles.cardTop}>
         <span
           style={{ ...styles.dot, background: PRIORITY_COLORS[task.priority] ?? FAINT }}
           title={L('优先级：{p}', 'Priority: {p}', { p: priorityLabel(task.priority) })}
         />
-        {task.value != null && (
-          <span style={styles.valueBadge} title={L('价值度 {v}', 'Value {v}', { v: valueText(task.value) })}>
-            ◆{valueText(task.value)}
-          </span>
-        )}
-        <span style={styles.cardRef} title={task.id}>
-          {taskRef(task.id)}
-        </span>
+        <div style={styles.cardTitle}>{task.title}</div>
       </div>
-      <div style={styles.cardTitle}>{task.title}</div>
+      {/* Row 2 — who owes / who waits (left cluster, wraps) … and the small
+          facts pinned to the right edge: ◆value · #N · column age (+ the stale
+          dot). One glance answers "whose is it, is it stuck, what is it worth". */}
       <div style={styles.cardMeta}>
-        {task.assignee ? (
-          <span className="tb-badge" title={task.assignee}>{task.assignee}</span>
-        ) : (
-          <span className="tb-badge-outline">{L('待认领', 'unclaimed')}</span>
-        )}
-        <span
-          style={styles.cardAge}
-          title={L('在当前列 {age} · 创建于 {created}', '{age} in this column · created {created}', { age: ageLabel(staleness.ageMs), created: task.created_at })}
-        >
-          {ageLabel(staleness.ageMs)}
-        </span>
-        {staleness.stale && (
-          <span
-            className="tb-stale"
-            title={L('在这一列待了 {age}，已超过该列 {sla} 的阈值', '{age} in this column — past its {sla} threshold', { age: ageLabel(staleness.ageMs), sla: ageLabel(staleness.slaMs ?? 0) })}
-          />
-        )}
-      </div>
-      {(waiting || reviewer) && (
-        <div style={styles.cardMarks}>
+        <div style={styles.cardWho}>
+          {task.assignee ? (
+            <span className="tb-badge" title={task.assignee}>{task.assignee}</span>
+          ) : (
+            <span className="tb-badge-outline">{L('待认领', 'unclaimed')}</span>
+          )}
           {waiting && (
-            <span className="tb-badge-wait" title={waiting.question}>
+            // The card's waiting chip may wrap internally: on the merged meta
+            // row a long "waiting on human · 1h12m" would otherwise lose the
+            // AGE to ellipsis — and the age is the half that says "this is
+            // stuck", which is the whole reason the chip is on the card.
+            <span className="tb-badge-wait" style={styles.cardWait} title={waiting.question}>
               {waitLabel(waiting)} · {ageLabel(Math.max(0, now - (Date.parse(waiting.since) || now)))}
             </span>
           )}
@@ -1193,13 +1179,35 @@ function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; bo
             </span>
           )}
         </div>
-      )}
+        <div style={styles.cardFacts}>
+          {task.value != null && (
+            <span style={styles.valueBadge} title={L('价值度 {v}', 'Value {v}', { v: valueText(task.value) })}>
+              ◆{valueText(task.value)}
+            </span>
+          )}
+          <span style={styles.cardRef} title={task.id}>
+            {taskRef(task.id)}
+          </span>
+          <span
+            style={styles.cardAge}
+            title={L('在当前列 {age} · 创建于 {created}', '{age} in this column · created {created}', { age: ageLabel(staleness.ageMs), created: task.created_at })}
+          >
+            {ageLabel(staleness.ageMs)}
+          </span>
+          {staleness.stale && (
+            <span
+              className="tb-stale"
+              title={L('在这一列待了 {age}，已超过该列 {sla} 的阈值', '{age} in this column — past its {sla} threshold', { age: ageLabel(staleness.ageMs), sla: ageLabel(staleness.slaMs ?? 0) })}
+            />
+          )}
+        </div>
+      </div>
       {task.tags.length > 0 && (
         <div style={styles.cardTags}>
-          {task.tags.slice(0, 3).map((tag) => (
+          {task.tags.slice(0, 2).map((tag) => (
             <span key={tag} className="tb-tag">{tag}</span>
           ))}
-          {task.tags.length > 3 && <span className="tb-tag">+{task.tags.length - 3}</span>}
+          {task.tags.length > 2 && <span className="tb-tag">+{task.tags.length - 2}</span>}
         </div>
       )}
     </button>
@@ -1991,7 +1999,7 @@ const styles: Record<string, CSSProperties> = {
   },
   column: {
     position: 'relative', // anchors the in-lane roster picker overlay
-    width: 260,
+    width: 240,
     flexShrink: 0,
     display: 'flex',
     flexDirection: 'column',
@@ -2083,15 +2091,16 @@ const styles: Record<string, CSSProperties> = {
   },
   closedStripText: { writingMode: 'vertical-rl', fontSize: 11, color: DIM, letterSpacing: 1, whiteSpace: 'nowrap' },
   // Meta row of a card: one compact line (dot · value · #N at the right end).
-  cardTop: { display: 'flex', alignItems: 'center', gap: 6 },
-  dot: { width: 8, height: 8, borderRadius: 4, flexShrink: 0 },
+  cardTop: { display: 'flex', alignItems: 'flex-start', gap: 6 },
+  dot: { width: 8, height: 8, borderRadius: 4, flexShrink: 0, marginTop: 5 },
   // The title is its own full-width row below the meta row, clamped to 2 lines.
   cardTitle: {
+    flex: 1,
+    minWidth: 0,
     fontSize: 12.5,
     fontWeight: 500,
-    lineHeight: 1.45,
+    lineHeight: 1.35,
     overflowWrap: 'anywhere',
-    marginTop: 4,
     display: '-webkit-box',
     WebkitLineClamp: 2,
     WebkitBoxOrient: 'vertical',
@@ -2100,27 +2109,30 @@ const styles: Record<string, CSSProperties> = {
   valueBadge: {
     flexShrink: 0,
     fontSize: 10,
-    lineHeight: '14px',
+    lineHeight: '13px',
     color: FAINT,
     border: `1px solid ${FAINT}`,
     borderRadius: 999,
-    padding: '0 5px',
+    padding: '0 4px',
     whiteSpace: 'nowrap',
   },
-  cardRef: { flexShrink: 0, marginLeft: 'auto', fontSize: 10.5, color: FAINT, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
-  cardMeta: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 },
-  cardAge: { marginLeft: 'auto', color: FAINT, fontSize: 10, flexShrink: 0 },
-  // Collaboration marks under the meta row: waiting-on and reviewer badges.
-  // They wrap rather than truncate — "who owes this" must stay readable.
-  cardMarks: { display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 },
+  cardRef: { flexShrink: 0, fontSize: 10, color: FAINT, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+  // Row 2: the left cluster wraps (owner + waiting/reviewer), the right cluster
+  // is pinned and never shrinks — the facts stay on one line while the people
+  // take as many lines as they need.
+  cardMeta: { display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, minWidth: 0 },
+  cardWho: { display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', minWidth: 0, flex: '0 1 auto' },
+  cardFacts: { display: 'flex', alignItems: 'center', gap: 4, marginLeft: 'auto', flexShrink: 0 },
+  cardAge: { color: FAINT, fontSize: 10, flexShrink: 0 },
   reviewerBadge: { maxWidth: '100%' },
+  cardWait: { whiteSpace: 'normal', lineHeight: 1.35, textAlign: 'left' },
   // The human strip: the only warn-tinted surface on the board (amber, never
   // alarm-red — the shell has no warn-bg token, so the raised surface plus a
   // warn left rule carries the emphasis).
   humanStrip: {
     flexShrink: 0,
-    margin: '8px 12px 0',
-    padding: '8px 12px 10px',
+    margin: '6px 12px 0',
+    padding: '6px 10px 8px',
     borderRadius: 8,
     border: `1px solid ${BORDER_STRONG}`,
     borderLeft: `3px solid ${WARN}`,
@@ -2135,8 +2147,8 @@ const styles: Record<string, CSSProperties> = {
   // quieter accent — it is a nudge, not a blocked-on-you alarm.
   settleStrip: {
     flexShrink: 0,
-    margin: '8px 12px 0',
-    padding: '8px 12px 10px',
+    margin: '6px 12px 0',
+    padding: '6px 10px 8px',
     borderRadius: 8,
     border: `1px solid ${BORDER_STRONG}`,
     borderLeft: `3px solid ${ACCENT}`,
@@ -2171,7 +2183,7 @@ const styles: Record<string, CSSProperties> = {
     padding: '7px 10px',
     background: BG_SUNK,
   },
-  cardTags: { display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 },
+  cardTags: { display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 },
   center: {
     margin: 'auto',
     padding: 24,
