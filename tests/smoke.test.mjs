@@ -303,6 +303,10 @@ await check('bridge: GET /board on a missing file still answers an empty board',
   assert.deepEqual(body.board.tasks, {})
 })
 
+// A boardless READ stays permissive on purpose (the「开启看板」state); the sharp
+// edge is a WRITE, which `requireCwd(..., mutating)` refuses on an unknown
+// whitelist — the three-state × direction matrix lives in tests/http.test.mjs.
+
 await check('bridge: a non-loopback caller is 403', async () => {
   const res = await callBridge(fakeReq({ method: 'GET', url: `/dsh-taskboard/board?cwd=${encodeURIComponent(ws)}`, remoteAddress: '10.0.0.5' }))
   assert.equal(res.status, 403)

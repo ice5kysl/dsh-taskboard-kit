@@ -340,8 +340,26 @@ function requireMutateHeader(req: IncomingMessage): void {
  * carries a board file is accepted: it is a workspace this instance has served
  * before, not an arbitrary path. What stays closed is exactly the sharp edge —
  * *creating* `.dsh/` in a directory nobody has ever put a board in.
+ *
+ * The three states of the predicate are `true` / `false` / `unknown`, and the
+ * bar differs by **direction**, because the sharp edge is a WRITE:
+ *
+ * - **mutations** (`POST`: create / enable / claim / update / comment) may only
+ *   touch a boardless directory when the host positively answers `true`. A live
+ *   3081 run (zero sessions, `ctx.inject(['agents'])` not landed yet ⇒ `unknown`)
+ *   walked straight through the old `=== false` test and `POST /create` created
+ *   `.dsh/` in a fresh `/tmp` directory. `unknown` must not mean "create .dsh/
+ *   anywhere".
+ * - **reads** (`GET /board`) keep the older, deliberately permissive rule:
+ *   only an explicit `false` refuses a boardless directory. The panel reads the
+ *   workspace of any session the user picks, including one whose session is not
+ *   live and whose board does not exist yet — that is the「开启看板」state, and a
+ *   read cannot create anything.
+ *
+ * Directories that already carry a board file are accepted in both directions:
+ * they are workspaces this instance has served before, not arbitrary paths.
  */
-function requireCwd(deps: TaskboardBridgeDeps, raw: unknown): string {
+function requireCwd(deps: TaskboardBridgeDeps, raw: unknown, mutating = false): string {
   const value = str(raw)
   if (!value) throw new BridgeError(400, 'invalid-input', 'field "cwd" is required')
   if (!isAbsolute(value)) {
@@ -351,11 +369,17 @@ function requireCwd(deps: TaskboardBridgeDeps, raw: unknown): string {
     throw new BridgeError(400, 'invalid-input', '"cwd" must not contain ".."')
   }
   const cwd = resolve(value)
-  if (deps.isAllowedCwd?.(cwd) === false && !existsSync(boardFilePath(cwd))) {
+  if (existsSync(boardFilePath(cwd))) return cwd
+  const verdict = deps.isAllowedCwd?.(cwd)
+  // Write: a positive answer is required. Read: only a positive refusal blocks.
+  const allowed = mutating ? verdict === true : verdict !== false
+  if (!allowed) {
     throw new BridgeError(
       403,
       'forbidden',
-      'cwd is not a workspace served by this dsh instance and has no board file',
+      mutating
+        ? 'cwd is not a workspace served by this dsh instance and has no board file (refusing to create one)'
+        : 'cwd is not a workspace served by this dsh instance and has no board file',
     )
   }
   return cwd
@@ -435,7 +459,7 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
     if (method === 'POST' && path === `${BRIDGE_PREFIX}/enable`) {
       requireMutateHeader(req)
       const body = await readJsonBody(req)
-      const cwd = requireCwd(deps, body.cwd)
+      const cwd = requireCwd(deps, body.cwd, true)
       return runPlain(res, async () => {
         const result = await deps.enableBoard(cwd, { seedProtocol: body.seed_protocol !== false })
         return { ok: true as const, ...result }
@@ -445,7 +469,7 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
     if (method === 'POST' && path === `${BRIDGE_PREFIX}/create`) {
       requireMutateHeader(req)
       const body = await readJsonBody(req)
-      const cwd = requireCwd(deps, body.cwd)
+      const cwd = requireCwd(deps, body.cwd, true)
       const request = body as unknown as CreateRequest
       return runDomain(res, () => deps.createTask(cwd, {
         title: request.title,
@@ -460,7 +484,7 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
     if (method === 'POST' && path === `${BRIDGE_PREFIX}/claim`) {
       requireMutateHeader(req)
       const body = await readJsonBody(req)
-      const cwd = requireCwd(deps, body.cwd)
+      const cwd = requireCwd(deps, body.cwd, true)
       const request = body as unknown as ClaimRequest
       return runDomain(res, () => deps.claimTask(cwd, request.id, HUMAN_ACTOR))
     }
@@ -468,7 +492,7 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
     if (method === 'POST' && path === `${BRIDGE_PREFIX}/update`) {
       requireMutateHeader(req)
       const body = await readJsonBody(req)
-      const cwd = requireCwd(deps, body.cwd)
+      const cwd = requireCwd(deps, body.cwd, true)
       const request = body as unknown as UpdateRequest
       return runDomain(res, async () => (await deps.updateTask(cwd, request.id, {
         ...(request.action !== undefined ? { action: request.action } : {}),
@@ -489,7 +513,7 @@ export function createTaskboardBridge(deps: TaskboardBridgeDeps): TaskboardBridg
     if (method === 'POST' && path === `${BRIDGE_PREFIX}/comment`) {
       requireMutateHeader(req)
       const body = await readJsonBody(req)
-      const cwd = requireCwd(deps, body.cwd)
+      const cwd = requireCwd(deps, body.cwd, true)
       const request = body as unknown as CommentRequest
       return runDomain(res, () => deps.addComment(cwd, request.id, request.text, HUMAN_ACTOR))
     }

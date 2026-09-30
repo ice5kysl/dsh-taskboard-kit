@@ -287,6 +287,86 @@ await check('unreachable services stay permissive (tests / headless must not bre
   assert.equal(deps.isAllowedCwd('/tmp/anything'), undefined, '拿不到服务 ⇒ 未知（permissive）')
 })
 
+await check("★ the sharp edge is a WRITE: unknown must not create boards, but reads stay permissive", async () => {
+  // kimi 2026-09-30 在 3081 上打穿的正是这一段：全新实例、零会话、`ctx.inject(['agents'])`
+  // 还没落地 ⇒ 谓词 `unknown`；旧判定式 `=== false && !exists` 对 unknown **直接放行**，
+  // 于是 `POST /create cwd=/tmp/新目录` 返回 200 并把 `.dsh/` 建了出去。
+  // 现在按方向分档：**写**要求明确 `true`；**读**保持既有契约（只有明确 `false` 才拦），
+  // 因为面板必须能读「会话不在线、板还没建」的工作区（正是「开启看板」那个状态）。
+  const { mkdtemp, rm, mkdir, writeFile } = await import('node:fs/promises')
+  const { existsSync } = await import('node:fs')
+  const fresh = await mkdtemp(join(tmpdir(), 'dsh-taskboard-unknown-'))
+  const known = await mkdtemp(join(tmpdir(), 'dsh-taskboard-known-'))
+  await mkdir(join(known, '.dsh'), { recursive: true })
+  await writeFile(join(known, '.dsh', 'taskboard.json'), JSON.stringify({ version: 1, workspace: known, next_seq: 1, tasks: {} }))
+
+  const postBody = (req, body) => Object.assign(req, {
+    [Symbol.asyncIterator]: async function* () {
+      yield Buffer.from(JSON.stringify(body))
+    },
+  })
+  const depsFor = (answer) => {
+    const calls = []
+    return {
+      calls,
+      deps: {
+        loadBoard: async (cwd) => ({ version: 1, workspace: cwd, next_seq: 1, tasks: {} }),
+        createTask: async (cwd, input) => { calls.push(['create', cwd]); return { id: 'T-1', ...input } },
+        claimTask: async () => ({ id: 'T-1' }),
+        updateTask: async () => ({ task: { id: 'T-1' }, events: [] }),
+        addComment: async () => ({ id: 'T-1' }),
+        isAllowedCwd: () => answer,
+        log: () => {},
+      },
+    }
+  }
+  const trustedPost = { host: '127.0.0.1:3080', 'x-taskboard': 'mutate', 'content-type': 'application/json' }
+
+  try {
+    // (1) 未知 + 无板 + 写 ⇒ 拒，且不写盘、不落到领域层
+    const unknown = depsFor(undefined)
+    const refused = res()
+    await createTaskboardBridge(unknown.deps).handle(
+      postBody(req(trustedPost, '127.0.0.1', 'POST', '/dsh-taskboard/create'), { cwd: fresh, title: 't' }),
+      refused,
+    )
+    assert.equal(refused.status, 403, 'unknown + boardless + POST ⇒ refused')
+    assert.match(JSON.parse(refused.body).error, /refusing to create one/, 'and it says why')
+    assert.equal(existsSync(join(fresh, '.dsh')), false, 'nothing was written')
+    assert.deepEqual(unknown.calls, [], 'no domain call happened')
+
+    // (2) 未知 + 无板 + 读 ⇒ 仍按既有契约放行（空板），面板的「开启看板」状态靠它
+    const read = res()
+    await createTaskboardBridge(unknown.deps).handle(
+      req(trusted, '127.0.0.1', 'GET', `/dsh-taskboard/board?cwd=${encodeURIComponent(fresh)}`),
+      read,
+    )
+    assert.equal(read.status, 200, 'unknown + boardless + GET ⇒ readable (the wizard state)')
+    assert.deepEqual(JSON.parse(read.body).board.tasks, {}, 'an empty board, not an error')
+
+    // (3) 未知 + 已有板文件 ⇒ 读写都放行（面板指向旧会话）
+    const served = res()
+    await createTaskboardBridge(unknown.deps).handle(
+      req(trusted, '127.0.0.1', 'GET', `/dsh-taskboard/board?cwd=${encodeURIComponent(known)}`),
+      served,
+    )
+    assert.equal(served.status, 200, 'unknown + existing board ⇒ readable')
+
+    // (4) 明确 true（某个 live 会话的工作区）+ 无板 + 写 ⇒ 允许（向导真正该走的路）
+    const allowed = depsFor(true)
+    const created = res()
+    await createTaskboardBridge(allowed.deps).handle(
+      postBody(req(trustedPost, '127.0.0.1', 'POST', '/dsh-taskboard/create'), { cwd: fresh, title: 't' }),
+      created,
+    )
+    assert.equal(created.status, 200, 'explicit true + boardless + POST ⇒ allowed (the wizard flow)')
+    assert.deepEqual(allowed.calls, [['create', fresh]], 'and it reached the domain layer')
+  } finally {
+    await rm(fresh, { recursive: true, force: true })
+    await rm(known, { recursive: true, force: true })
+  }
+})
+
 await check('the cwd whitelist actually ENGAGES through the real host wiring', async () => {
   // The gap this covers: every other test injects `isAllowedCwd` by hand, so
   // the production wiring was never exercised — and in a live dsh web it
