@@ -40,6 +40,23 @@ async function cliFails(...args) {
 console.log('dsh-taskboard-kit cli test:')
 
 const created = JSON.parse(await cli('create', '--title', 'cli 验证任务', '--priority', 'high', '--json'))
+// A mistyped --cwd must not read as "the board is empty" (T-3 m3): the path
+// goes to stderr, stdout (and --json) stays untouched.
+{
+  const missing = join(ws, 'no-such-workspace')
+  const expected = join(missing, '.dsh', 'taskboard.json')
+  const json = await run('node', [bin, '--cwd', missing, '--by', 'kimi', 'list', '--json'])
+  assert.deepEqual(JSON.parse(json.stdout), [], '--json stdout stays parseable')
+  assert.ok(json.stderr.includes(expected), 'stderr names the board file it looked for')
+  const plain = await run('node', [bin, '--cwd', missing, '--by', 'kimi', 'list'])
+  assert.equal(plain.stdout.trim(), '(board is empty)', 'stdout text unchanged')
+  assert.ok(plain.stderr.includes(expected), 'and the warning is not swallowed')
+  // The real workspace has a board: no warning there.
+  const here = await run('node', [bin, '--cwd', ws, '--by', 'kimi', 'list'])
+  assert.equal(here.stderr.trim(), '', 'an existing board prints nothing to stderr')
+}
+ok('a mistyped --cwd is told apart from an empty board')
+
 assert.equal(created.id, 'T-1')
 assert.equal(created.created_by, 'kimi')
 ok('create allocates T-1 and stamps the --by actor')

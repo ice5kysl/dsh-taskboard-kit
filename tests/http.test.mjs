@@ -73,6 +73,16 @@ await check('a self-consistent Host+Origin pair is still untrusted (DNS rebindin
     'a remote peer is rejected even with a matching Origin',
   )
   assert.equal(isTrustedRequest(req({ host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' })), true)
+  assert.equal(
+    isTrustedRequest(req({ host: 'localhost:3080', origin: 'https://localhost:3080' })),
+    false,
+    'scheme mismatch: an https Origin is not this plain-http origin',
+  )
+  assert.equal(
+    isTrustedRequest(req({ host: 'localhost:3080', origin: 'https://localhost:3080' }, '127.0.0.1')),
+    false,
+    'scheme mismatch is rejected even from loopback',
+  )
   assert.equal(isTrustedRequest(req({ host: '[::1]:3080', origin: 'http://[::1]:3080' })), true)
   assert.equal(
     isTrustedRequest(req({ host: '127.0.0.1:3080', origin: 'http://127.0.0.1:9999' })),

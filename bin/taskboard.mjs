@@ -38,6 +38,7 @@
  * @module dsh-taskboard-kit/bin
  */
 
+import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -171,6 +172,20 @@ const USAGE = `commands:
   path                                                      板文件路径
 global: --cwd DIR · --by NAME · --json`
 
+/**
+ * Read-only commands must not let a mistyped `--cwd` pass as an empty board:
+ * a missing file and an empty board print the same "(board is empty)" — so say
+ * the path out loud on stderr (stdout stays clean, `--json` stays parseable).
+ */
+function warnMissingBoard(cwd) {
+  const file = boardFilePath(cwd)
+  if (existsSync(file)) return
+  process.stderr.write(`taskboard: no board file at ${file}\n`)
+  process.stderr.write(
+    'taskboard: an empty board and a mistyped --cwd look identical here — check the path, or create the first card\n',
+  )
+}
+
 async function main() {
   const { positional, flags } = parseArgs(process.argv.slice(2))
   const [command, ...rest] = positional
@@ -186,6 +201,7 @@ async function main() {
       print(boardFilePath(cwd), asJson)
       return EXIT.ok
     case 'inbox': {
+      warnMissingBoard(cwd)
       const poolRaw = typeof flags.pool === 'string' ? Number(flags.pool) : undefined
       const items = await inbox(cwd, by, {
         ...(poolRaw !== undefined && Number.isFinite(poolRaw) ? { poolLimit: poolRaw } : {}),
@@ -198,6 +214,7 @@ async function main() {
       return EXIT.ok
     }
     case 'list': {
+      warnMissingBoard(cwd)
       const filter = {}
       if (typeof flags.status === 'string') filter.status = flags.status
       if (typeof flags.assignee === 'string') filter.assignee = flags.assignee
@@ -208,6 +225,7 @@ async function main() {
       return EXIT.ok
     }
     case 'roster': {
+      warnMissingBoard(cwd)
       const entries = await roster(cwd)
       if (asJson) print(entries, true)
       else if (entries.length === 0) console.log('(roster is empty)')
@@ -221,6 +239,7 @@ async function main() {
       return EXIT.ok
     }
     case 'stale': {
+      warnMissingBoard(cwd)
       const daysRaw = typeof flags.days === 'string' ? Number(flags.days) : undefined
       const override = daysRaw !== undefined && Number.isFinite(daysRaw) ? daysRaw * 86_400_000 : undefined
       const options = override === undefined
@@ -268,6 +287,7 @@ async function main() {
       return EXIT.ok
     }
     case 'get': {
+      warnMissingBoard(cwd)
       const board = await loadBoard(cwd)
       const task = await getTask(cwd, rest[0])
       print(asJson ? task : formatGet(task, board, Date.now()), asJson)

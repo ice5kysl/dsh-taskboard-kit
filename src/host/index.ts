@@ -40,6 +40,7 @@ export const inject = ['tools', 'sessions'] as const
 export { BRIDGE_PREFIX, createTaskboardBridge, defaultBridgeDeps, isTrustedRequest } from './http.ts'
 export {
   StoreError,
+  LOCK_TIMING,
   actorAliasGroups,
   actorNamesOf,
   addComment,

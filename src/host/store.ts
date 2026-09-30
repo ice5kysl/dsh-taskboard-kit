@@ -360,7 +360,20 @@ open ──▶ in_progress ──▶ review ──▶ done ──▶ closed
 
 const LOCK_STALE_MS = 10_000
 const LOCK_RETRY_MS = 100
-const LOCK_MAX_ATTEMPTS = 50 // ~5s of waiting, then fail loudly
+// The wait budget must OUTLAST the stale window. It used to be 50 × 100ms ≈ 5s
+// while a lock only becomes reclaimable at 10s: a waiter that arrived with a
+// dead holder's lock a few seconds short of stale gave up first and reported
+// "still busy" — even though the very next attempt after the window would have
+// reclaimed it. ~12s covers the window plus a margin for a slow reclaim.
+// Deliberately spelled as its own literal (not derived) so the invariant
+// `maxAttempts * retryMs >= staleMs` stays testable — see LOCK_TIMING.
+const LOCK_MAX_ATTEMPTS = 120
+/** Timing constants exported for the invariant test (see tests/store.test.mjs). */
+export const LOCK_TIMING = {
+  staleMs: LOCK_STALE_MS,
+  retryMs: LOCK_RETRY_MS,
+  maxAttempts: LOCK_MAX_ATTEMPTS,
+} as const
 
 let boardQueue: Promise<unknown> = Promise.resolve()
 

@@ -17,6 +17,7 @@ process.env.TASKBOARDKIT_LOCALE = 'en'
 const ws = await mkdtemp(join(tmpdir(), 'dsh-taskboard-store-'))
 
 const {
+  LOCK_TIMING,
   StoreError,
   addComment,
   boardFilePath,
@@ -53,6 +54,18 @@ async function rejectsWith(promise, code) {
 }
 
 console.log('dsh-taskboard-kit store test:')
+
+// The lock wait budget must outlast the stale window: a waiter that arrives
+// while a dead holder's lock is seconds short of reclaimable must still be
+// there when it becomes stale. (The old 50 × 100ms ≈ 5s budget failed first.)
+await check('lock: the wait budget outlasts the stale window (T-3 m6)', () => {
+  const budget = LOCK_TIMING.maxAttempts * LOCK_TIMING.retryMs
+  assert.ok(
+    budget >= LOCK_TIMING.staleMs,
+    `wait budget ${budget}ms must be >= stale window ${LOCK_TIMING.staleMs}ms`,
+  )
+  assert.equal(LOCK_TIMING.retryMs, 100, 'retry cadence unchanged')
+})
 
 await check('boardFilePath points inside the workspace .dsh dir', () => {
   assert.equal(boardFilePath(ws), join(ws, '.dsh', 'taskboard.json'))

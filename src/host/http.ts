@@ -251,7 +251,10 @@ export function isTrustedRequest(req: IncomingMessage): boolean {
   const remote = req.socket?.remoteAddress
   if (remote && !isLoopbackAddress(remote)) return false
   const origin = req.headers.origin
-  if (origin) return isSameOrigin(origin, hostHeader)
+  // The scheme is part of the origin: see isSameOrigin. `encrypted` lives on
+  // TLSSocket, not Socket — read it structurally so plain Socket typing is fine.
+  const scheme = (req.socket as { encrypted?: boolean } | undefined)?.encrypted === true ? 'https:' : 'http:'
+  if (origin) return isSameOrigin(origin, hostHeader, scheme)
   return true
 }
 
@@ -267,10 +270,14 @@ function portOf(hostHeader: string): string | undefined {
   return colon > 0 ? hostHeader.slice(colon + 1) : undefined
 }
 
-/** `origin` addresses the same scheme/host/port as the `Host` header. */
-function isSameOrigin(origin: string, hostHeader: string): boolean {
+/** `origin` addresses the same scheme/host/port as this request. */
+function isSameOrigin(origin: string, hostHeader: string, scheme: string): boolean {
   try {
     const parsed = new URL(origin)
+    // Scheme first: `Origin: https://localhost:3080` is a DIFFERENT origin from
+    // this plain-http server, and treating it as same-origin let any page whose
+    // scheme we never serve drive the bridge (host+port were the only checks).
+    if (parsed.protocol !== scheme) return false
     // WHATWG URL 给 IPv6 保留方括号（'[::1]'），hostnameOf 会去掉——对齐再比。
     const originHost = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '')
     if (originHost !== hostnameOf(hostHeader)) return false
