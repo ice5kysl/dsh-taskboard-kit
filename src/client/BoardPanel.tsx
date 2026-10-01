@@ -312,8 +312,7 @@ export function holderActionLabel(action: HolderAction): string {
  * closed), which is what makes the ball *timable* — and therefore warnable
  * (a holder who has had it too long, a holder who has gone quiet).
  */
-export function currentHolder(task: Task, board?: Board | null): Holder | null {
-  const now = Date.now()
+export function currentHolder(task: Task, board?: Board | null, now: number = Date.now()): Holder | null {
   if (task.status === 'closed') return null
   const since = (at?: string): number | undefined => {
     const ms = at ? Date.parse(at) : NaN
@@ -676,7 +675,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
           />
         )
       ) : state.groupBy === 'stats' ? (
-        <StatsView board={board} />
+        <StatsView board={board} onOpenTask={(id) => store.select(id)} />
       ) : state.groupBy === 'owner' ? (
         <div style={styles.lanes}>
           <OwnerLanes

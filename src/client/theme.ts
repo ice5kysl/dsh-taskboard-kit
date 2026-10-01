@@ -144,6 +144,21 @@ export const TB_CSS = `
    tertiary text, transparent until hovered). */
 .tb-mini-entry { display: inline-flex; align-items: center; gap: 5px; border: none; border-radius: 24px; background: transparent; color: ${TERTIARY}; padding: 1px 8px; font: inherit; cursor: pointer; white-space: nowrap; }
 .tb-mini-entry:hover { background: ${HOVER_BG}; color: ${DIM}; }
+/* 统计页（T-28）：真网格，不是 flex-wrap。
+   flex-wrap 会在右侧留一大片空白（两个块各自 50% 但换行时机由内容决定）；
+   auto-fit + minmax 让「放得下两块就两块，放不下就一块」由容器宽度决定：
+   1180px 的面板 = 两列，窄面板自动落回单列。gap 取 10，与看板泳道同一套密度。 */
+.tb-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 10px; align-items: start; }
+.tb-stats-wide { grid-column: 1 / -1; }
+.tb-kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 8px; }
+/* 可点行（持球人 / 异常 / 里程碑展开的卡）：行内是文字，行为是链接。 */
+.tb-stats-row { display: flex; width: 100%; box-sizing: border-box; align-items: center; gap: 7px; border: none; border-bottom: 1px solid ${BORDER}; background: transparent; color: inherit; padding: 5px 6px; font-size: 11.5px; font-family: inherit; line-height: 1.45; cursor: pointer; text-align: left; }
+.tb-stats-row:hover { background: ${HOVER_BG}; }
+.tb-stats-row:last-child { border-bottom: none; }
+.tb-stats-row[data-flat="1"] { cursor: default; }
+.tb-stats-row[data-flat="1"]:hover { background: transparent; }
+.tb-mstone-card { display: flex; width: 100%; box-sizing: border-box; align-items: center; gap: 6px; border: 1px solid ${BORDER}; border-radius: 6px; background: transparent; color: inherit; padding: 3px 7px; font-size: 10.5px; font-family: inherit; line-height: 1.5; cursor: pointer; text-align: left; }
+.tb-mstone-card:hover { background: ${HOVER_BG}; border-color: ${BORDER_STRONG}; }
 `
 
 /**

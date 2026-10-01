@@ -6,5 +6,5 @@ npm-debug.log*
 # iCloud 冲突副本。本仓库在工作目录（iCloud Drive 同步范围）内，macOS 会造出
 # 「lib 2/」「docs/DESIGN 2.md」这类重复文件：0.5.4 的 tarball 就曾误带 DESIGN 2.md
 # （package.json 的 files 白名单已兜底），而 git 侧靠这几行别把它们 add 进来。
-* 2
-* 2.*
+* [0-9]
+* [0-9].*

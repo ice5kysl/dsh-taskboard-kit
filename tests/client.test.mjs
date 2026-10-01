@@ -1621,6 +1621,314 @@ await check('stats: duration text is compact at every scale', () => {
   assert.equal(client.durationText(0), '0m')
 })
 
+// --------------------------------------- T-28: 统计页 v2（结构增强）
+
+/** 相对现在的 ISO 时间：`at({d:3, h:2})` = 3 天 2 小时前。 */
+const ago = ({ d = 0, h = 0 } = {}) => new Date(Date.now() - (d * 24 + h) * 3600_000).toISOString()
+
+/** 一条日志：相对时间 + 谁 + 什么事件。 */
+const ev = (when, by, event, note) => ({ at: ago(when), by, event, ...(note ? { note } : {}) })
+
+await check('stats/window: 窗外的事件不进当期，也不会偷偷算进上一期', () => {
+  const now = Date.now()
+  const board = statsBoard([
+    // 6 天前收口 → 落进 7 天当期
+    { id: 'T-1', status: 'closed', created_at: ago({ d: 6 }), log: [ev({ d: 6 }, 'h', 'created'), ev({ d: 5 }, 'k', 'approved'), ev({ d: 5 }, 'h', 'closed')] },
+    // 12 天前收口 → 只在 14 天当期里；对 7 天窗口它是"上一期"
+    { id: 'T-2', status: 'closed', created_at: ago({ d: 12 }), log: [ev({ d: 12 }, 'h', 'created'), ev({ d: 12 }, 'k', 'approved'), ev({ d: 11 }, 'h', 'closed')] },
+    // 25 天前收口 → 只在 30 天当期里
+    { id: 'T-3', status: 'closed', created_at: ago({ d: 25 }), log: [ev({ d: 25 }, 'h', 'created'), ev({ d: 25 }, 'k', 'approved'), ev({ d: 24 }, 'h', 'closed')] },
+    // 70 天前收口 → 任何窗口的当期/上一期都不该看见它
+    { id: 'T-4', status: 'closed', created_at: ago({ d: 71 }), log: [ev({ d: 71 }, 'h', 'created'), ev({ d: 70 }, 'k', 'approved'), ev({ d: 70 }, 'h', 'closed')] },
+  ])
+  const settled = (days) => client.kpis(board, { days, now }).settled
+  assert.equal(settled(7).value, 1, '7 天窗口只看见 6 天前那张')
+  assert.equal(settled(14).value, 2)
+  assert.equal(settled(30).value, 3)
+  // 更长的时间窗只能装得更多：同一份数据在三档下单调不减。
+  assert.ok(settled(7).value <= settled(14).value && settled(14).value <= settled(30).value)
+  // 上一期 = 紧挨着的那个等长窗口（[days, 2×days)），不是"全部历史"。
+  assert.equal(settled(7).previous, 1, 'T-2 落在 [7,14)')
+  assert.equal(settled(14).previous, 1, 'T-3 落在 [14,28)')
+  assert.equal(settled(30).previous, 0, 'T-4 在 70 天前，[30,60) 里没有它')
+  // 折线的横轴也吃同一个窗口。
+  assert.equal(client.flow(board, { days: 7, now }).length, 7)
+  assert.equal(client.flow(board, { days: 30, now }).length, 30)
+  // 状态类 KPI 是"此刻的快照"，不受窗口长度影响（窗口只决定"跟哪一刻比"）。
+  const openBoard = statsBoard([{ id: 'T-9', status: 'open', created_at: ago({ d: 40 }) }])
+  for (const days of [7, 14, 30]) {
+    const kpi = client.kpis(openBoard, { days, now }).open
+    assert.equal(kpi.value, 1, '40 天前建的卡现在仍然是未结清')
+    assert.equal(kpi.series.length, days, '走势的桶数就是窗口天数')
+    assert.ok(kpi.series.every((point) => point === 1), '窗口内每一天它都是未结清')
+  }
+})
+
+await check('stats/window: 把数据挪出窗口，环比跟着反向（不是写死的）', () => {
+  const now = Date.now()
+  const build = (movedDays) => statsBoard([
+    // 当期里的一张（1 天前收口）
+    { id: 'T-1', status: 'closed', created_at: ago({ d: 3 }), log: [ev({ d: 3 }, 'h', 'created'), ev({ d: 1 }, 'h', 'closed')] },
+    // 被挪动的那张：2 天前（当期）↔ 9 天前（上一期 [7,14)）
+    { id: 'T-2', status: 'closed', created_at: ago({ d: 12 }), log: [ev({ d: 12 }, 'h', 'created'), ev({ d: movedDays }, 'h', 'closed')] },
+    // 一直待在上一期的一张
+    { id: 'T-3', status: 'closed', created_at: ago({ d: 11 }), log: [ev({ d: 11 }, 'h', 'created'), ev({ d: 10 }, 'h', 'closed')] },
+  ])
+  const inside = client.kpis(build(2), { days: 7, now }).settled
+  const outside = client.kpis(build(9), { days: 7, now }).settled
+  assert.equal(inside.value, 2, '挪进来：当期 2 张')
+  assert.equal(inside.previous, 1)
+  assert.ok(inside.diff > 0 && inside.delta > 0, '当期变多 → 正环比')
+  assert.equal(outside.value, 1, '挪出去：当期只剩 1 张')
+  assert.equal(outside.previous, 2)
+  assert.ok(outside.diff < 0 && outside.delta < 0, '当期变少 → 负环比')
+  // 同一张卡，只改它收口的时间，环比的方向必须真的翻转。
+  assert.ok(Math.sign(inside.delta) === -Math.sign(outside.delta), 'delta 的方向随之翻转')
+})
+
+await check('stats/kpi: 样本不足时不给环比（比值/中位数要两侧各 n ≥ 3）', () => {
+  const now = Date.now()
+  const board = statsBoard([
+    { id: 'T-1', status: 'closed', created_at: ago({ d: 4, h: 2 }), log: [ev({ d: 4 }, 'h', 'created'), ev({ d: 4 }, 'k', 'approved'), ev({ d: 3 }, 'h', 'closed')] },
+  ])
+  const cycle = client.kpis(board, { days: 7, now }).cycle
+  assert.ok(cycle.value !== null, '有 1 个样本，中位数本身还是有的')
+  assert.equal(cycle.n, 1)
+  assert.equal(cycle.comparable, false, 'n < 3 → 不敢当趋势')
+  assert.equal(cycle.delta, null, '样本不足就不给环比数字')
+  assert.equal(client.MIN_TREND_SAMPLES, 3)
+  // 计数类是精确值，不适用样本门槛（0 → 3 张就是变了 3 张，不是统计推断）。
+  const counts = client.kpis(board, { days: 7, now }).settled
+  assert.equal(counts.comparable, true)
+  assert.equal(counts.value, 1)
+  assert.equal(counts.previous, 0)
+  assert.equal(counts.delta, null, '上期为 0 时百分比没有定义')
+  assert.equal(counts.diff, 1, '但绝对差照样给')
+})
+
+await check('stats/holders: 每张未结清卡恰好归属一个持球人（别名折进同一组）', () => {
+  const now = Date.now()
+  const board = statsBoard([
+    // 六种动作各来一张，外加一张已结清（它不属于任何人）
+    { id: 'T-1', status: 'open', assignee: null, created_at: ago({ d: 1 }) },
+    { id: 'T-2', status: 'open', assignee: 'kimi', created_at: ago({ d: 1 }), log: [ev({ d: 1 }, 'h', 'created'), ev({ d: 1 }, 'k', 'assigned')] },
+    { id: 'T-3', status: 'in_progress', assignee: 'kimi', created_at: ago({ d: 1 }), log: [ev({ d: 1 }, 'h', 'created'), ev({ d: 1 }, 'k', 'started')] },
+    { id: 'T-4', status: 'review', assignee: 'cc', reviewer: 'dsh-agent', created_at: ago({ d: 1 }), log: [ev({ d: 1 }, 'h', 'created'), ev({ d: 1 }, 'cc', 'submitted')] },
+    { id: 'T-5', status: 'done', assignee: 'kimi', created_by: 'human', created_at: ago({ d: 1 }), log: [ev({ d: 1 }, 'h', 'created'), ev({ d: 1 }, 'k', 'approved')] },
+    { id: 'T-6', status: 'open', assignee: 'cc', created_at: ago({ d: 1 }), waiting_on: { kind: 'agent', who: 'dsh', question: 'q', since: ago({ h: 2 }) }, log: [ev({ d: 1 }, 'h', 'created')] },
+    { id: 'T-7', status: 'closed', assignee: 'kimi', created_at: ago({ d: 1 }), log: [ev({ d: 1 }, 'h', 'created'), ev({ d: 1 }, 'h', 'closed')] },
+  ])
+  // 名册把 dsh-agent 折成 dsh：T-4 的审核人和 T-6 要等的人是同一个 Actor。
+  board.actors = { dsh: { kind: 'agent', aliases: ['dsh-agent'], first_seen_at: ago({ d: 9 }), last_seen_at: ago({ h: 1 }) } }
+  const groups = client.holderGroups(board, { now })
+  const open = Object.values(board.tasks).filter((task) => task.status !== 'closed')
+  const assignments = groups.flatMap((group) => group.actions.flatMap((bucket) => bucket.ids.map((id) => [id, group.key, bucket.action])))
+  assert.equal(assignments.length, open.length, '一张未结清卡只出现一次')
+  assert.equal(new Set(assignments.map(([id]) => id)).size, open.length, '没有重复也没有遗漏')
+  for (const [id, key, action] of assignments) {
+    assert.ok(open.some((task) => task.id === id), `${id} 是未结清卡`)
+    assert.equal(typeof key, 'string', '分组键是字符串（池子组为 ""）')
+    assert.ok(['claim', 'work', 'answer', 'reply', 'decide', 'settle'].includes(action), `${id} 的动作合法`)
+  }
+  // 池子组：没有人认领的那张，who === null，动作是"待认领"。
+  const pool = groups.find((group) => group.who === null)
+  assert.ok(pool, '池子组存在')
+  assert.deepEqual(pool.actions.map((bucket) => bucket.action), ['claim'])
+  assert.deepEqual(pool.actions[0].ids, ['T-1'])
+  // 别名折叠：审核人 dsh-agent 与等待对象 dsh 落在同一个持球人身上。
+  const dshRow = groups.find((group) => group.key === 'dsh')
+  assert.ok(dshRow, 'dsh 组存在（dsh-agent 折进来）')
+  assert.equal(dshRow.total, 2)
+  assert.deepEqual(dshRow.actions.map((bucket) => bucket.action).sort(), ['decide', 'reply'])
+  // 已结清的卡不在任何分组里。
+  assert.ok(!assignments.some(([id]) => id === 'T-7'), 'closed 的卡没有人持球')
+  // 分组总数 = 未结清数。
+  assert.equal(groups.reduce((sum, group) => sum + group.total, 0), open.length)
+})
+
+await check('stats/anomalies: 阈值沿用看板自己的陈旧规则，一张卡只占一行', () => {
+  const now = Date.now()
+  const board = statsBoard([
+    // 评审列躺了 30h（SLA 24h）→ review_overdue
+    { id: 'T-1', status: 'review', assignee: 'cc', reviewer: 'kimi', created_at: ago({ d: 3 }), log: [ev({ d: 3 }, 'h', 'created'), ev({ d: 3 }, 'cc', 'started'), ev({ h: 30 }, 'cc', 'submitted')] },
+    // 在等人类 30h（SLA 24h）→ wait_overdue（比"久未动"更急）；卡自己在进行中躺了 5 天
+    { id: 'T-2', status: 'in_progress', assignee: 'kimi', created_at: ago({ d: 5 }), waiting_on: { kind: 'human', who: 'iceskyls', question: 'q', since: ago({ h: 30 }) }, log: [ev({ d: 5 }, 'h', 'created'), ev({ d: 5, h: 1 }, 'k', 'started')] },
+    // 窗口内被打回 → recent_reject
+    { id: 'T-3', status: 'in_progress', assignee: 'dsh', created_at: ago({ d: 5 }), log: [ev({ d: 5 }, 'h', 'created'), ev({ d: 3 }, 'dsh', 'submitted'), ev({ d: 1 }, 'kimi', 'rejected')] },
+    // 刚开工、什么都正常 → 不该出现
+    { id: 'T-4', status: 'in_progress', assignee: 'kimi', created_at: ago({ h: 3 }), log: [ev({ h: 3 }, 'h', 'created'), ev({ h: 2 }, 'k', 'started')] },
+    // 已结清 → 永远不出现
+    { id: 'T-5', status: 'closed', assignee: 'kimi', created_at: ago({ d: 40 }), log: [ev({ d: 40 }, 'h', 'created'), ev({ d: 1 }, 'h', 'closed')] },
+  ])
+  board.actors = { kimi: { kind: 'agent', aliases: [], first_seen_at: ago({ d: 9 }), last_seen_at: ago({ h: 1 }) } }
+  const rows = client.anomalies(board, { days: 7, now })
+  const byId = new Map(rows.map((row) => [row.taskId, row]))
+  assert.equal(byId.size, rows.length, '一张卡只占一行')
+  assert.equal(byId.get('T-1').kind, 'review_overdue')
+  assert.equal(byId.get('T-2').kind, 'wait_overdue', '等待超时压过久未动')
+  assert.ok(byId.get('T-2').also.includes('idle'), '两个原因都记着，只是主因排第一')
+  assert.equal(byId.get('T-3').kind, 'recent_reject')
+  assert.equal(byId.has('T-4'), false, '3 小时的卡不是异常')
+  assert.equal(byId.has('T-5'), false, '已结清的不进异常清单')
+  // 排序：越急越靠前（等待超时 → 评审超时 → …）。
+  const ranks = { wait_overdue: 0, review_overdue: 1, holder_quiet: 2, recent_reject: 3, idle: 4 }
+  for (let i = 1; i < rows.length; i += 1) {
+    assert.ok(ranks[rows[i - 1].kind] <= ranks[rows[i].kind], '按急迫度排序')
+  }
+  // 阈值就是看板那套，不是统计页另造的：评审列 24h。
+  assert.equal(byId.get('T-1').ageMs > 24 * 3600_000, true)
+})
+
+await check('stats/milestones: 只有 v1.42.0 这种 tag 算里程碑，其它 tag 不算', () => {
+  const board = statsBoard([
+    { id: 'T-1', status: 'closed', value: 5, tags: ['ios', 'v1.42.0'], created_at: ago({ d: 9 }), log: [ev({ d: 9 }, 'h', 'created'), ev({ d: 8 }, 'h', 'closed')] },
+    { id: 'T-2', status: 'open', value: 3, tags: ['v1.42.0'], created_at: ago({ d: 4 }) },
+    { id: 'T-3', status: 'done', value: null, tags: ['v1.42.0', 'm7'], created_at: ago({ d: 2 }) },
+    { id: 'T-4', status: 'open', value: 2, tags: ['v1.43.0'], created_at: ago({ d: 1 }) },
+    { id: 'T-5', status: 'open', value: 1, tags: ['v1.42', 'v1.42.0.1', 'ios'], created_at: ago({ d: 1 }) },
+  ])
+  assert.equal(client.isMilestoneTag('v1.42.0'), true)
+  assert.equal(client.isMilestoneTag('v1.42'), false, '少一段不是版本号')
+  assert.equal(client.isMilestoneTag('v1.42.0.1'), false)
+  assert.equal(client.isMilestoneTag('ios'), false)
+  const rows = client.milestones(board)
+  assert.deepEqual(rows.map((row) => row.tag), ['v1.43.0', 'v1.42.0'], '版本号大的在前')
+  const m = rows[1]
+  assert.equal(m.total, 3)
+  assert.equal(m.settled, 1)
+  assert.equal(m.open, 2)
+  assert.equal(m.remaining, 2)
+  assert.equal(m.valueTotal, 8, '◆5 + ◆3（第三张没估值）')
+  assert.equal(m.valueDelivered, 5)
+  assert.deepEqual(m.ids, ['T-1', 'T-2', 'T-3'])
+  // 没有里程碑 tag 的板 → 空数组（视图据此整块不渲染）。
+  assert.deepEqual(client.milestones(statsBoard([{ id: 'T-1', tags: ['ios', 'm7'], created_at: ago({ d: 1 }) }])), [])
+  assert.deepEqual(client.milestones(null), [])
+})
+
+await check('stats/value: 积压 ◆ 与窗口内交付 ◆ 是两个数，吞吐按窗口天数摊', () => {
+  const now = Date.now()
+  const board = statsBoard([
+    // 窗口内交付 ◆5
+    { id: 'T-1', status: 'closed', value: 5, created_at: ago({ d: 8 }), log: [ev({ d: 8 }, 'h', 'created'), ev({ d: 7 }, 'k', 'approved'), ev({ d: 2 }, 'h', 'closed')] },
+    // 上一期交付的 ◆2（不算进窗口内交付）
+    { id: 'T-2', status: 'closed', value: 2, created_at: ago({ d: 20 }), log: [ev({ d: 20 }, 'h', 'created'), ev({ d: 19 }, 'k', 'approved'), ev({ d: 12 }, 'h', 'closed')] },
+    // 积压 ◆3
+    { id: 'T-3', status: 'in_progress', value: 3, created_at: ago({ d: 3 }) },
+    // 没估值的不进任何 ◆ 数字
+    { id: 'T-4', status: 'open', value: null, created_at: ago({ d: 1 }) },
+  ])
+  const view = client.valueView(board, { days: 7, now })
+  assert.equal(view.backlogValue, 3)
+  assert.equal(view.backlogTasks, 2, '未结清 2 张（含没估值那张）')
+  assert.equal(view.deliveredValue, 5)
+  assert.equal(view.deliveredTasks, 1)
+  assert.equal(view.throughputPerDay.toFixed(2), (5 / 7).toFixed(2))
+  assert.equal(view.unestimated, 1)
+  assert.equal(view.avgValue?.toFixed(2), (10 / 3).toFixed(2), '每卡平均只除已评估的 3 张')
+  // 平均周期算的是"干完"（created → done/approved），不是收口：
+  // 两张卡各 1 天，均值 = 1 天（durationText 在 48h 以内按小时显示）。
+  assert.equal(view.avgCycleMs, 24 * 3600_000)
+  assert.equal(view.cycleN, 2)
+})
+
+await check('stats/niceAxis: 刻度是 1/2/5×10ⁿ，覆盖最大值且含 0', () => {
+  const cases = [[3, 4], [7, 4], [1, 4], [0, 4], [23, 4], [0.4, 4]]
+  for (const [max, count] of cases) {
+    const axis = client.niceAxis(max, count)
+    assert.ok(axis.max >= max, `${max} 的上界 ${axis.max} 必须盖住数据`)
+    assert.equal(axis.ticks[0], 0, '刻度从 0 起')
+    assert.equal(axis.ticks[axis.ticks.length - 1], axis.max)
+    const step = axis.ticks[1] - axis.ticks[0]
+    for (let i = 1; i < axis.ticks.length; i += 1) {
+      const gap = Number((axis.ticks[i] - axis.ticks[i - 1]).toFixed(6))
+      assert.equal(gap, Number(step.toFixed(6)), '刻度等距')
+    }
+  }
+  assert.deepEqual(client.niceAxis(0), { max: 1, ticks: [0, 1] }, '空数据也给一个合法轴')
+  assert.equal(client.niceAxis(7).max, 8, '7 的上界是 8（不是 7）')
+})
+
+await check('stats/statusAt: 用 log 重放"那一刻的状态"，不是猜的', () => {
+  const board = statsBoard([
+    { id: 'T-1', status: 'closed', created_at: ago({ d: 10 }), log: [
+      ev({ d: 10 }, 'h', 'created'), ev({ d: 9 }, 'k', 'started'), ev({ d: 8 }, 'k', 'submitted'),
+      ev({ d: 7 }, 'd', 'rejected'), ev({ d: 6 }, 'k', 'submitted'), ev({ d: 5 }, 'd', 'approved'),
+      ev({ d: 4 }, 'h', 'closed'),
+    ] },
+  ])
+  const task = board.tasks['T-1']
+  const at = (d) => Date.now() - d * 24 * 3600_000
+  assert.equal(client.statusAt(task, at(11)), null, '还没建卡')
+  assert.equal(client.statusAt(task, at(9.5)), 'open')
+  assert.equal(client.statusAt(task, at(8.5)), 'in_progress')
+  assert.equal(client.statusAt(task, at(7.5)), 'review')
+  assert.equal(client.statusAt(task, at(6.5)), 'in_progress', '被打回就回到进行中')
+  assert.equal(client.statusAt(task, at(5.5)), 'review', '第二次提交之后、通过之前')
+  assert.equal(client.statusAt(task, at(4.5)), 'done')
+  assert.equal(client.statusAt(task, at(1)), 'closed')
+  // 时间窗的边界是半开的 [from, to)。
+  const bounds = client.windowBounds({ days: 7, now: at(0) })
+  assert.equal(bounds.to - bounds.from, 7 * 24 * 3600_000)
+  assert.equal(bounds.prevTo, bounds.from)
+  assert.equal(bounds.from - bounds.prevFrom, 7 * 24 * 3600_000)
+})
+
+await check('panel: 统计视图有窗口开关 / 环比 / 异常清单，且每条异常都接了 onOpenTask', async () => {
+  const board = collabBoard([
+    // 评审列躺了 30h：异常清单里必须有它
+    { id: 'T-1', title: 'awaitingVerdict', status: 'review', assignee: 'cc', reviewer: 'kimi', value: 3, created_at: ago({ d: 3 }), log: [
+      { at: ago({ d: 3 }), by: 'human', event: 'created' }, { at: ago({ h: 30 }), by: 'cc', event: 'submitted' },
+    ] },
+    { id: 'T-2', title: 'wip', status: 'in_progress', assignee: 'kimi', value: 2, created_at: ago({ d: 1 }), log: [
+      { at: ago({ d: 1 }), by: 'human', event: 'created' }, { at: ago({ h: 20 }), by: 'kimi', event: 'started' },
+    ] },
+    { id: 'T-3', title: 'milestoneWork', status: 'done', assignee: 'kimi', tags: ['v1.42.0'], value: 5, created_at: ago({ d: 6 }), log: [
+      { at: ago({ d: 6 }), by: 'human', event: 'created' }, { at: ago({ d: 5 }), by: 'kimi', event: 'approved' },
+    ] },
+    { id: 'T-4', title: 'settled', status: 'closed', assignee: 'kimi', tags: ['v1.42.0'], value: 1, created_at: ago({ d: 9 }), log: [
+      { at: ago({ d: 9 }), by: 'human', event: 'created' }, { at: ago({ d: 8 }), by: 'kimi', event: 'approved' }, { at: ago({ d: 2 }), by: 'human', event: 'closed' },
+    ] },
+  ])
+  const { store } = await renderBoard(board)
+  store.setGroupBy('stats')
+  const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+
+  // 1) 时间窗开关三档都在，默认 14 天（标题里的数字跟着默认走）。
+  for (const chip of ['7 days', '14 days', '30 days']) assert.ok(html.includes(chip), `窗口开关 ${chip}`)
+  assert.ok(html.includes('Daily flow (last 14 days)'), '默认窗口是 14 天')
+  assert.ok(html.includes('vs previous 14d'), '环比说的是"跟前一个等长窗口比"')
+  // 2) KPI 分成两组。
+  assert.ok(html.includes('Needs you') && html.includes('Background'), 'KPI 分了两组')
+  // 3) 现在该动什么：持球人 + 异常清单。
+  assert.ok(html.includes('What to do now') && html.includes('Ball holders') && html.includes('Anomalies'), '新块在')
+  assert.ok(html.includes('review overdue'), '评审超时被点出来')
+  // 4) 每条异常是一颗能点的 button，而且 BoardPanel 真的把 onOpenTask 接上了
+  //    （没接上时 StatsView 会把同一行渲染成 data-flat="1"）。
+  assert.ok(html.includes('class="tb-stats-row"'), '异常行是按钮')
+  assert.ok(html.includes('data-flat="0"'), 'BoardPanel 接上了 onOpenTask')
+  // 5) 图表可读数：环形图是 dasharray 画出来的弧、中心有未结清数、里程碑块在。
+  assert.ok(html.includes('Milestones'), '里程碑块在（这块板有 v1.42.0）')
+  assert.ok((html.match(/stroke-dasharray/g) ?? []).length >= 4, '环形图用 dasharray 画弧')
+  assert.ok(html.includes('open'), '环形图中心有未结清数')
+  // 没有 onOpenTask 时（单独渲染 StatsView）同一行必须退化成不可点的样子。
+  const solo = renderToStaticMarkup(React.createElement(client.StatsView, { board }))
+  assert.ok(solo.includes('data-flat="1"'), '没有 onOpenTask 时行不可点')
+})
+
+await check('panel: 没有里程碑 tag 时，里程碑块整块不渲染', async () => {
+  const board = collabBoard([
+    { id: 'T-1', title: 'plain', status: 'in_progress', assignee: 'kimi', tags: ['ios', 'v1.42'], value: 1, created_at: ago({ d: 1 }) },
+  ])
+  const { store } = await renderBoard(board)
+  store.setGroupBy('stats')
+  const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+  assert.ok(!html.includes('Milestones'), '一个里程碑 tag 都没有 → 整个块不渲染')
+  assert.ok(!html.includes('v1.42.0'), '也不该有编出来的里程碑')
+  // 但其它块照常。
+  assert.ok(html.includes('At a glance') && html.includes('Daily flow'))
+})
+
 // ------------------------------------------- T-10: client-side audit minors
 
 const t10Board = (tasks = {}) => ({ version: 1, workspace: '/w', next_seq: 10, tasks, actors: {} })

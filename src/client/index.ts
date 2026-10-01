@@ -63,8 +63,16 @@ export {
   headline, byStatus, byPriority, byOwner, flow, dwellByColumn, actionsByActor,
   valueByOwner, totalValue, columnEnteredAt, timeInColumnMs, dayKey, daySeries,
   todayKey, durationText, percentText,
+  // T-28：时间窗 / 环比 / 持球人 / 异常 / 价值度 / 里程碑 / 坐标轴
+  windowBounds, statusAt, kpis, holderGroups, holderIsQuiet, anomalies, valueView,
+  milestones, isMilestoneTag, niceAxis, WINDOW_CHOICES, DEFAULT_WINDOW_DAYS,
+  MIN_TREND_SAMPLES, MILESTONE_TAG,
 } from './stats.ts'
-export type { Headline, Slice, OwnerStat, DayFlow } from './stats.ts'
+export type {
+  Headline, Slice, OwnerStat, DayFlow,
+  WindowDays, WindowOptions, WindowBounds, KpiKey, KpiUnit, Kpi, KpiSet,
+  HolderGroup, HolderActionBucket, Anomaly, AnomalyKind, ValueView, Milestone,
+} from './stats.ts'
 export type { BoardLayer, OwnerGroup } from './view.ts'
 export { L } from './locale.ts'
 export type { BridgeClient } from './api.ts'
