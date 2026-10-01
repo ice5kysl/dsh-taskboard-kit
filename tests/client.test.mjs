@@ -2126,6 +2126,214 @@ await check('m19: a strictly older snapshot never overwrites a newer one', async
   assert.equal(store.getState().board?.tasks['T-4']?.title, 'snap-4', 'equal mtime still applies (same file, idempotent)')
 })
 
+// ------------------------------------ T-29: 详情抽屉 v2（结构增强）
+//
+// 抽屉 v2 的三条不变量（主人 2026-10-01 指定）：
+//   ① 每个动作都给「结果列」，不可用的动作**仍然列出**并说明原因；
+//   ② 指派列表默认只含在场者，久未活动者必须显式展开才出现；
+//   ③ 里程碑 tag 与卡面 / 统计页同一口径（同一谓词、同一字段）。
+// 派生全在纯函数里（drawerActions / drawerProps / assigneeChoices /
+// milestoneTags / tasksWithTag），所以下面既能断言数据、也能断言渲染。
+
+/** 30 小时前提交、仍在待审核：review 列 SLA 24h ⇒ 必然陈旧。 */
+const reviewSubmittedAt = new Date(Date.now() - 30 * 3600_000).toISOString()
+
+/** 抽屉夹具：一张要素齐全的待审核卡 + 一个 42h 没露面的 ghost。 */
+function drawerFixture() {
+  const board = collabBoard([
+    {
+      id: 'T-1',
+      title: '抽屉 v2',
+      status: 'review',
+      assignee: 'cc',
+      reviewer: 'kimi',
+      created_by: 'dsh',
+      priority: 'high',
+      value: 3,
+      tags: ['client', 'v0.7.2', 'ui'],
+      detail: Array.from({ length: 12 }, (_, i) => `第 ${i + 1} 行`).join('\n'),
+      comments: [{ at: reviewSubmittedAt, by: 'kimi', text: '看一下' }],
+      log: [{ at: reviewSubmittedAt, by: 'cc', event: 'submitted' }],
+    },
+    { id: 'T-2', title: '同里程碑的另一张', status: 'open', tags: ['v0.7.2'] },
+  ], {
+    cc: { kind: 'agent', aliases: [], first_seen_at: reviewSubmittedAt, last_seen_at: new Date().toISOString() },
+    // DEFAULT_QUIET_MS = 36h ⇒ 42 小时没动手 = 久未活动
+    ghost: { kind: 'agent', aliases: [], first_seen_at: reviewSubmittedAt, last_seen_at: new Date(Date.now() - 42 * 3600_000).toISOString() },
+  })
+  return board
+}
+
+/** 渲染抽屉本身（不是整块板）：SSR 直接把 DetailDrawer 丢进去。 */
+async function renderDrawer(board, taskId, actors) {
+  const store = client.createTaskboardStore({ bridge: { board: async () => ({ ok: true, board }) }, pollMs: 10 ** 9 })
+  store.setCwd(board.workspace)
+  await store.refresh()
+  const task = store.getState().board.tasks[taskId]
+  const list = actors ?? [...client.knownActors(board)]
+  const html = renderToStaticMarkup(React.createElement(client.DetailDrawer, {
+    task, state: store.getState(), store, actors: list, onClose: () => {},
+  }))
+  return { store, task, html }
+}
+
+await check('T-29 · drawerActions: 每个动作都有结果列，不可用的也给原因而不是消失', () => {
+  const now = Date.now()
+  const board = drawerFixture()
+  const task = board.tasks['T-1']
+  const rows = client.drawerActions(task, board, now)
+  const by = (action) => rows.find((row) => row.action === action)
+
+  // 九个动作一个都不少 —— 「按钮凭空消失」正是这一版要消灭的东西。
+  assert.deepEqual(rows.map((row) => row.action), ['claim', 'unblock', 'start', 'submit', 'approve', 'reject', 'done', 'close', 'reopen'])
+  for (const row of rows) {
+    assert.ok(row.outcome && row.outcome.length > 0, `${row.action} 必须有结果列`)
+    assert.ok(row.disabledReason === null || row.disabledReason.length > 0, `${row.action} 的置灰原因不能是空字符串`)
+  }
+
+  // 可执行的：结果列说清「去哪一列 + 球交给谁」（用板子自己的列名）。
+  const approve = by('approve')
+  assert.equal(approve.disabledReason, null)
+  assert.equal(approve.tone, 'primary', '待审核的主操作是通过')
+  assert.ok(approve.outcome.includes('To settle') && approve.outcome.includes('dsh'), `通过 → 待收口 · 卡主收口：${approve.outcome}`)
+  const reject = by('reject')
+  assert.equal(reject.disabledReason, null)
+  assert.equal(reject.tone, 'plain')
+  assert.ok(reject.outcome.includes('In progress') && reject.outcome.includes('cc'), `打回 → 进行中 · 负责人返工：${reject.outcome}`)
+  // 关闭 = 终态动作，危险样式；failed 时也仍然说明可以 reopen 回来。
+  const close = by('close')
+  assert.equal(close.tone, 'danger', '关闭不是主操作，是危险动作')
+  assert.ok(close.outcome.includes('Settled') && close.outcome.includes('reopen'), `关闭 → 已结清（可恢复）：${close.outcome}`)
+
+  // 不可执行的：逐条给出「为什么现在不行」。
+  assert.ok(by('claim').disabledReason.includes('already claimed by cc'), '认领：已被 cc 认领')
+  assert.ok(by('unblock').disabledReason.includes('nobody is waiting on this card'), '解除等待：没人在等')
+  assert.ok(by('start').disabledReason.includes('claim or assign it first'), '开始：先有负责人')
+  // 无主的「进行中」是这块板封掉的死路（tests/dnd.test.mjs 同一条不变量）：
+  // 池子里的卡不能给出「开始」，只能先认领/指派。
+  const unowned = client.drawerActions({ ...task, assignee: null, status: 'open' }, board)
+  assert.equal(unowned.find((row) => row.action === 'start').disabledReason, 'nobody owns this card yet — claim or assign it first')
+  assert.equal(unowned.find((row) => row.action === 'claim').disabledReason, null, '无主的卡当然能认领')
+  assert.equal(by('submit').disabledReason, 'only an “In progress” card can be submitted (now: In review)')
+  assert.ok(by('reopen').disabledReason.includes('only a done or settled card can be reopened'), '重开：只有做完的卡能重开')
+})
+
+await check('T-29 · drawerActions: 已收口的卡只剩重开可用，且「收口结清」是主操作', () => {
+  const board = drawerFixture()
+  const closed = { ...board.tasks['T-1'], status: 'closed' }
+  const closedRows = client.drawerActions(closed, board)
+  assert.deepEqual(closedRows.filter((row) => row.disabledReason === null).map((row) => row.action), ['reopen'])
+  assert.ok(closedRows.find((row) => row.action === 'close').disabledReason.includes('already settled'), '已结清不会再关一次')
+
+  const done = client.drawerActions({ ...board.tasks['T-1'], status: 'done' }, board)
+  const settle = done.find((row) => row.action === 'close')
+  assert.equal(settle.label, 'Settle (close)', 'done 上 close 就是收口，措辞跟着阶段走')
+  assert.equal(settle.tone, 'primary', 'done 上收口是主操作，不是危险动作')
+  assert.equal(settle.disabledReason, null)
+})
+
+await check('T-29 · 指派列表：默认只含在场者，久未活动者要显式展开才出现', async () => {
+  const now = Date.now()
+  const board = drawerFixture()
+  const actors = [...client.knownActors(board), 'ghost']
+  const choices = client.assigneeChoices(board, actors, null, now)
+
+  assert.deepEqual(choices.quiet.map((choice) => choice.name), ['ghost'], '42h 没动手 = 久未活动')
+  assert.ok(!choices.present.some((choice) => choice.name === 'ghost'), '久未活动者不在默认列表里')
+  assert.equal(choices.quiet[0].quiet, true)
+  assert.ok(/last seen/.test(choices.quiet[0].seenText), `带「最近活动 X 前」：${choices.quiet[0].seenText}`)
+  assert.match(choices.present.find((choice) => choice.name === 'cc').seenText, /^last seen \d+m ago$/, '在场者也有最近活动，只是不渲染琥珀点')
+
+  // 当前负责人永远列出（哪怕它久未活动）：藏着负责人 = 藏着问题。
+  const asCurrent = client.assigneeChoices(board, actors, 'ghost', now)
+  const ghost = asCurrent.present.find((choice) => choice.name === 'ghost')
+  assert.ok(ghost && ghost.current && ghost.quiet, '久未活动者若是当前负责人，仍在默认列表里并带标记')
+  assert.equal(asCurrent.quiet.length, 0)
+
+  // 渲染层面：默认 HTML 里根本没有 ghost，但有「显示全部」这条出路和数量。
+  const { html } = await renderDrawer(board, 'T-1', actors)
+  assert.ok(!html.includes('ghost'), '默认不渲染久未活动者')
+  assert.ok(html.includes('Show all (1 quiet)'), '给出显式展开的出路 + 数量')
+  assert.ok(html.includes('cc') && html.includes('kimi'), '在场者照常列出')
+})
+
+await check('T-29 · 里程碑 tag 与卡面 / 统计页同一口径', async () => {
+  const board = drawerFixture()
+  const task = board.tasks['T-1']
+
+  // 同一谓词（stats.ts 的 isMilestoneTag）、同一来源（卡面的 task.tags）。
+  assert.deepEqual(client.milestoneTags(task), task.tags.filter((tag) => client.isMilestoneTag(tag)))
+  assert.deepEqual(client.milestoneTags(task), ['v0.7.2'], '不是 vX.Y.Z 的 tag 不是里程碑')
+
+  const row = client.drawerProps(task, board).find((prop) => prop.key === 'milestone')
+  assert.equal(row.value, 'v0.7.2', '属性表的里程碑只列里程碑 tag')
+  assert.ok(!row.value.includes('ui') && !row.value.includes('client'), '普通 tag 不会混进里程碑')
+
+  // 就地列出同标签的卡：口径与统计页 milestones() 的 ids 完全一致。
+  const viaTag = client.tasksWithTag(board, 'v0.7.2').map((row) => row.id).sort()
+  const viaMilestone = client.milestones(board).find((stone) => stone.tag === 'v0.7.2').ids.slice().sort()
+  assert.deepEqual(viaTag, viaMilestone)
+  assert.deepEqual(viaTag, ['T-1', 'T-2'])
+  // 空格容错：` v0.7.2 ` 与 `v0.7.2` 是同一个 tag（与 milestones() 一样先 trim）。
+  assert.deepEqual(client.tasksWithTag(board, '  v0.7.2  ').map((row) => row.id).sort(), ['T-1', 'T-2'])
+})
+
+await check('T-29 · 属性表：值可复制、列龄沿用同一个 stalenessOf', () => {
+  const now = Date.now()
+  const board = drawerFixture()
+  const task = board.tasks['T-1']
+  const rows = client.drawerProps(task, board, now)
+  const by = (key) => rows.find((row) => row.key === key)
+
+  for (const key of ['status', 'priority', 'value', 'assignee', 'reviewer', 'holder', 'created', 'column', 'age', 'milestone']) {
+    assert.ok(by(key), `属性表缺 ${key}`)
+  }
+  assert.equal(by('assignee').copy, 'cc', '负责人可复制')
+  assert.equal(by('created').copy, task.created_at, '创建时间可复制的是 ISO 原文，不是「30 小时前」')
+  assert.equal(by('reviewer').copy, 'kimi')
+  assert.equal(by('holder').copy, 'kimi', '待审核时持球人 = 裁决人')
+
+  // 列龄 / 陈旧标记与卡面读同一个 stalenessOf（同一个 now 必须得出同一个数）。
+  const stale = client.stalenessOf(task, now)
+  assert.equal(stale.stale, true, '待审核 30h > 24h SLA')
+  assert.equal(by('age').copy, client.ageLabel(stale.ageMs))
+  assert.equal(by('age').warn, stale.stale)
+  assert.ok(by('age').value.includes('overdue'), '陈旧必须在属性表里显形')
+})
+
+await check('T-29 · 抽屉渲染：结果列 / 置灰原因 / 两个 tab 的计数都在页面上', async () => {
+  const board = drawerFixture()
+  const { html } = await renderDrawer(board, 'T-1')
+
+  assert.ok(html.includes('into “To settle” · dsh owes the settle'), '通过 的结果列渲染出来了')
+  assert.ok(html.includes('back to “In progress” · cc reworks'), '打回 的结果列渲染出来了')
+  assert.ok(html.includes('only an “In progress” card can be submitted'), '不可用动作的原因渲染出来了')
+  assert.ok(html.includes('already claimed by cc'), '认领不可用的原因渲染出来了')
+  assert.ok(html.includes('>Not available now<'), '置灰分组有标题')
+  // 不可用的动作仍然在 DOM 里（置灰），不是消失。
+  assert.equal((html.match(/tb-action-row/g) ?? []).length >= 9, true, '九个动作全部在 DOM 里')
+
+  // 两个 tab 都带计数（主人只要计数，不要合并成一条时间线）。
+  assert.ok(html.includes('Comments (1)'), '评论 tab 带计数')
+  assert.ok(html.includes('Activity (1)'), '动态 tab 也带计数')
+  assert.ok(html.includes('Details'), '详情 tab 还在 —— 三个 tab 没有合并')
+
+  // 描述默认折叠 + 展开出路；标签可点。
+  assert.ok(html.includes('Show all'), '长描述给出展开')
+  assert.ok(html.includes('tb-tag-btn'), '标签渲染成可点的按钮')
+  assert.ok(html.includes('client') && html.includes('ui'), '普通 tag 也在标签行里')
+})
+
+await check('T-29 · 小派生：未读动态计数与描述折叠阈值', () => {
+  assert.equal(client.unseenActivity(4, 4), 0)
+  assert.equal(client.unseenActivity(6, 4), 2)
+  assert.equal(client.unseenActivity(2, 4), 0, '日志被截断也不能出负数')
+  assert.equal(client.detailNeedsFold(''), false)
+  assert.equal(client.detailNeedsFold('一行\n两行\n三行'), false)
+  assert.equal(client.detailNeedsFold(Array.from({ length: 8 }, (_, i) => `第 ${i} 行`).join('\n')), true, '超过 6 行要折叠')
+  assert.equal(client.detailNeedsFold('x'.repeat(400)), true, '超长单行也要折叠')
+})
+
 // ------------------------------------------------------------------ done
 
 console.log(failed === 0 ? 'all checks passed' : `${failed} check(s) failed`)

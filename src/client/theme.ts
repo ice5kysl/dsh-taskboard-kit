@@ -110,6 +110,28 @@ export const TB_CSS = `
 .tb-tab { border: none; border-bottom: 2px solid transparent; background: transparent; color: ${DIM}; padding: 6px 2px; font-size: 12px; font-family: inherit; cursor: pointer; }
 .tb-tab:hover { color: ${FG}; }
 .tb-tab.active { color: ${LINK}; border-bottom-color: ${LINK}; font-weight: 600; }
+/* 详情抽屉 v2（T-29）：这一组全部复用上面的 token —— 没有新配色、没有第三方 UI 库。
+   粘性头部是 position:sticky + 负 margin 盖住滚动容器的内边距带（见 BoardPanel 的
+   drawerHeadWrap），标签页上的「有新动态」圆点与琥珀色的「久未活动」点都只是记号。 */
+.tb-tab-dot { display: inline-block; width: 6px; height: 6px; border-radius: 3px; background: ${LINK}; margin-left: 5px; vertical-align: 1px; }
+.tb-quiet-dot { display: inline-block; width: 6px; height: 6px; border-radius: 3px; background: ${WARN}; flex-shrink: 0; }
+/* 属性表：左标签右值、值右对齐；值本身是按钮 —— 点一下即复制（可复制性是硬要求，
+   行内再放一枚复制图标就是一圈噪声）。 */
+.tb-prop-row { display: grid; grid-template-columns: 66px minmax(0, 1fr); align-items: baseline; gap: 10px; }
+.tb-prop-label { font-size: 10px; color: ${DIM}; line-height: 18px; }
+.tb-prop-val { min-width: 0; font-size: 11.5px; line-height: 18px; text-align: right; overflow-wrap: anywhere; }
+.tb-prop-copy { display: block; width: 100%; box-sizing: border-box; border: none; border-radius: 5px; background: transparent; color: inherit; font: inherit; font-size: 11.5px; line-height: 18px; text-align: right; padding: 0 4px; cursor: pointer; }
+.tb-prop-copy:hover { background: ${HOVER_BG}; }
+/* 动作表：左按钮右结果列；不可执行时按钮置灰、右侧换成原因。 */
+.tb-action-row { display: grid; grid-template-columns: 108px minmax(0, 1fr); align-items: center; gap: 10px; }
+.tb-action-row .tb-btn { width: 100%; }
+.tb-action-row[data-off="1"] .tb-btn { opacity: 0.5; }
+.tb-action-outcome { font-size: 10.5px; color: ${DIM}; line-height: 1.5; }
+.tb-action-reason { font-size: 10.5px; color: ${FAINT}; line-height: 1.5; }
+/* 属性表里可点的标签：沿用 .tb-tag 的 10px 药丸，只是变成按钮。 */
+.tb-tag-btn { background: transparent; font-family: inherit; cursor: pointer; }
+.tb-tag-btn:hover { color: ${FG}; border-color: ${BORDER_STRONG}; }
+.tb-tag-btn.active { color: ${LINK}; border-color: ${LINK}; background: ${HOVER_BG}; font-weight: 600; }
 /* Rendered markdown (drawer detail + comments): compact, both themes. */
 .tb-md { overflow-wrap: break-word; min-width: 0; }
 .tb-md h1, .tb-md h2, .tb-md h3, .tb-md h4, .tb-md h5, .tb-md h6 { margin: 0.7em 0 0.35em; line-height: 1.35; font-weight: 600; }

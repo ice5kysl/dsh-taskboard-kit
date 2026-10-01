@@ -341,6 +341,7 @@ function MiniBoardDrawerContent({ store, state, initialSelectedId, initialTab }:
           store={store}
           actors={actors}
           onClose={() => setSelectedId(null)}
+          onOpenTask={(id) => setSelectedId(id)}
           style={styles.detailOverlay}
           {...(initialTab ? { initialTab } : {})}
         />

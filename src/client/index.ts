@@ -45,8 +45,14 @@ export const MINI_OVERLAY_ID = 'taskboard-mini'
 // Re-exported so the built bundle can be driven directly by tests (and reused
 // by another client plugin): the store, the components, the bridge, and the
 // shared board math.
-export { BoardPanel } from './BoardPanel.tsx'
+export { BoardPanel, DetailDrawer } from './BoardPanel.tsx'
 export { taskRef, displayTitle, currentHolder, holderActionLabel } from './BoardPanel.tsx'
+// T-29：抽屉 v2 的派生全部是纯函数（可 node 单测），一并从包里导出。
+export {
+  drawerActions, drawerProps, assigneeChoices, milestoneTags, tasksWithTag,
+  unseenActivity, detailNeedsFold,
+} from './BoardPanel.tsx'
+export type { DrawerAction, ActionRow, DrawerProp, AssigneeChoice, AssigneeChoices } from './BoardPanel.tsx'
 export { MiniBoardButton, MiniBoardDrawer } from './MiniBoard.tsx'
 export { createBridgeClient } from './api.ts'
 export { createTaskboardStore, getTaskboardStore } from './store.ts'
@@ -55,6 +61,9 @@ export { columnOf, compareTasks, isTerminalStatus, needsSettling, TERMINAL_STATU
 export { planDrop } from '../shared/dnd.ts'
 export type { DropOp } from '../shared/dnd.ts'
 export { knownActors } from './actors.ts'
+// T-29：抽屉读的板级派生（同一个 stalenessOf / ageLabel），导出以便不变量测试直接对齐口径。
+export { ageLabel, isQuietActor } from './BoardPanel.tsx'
+export { stalenessOf, ageInColumnMs, columnSince, DEFAULT_QUIET_MS } from '../shared/board.ts'
 export { conventionSnippet, dispatchSnippet, guideProjectDir, hookSnippetClaude, hookSnippetKimi } from './guide.ts'
 export { renderMarkdown } from './markdown.ts'
 export { openTaskCount, runPlanOps, groupByOwner, isFinal, escapeTarget, UNASSIGNED_KEY } from './view.ts'

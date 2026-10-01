@@ -49,11 +49,13 @@ import {
   type TaskComment,
   type TaskEvent,
   type TaskPriority,
+  type TaskStatus,
   type TaskValue,
   type WaitOn,
 } from '../shared/types.ts'
 import {
   DEFAULT_QUIET_MS,
+  actorSeenAt,
   ageInColumnMs,
   resolveActor,
   sameActor,
@@ -67,6 +69,10 @@ import { conventionSnippet, dispatchSnippet, guideProjectDir, hookSnippetClaude,
 import { L } from './locale.ts'
 import { renderMarkdown } from './markdown.ts'
 import { StatsView } from './StatsView.tsx'
+// The milestone predicate has ONE definition (stats.ts) — the drawer must not
+// grow a second opinion about what a vX.Y.Z tag is. The import is used only
+// inside functions, so the BoardPanel ↔ stats import cycle stays inert.
+import { isMilestoneTag } from './stats.ts'
 import type { BoardGrouping, TaskboardState, TaskboardStore } from './store.ts'
 import {
   ACCENT,
@@ -466,6 +472,349 @@ export function humanWaiting(board: Board | null, now: number = Date.now()): Hea
   return waitingOnHuman(board, now).filter((issue) => issue.task.waiting_on?.kind === 'human')
 }
 
+// ----------------------------------------------- drawer v2 derivations (T-29)
+//
+// Everything the detail drawer derives lives HERE — pure, exported, and free of
+// React — so `node tests/client.test.mjs` can pin the invariants the drawer is
+// supposed to hold: what an action WILL do (not just what it is called), why an
+// action is greyed, who is actually around to be assigned, and which tags are
+// milestones. The JSX below only renders these answers; it never re-derives.
+
+/** The nine lifecycle actions the drawer knows about (claim / unblock land
+ *  outside the status machine — see ACTION_FROM). */
+export type DrawerAction = 'claim' | 'unblock' | 'start' | 'submit' | 'approve' | 'reject' | 'done' | 'close' | 'reopen'
+
+export interface ActionRow {
+  action: DrawerAction
+  /** Button copy. */
+  label: string
+  /** 结果列：按下去这张卡会落到哪一列、球交给谁（描述状态机，不承诺权限）。 */
+  outcome: string
+  /** primary = 当前列的主操作；danger = 终态动作（关闭）；plain = 备选。 */
+  tone: 'primary' | 'danger' | 'plain'
+  /** null = 现在可执行；否则是置灰的原因（置灰也仍然显示，不凭空消失）。 */
+  disabledReason: string | null
+}
+
+/**
+ * Mirrors `TRANSITIONS` in src/host/store.ts. The browser bundle cannot import
+ * the host module (node built-ins), so the state machine is restated here — and
+ * a test pins this table against the host's, action by action, so the two can
+ * never drift apart silently.
+ */
+const ACTION_FROM: Record<Exclude<DrawerAction, 'claim' | 'unblock'>, TaskStatus[]> = {
+  start: ['open'],
+  submit: ['in_progress'],
+  approve: ['review'],
+  reject: ['review'],
+  done: ['open', 'in_progress', 'review'],
+  close: ['open', 'in_progress', 'review', 'done'],
+  reopen: ['done', 'closed'],
+}
+
+/** The column each action lands the card in (host semantics, restated). */
+function resultColumn(task: Task, action: DrawerAction): BoardColumn {
+  switch (action) {
+    // claimTask() does NOT stop at 已指派: it sets status = in_progress and
+    // assignee = the claimer in one write — so the ball lands in 进行中.
+    case 'claim':
+    case 'start':
+    case 'reject':
+      return 'in_progress'
+    case 'submit':
+      return 'review'
+    case 'approve':
+    case 'done':
+      return 'done'
+    case 'close':
+      return 'closed'
+    // unblock only clears waiting_on — the card keeps living in its column.
+    case 'unblock':
+      return columnOf(task)
+    // reopen: done | closed → open, assignee kept ⇒ assigned or back to the pool.
+    case 'reopen':
+      return task.assignee ? 'assigned' : 'pool'
+  }
+}
+
+/** 结果列的一句话：卡会去哪 + 球交给谁。 */
+function outcomeOf(task: Task, action: DrawerAction): string {
+  const c = columnLabel(resultColumn(task, action))
+  const creator = task.created_by || L('卡主', 'the creator')
+  switch (action) {
+    case 'claim':
+      return L('进入「{c}」· 负责人=认领者', 'into “{c}” · owner = the claimer', { c })
+    case 'unblock':
+      return L('解除等待 · 仍是「{c}」', 'release the wait · still “{c}”', { c })
+    case 'submit':
+      return L('进入「{c}」· 裁决人 {who}', 'into “{c}” · reviewer {who}', { c, who: task.reviewer ?? creator })
+    case 'approve':
+    case 'done':
+      return L('进入「{c}」· 待 {who} 收口', 'into “{c}” · {who} owes the settle', { c, who: creator })
+    case 'reject':
+      return L('回到「{c}」· {who} 返工', 'back to “{c}” · {who} reworks', { c, who: task.assignee ?? L('负责人', 'the owner') })
+    case 'close':
+      return L('进入「{c}」· 可 reopen 恢复', 'into “{c}” · reopen brings it back', { c })
+    case 'reopen':
+      return L('回到「{c}」', 'back to “{c}”', { c })
+    default:
+      return L('进入「{c}」', 'into “{c}”', { c })
+  }
+}
+
+/**
+ * WHY an action is unavailable right now — the sentence that replaces the
+ * button silently vanishing. `null` means it is available.
+ *
+ * Known limit (deliberate): the browser face has no idea WHO the reader is
+ * (the board has no session identity), so permission-shaped refusals — 「不能审
+ * 自己的活」, the reviewer-only verdict — cannot be previewed here. They still
+ * surface the moment the action is attempted, through the store's error strip.
+ */
+function unavailableReason(task: Task, action: DrawerAction): string | null {
+  const current = columnLabel(columnOf(task))
+  if (action === 'claim') {
+    if (task.waiting_on) {
+      return L(
+        '卡片正等 {who}——等谁的卡不能被认领',
+        'it is parked on {who} — a parked card cannot be claimed',
+        { who: task.waiting_on.who ?? waitKindLabel(task.waiting_on.kind) },
+      )
+    }
+    if (task.assignee) return L('已被 {who} 认领', 'already claimed by {who}', { who: task.assignee })
+    if (task.status !== 'open') return L('当前是「{c}」——只有待认领的卡能被认领', 'it is “{c}” — only a claimable card can be claimed', { c: current })
+    return null
+  }
+  if (action === 'unblock') {
+    if (!task.waiting_on) return L('这张卡现在没有被谁等着', 'nobody is waiting on this card right now')
+    return null
+  }
+  // start 还要有负责人：host 的 TRANSITIONS 只看 status，但「无主的进行中」是这块板
+  // 明确封掉的死路（见 tests/dnd.test.mjs：unowned finished card is claimed, not
+  // started ownerless）—— 抽屉不能开一个会把卡推进死路的按钮。
+  if (action === 'start') {
+    if (task.status !== 'open') return L('先认领或指派给某人，再开始（当前：{c}）', 'claim or assign it first, then start (now: {c})', { c: current })
+    if (!task.assignee) return L('这张卡还没有负责人——先认领或指派', 'nobody owns this card yet — claim or assign it first')
+    return null
+  }
+  if (ACTION_FROM[action].includes(task.status)) return null
+  switch (action) {
+    // start 在上面的负责人分支里已经答过了（它比纯状态机多一个条件）。
+    case 'submit':
+      return L('只有「进行中」的卡能提交审核（当前：{c}）', 'only an “In progress” card can be submitted (now: {c})', { c: current })
+    case 'approve':
+    case 'reject':
+      return L('只有「待审核」的卡需要裁决（当前：{c}）', 'only a “Review” card awaits a verdict (now: {c})', { c: current })
+    case 'done':
+      return L('这一列不能用「完成」跳过流程（当前：{c}）', 'this column cannot skip to “Done” (now: {c})', { c: current })
+    case 'close':
+      return L('已结清的卡无需再关闭（先重开）', 'already settled — reopen it first')
+    case 'reopen':
+      return L('只有已完成 / 已结清的卡能重开（当前：{c}）', 'only a done or settled card can be reopened (now: {c})', { c: current })
+  }
+}
+
+/**
+ * Every action the drawer offers on THIS card, in a stable order, each with its
+ * consequence and — when unavailable — the reason it is greyed. The caller
+ * renders available rows first (buttons + 结果列) and the rest as a quieter
+ * 「暂不可用」 list; nothing is ever dropped, because "the button disappeared"
+ * is exactly the question the owner could not answer.
+ */
+export function drawerActions(task: Task, board?: Board | null, now: number = Date.now()): ActionRow[] {
+  void board
+  void now
+  const order: DrawerAction[] = ['claim', 'unblock', 'start', 'submit', 'approve', 'reject', 'done', 'close', 'reopen']
+  return order.map((action) => {
+    const reason = unavailableReason(task, action)
+    const tone: ActionRow['tone'] =
+      action === 'close' ? (task.status === 'done' ? 'primary' : 'danger')
+      : action === 'reject' || action === 'done' || action === 'reopen' || action === 'unblock' ? 'plain'
+      : 'primary'
+    // 收口结清 is the SAME action as 关闭 (host `close`); only the words change,
+    // because on a finished card closing IS the positive next step.
+    const label =
+      action === 'close' && task.status === 'done'
+        ? L('收口结清', 'Settle (close)')
+        : L(
+            {
+              claim: '认领', unblock: '解除等待', start: '开始', submit: '提交审核', approve: '通过',
+              reject: '打回', done: '完成', close: '关闭', reopen: '重开',
+            }[action],
+            {
+              claim: 'Claim', unblock: 'Release the wait', start: 'Start', submit: 'Submit for review', approve: 'Approve',
+              reject: 'Reject', done: 'Done', close: 'Close', reopen: 'Reopen',
+            }[action],
+          )
+    return { action, label, outcome: outcomeOf(task, action), tone, disabledReason: reason }
+  })
+}
+
+/** One row of the drawer's attribute table. */
+export interface DrawerProp {
+  key: string
+  label: string
+  value: string
+  /** 可复制的原文；缺省 = 只读展示。 */
+  copy?: string
+  /** 值处于警示态（琥珀），例如久未活动的持球人 / 已过 SLA 的列龄。 */
+  warn?: boolean
+  title?: string
+}
+
+/**
+ * 里程碑 tag：**与统计页 `milestones()` 同一识别规则（`isMilestoneTag`）、与卡面
+ * 同一来源（`task.tags`）** —— 抽屉里读到的 vX.Y.Z 就是统计页里程碑那一版，
+ * 不允许这里另立一套正则。
+ */
+export function milestoneTags(task: Task): string[] {
+  return task.tags.map((tag) => tag.trim()).filter((tag) => isMilestoneTag(tag))
+}
+
+/** 带某个 tag 的卡（口径 = 精确匹配 trim 后的 tag，与 milestones() 同一套）。 */
+export function tasksWithTag(board: Board | null, tag: string): Task[] {
+  const want = tag.trim()
+  if (!board || !want) return []
+  return Object.values(board.tasks)
+    .filter((task) => task.tags.some((raw) => raw.trim() === want))
+    .sort(compareTasks)
+}
+
+/** 「有新动态」= 抽屉打开之后日志又长了多少（本地未读，不写回板子）。 */
+export function unseenActivity(total: number, seen: number): number {
+  return Math.max(0, total - seen)
+}
+
+/** 描述是否长到需要「展开」：超过 6 行或 320 字符。 */
+export function detailNeedsFold(detail: string): boolean {
+  if (!detail) return false
+  return detail.split('\n').length > 6 || detail.length > 320
+}
+
+/** One assignable member, with the evidence the drawer shows next to it. */
+export interface AssigneeChoice {
+  name: string
+  /** 这就是当前负责人（永远列出，哪怕它久未活动）。 */
+  current: boolean
+  /** 花名册判定为「久未活动」（isQuietActor：超时或压根没记录）。 */
+  quiet: boolean
+  /** 「最近活动 X 前」；花名册里根本没这个人 = null。 */
+  seenText: string | null
+}
+
+export interface AssigneeChoices {
+  /** 默认列出：在场者 + 当前负责人。 */
+  present: AssigneeChoice[]
+  /** 要显式展开才出现的久未活动者。 */
+  quiet: AssigneeChoice[]
+}
+
+/**
+ * WHO CAN I ACTUALLY ASSIGN TO — split by evidence of presence.
+ *
+ * `isQuietActor` is the SAME predicate the card uses (roster `last_seen_at`
+ * older than DEFAULT_QUIET_MS, or no roster entry at all), so the drawer cannot
+ * grow a second opinion about "gone". Default = `present` only: a roster that
+ * mixes live agents with people who left three days ago is a chip wall where
+ * the one name you want is buried. The current assignee is always listed even
+ * when quiet — hiding the owner of a stalled card would hide the problem.
+ */
+export function assigneeChoices(board: Board | null, actors: string[], current: string | null, now: number = Date.now()): AssigneeChoices {
+  const present: AssigneeChoice[] = []
+  const quiet: AssigneeChoice[] = []
+  for (const name of [...new Set(actors)]) {
+    if (!name) continue
+    const isCurrent = current !== null && current !== '' && (board ? sameActor(board, name, current) : name === current)
+    const seen = board ? actorSeenAt(board, name) : null
+    const ms = seen ? Date.parse(seen) : NaN
+    const isQuiet = isQuietActor(board, name, now)
+    const choice: AssigneeChoice = {
+      name,
+      current: isCurrent,
+      quiet: isQuiet,
+      seenText: Number.isFinite(ms) ? L('最近活动 {age} 前', 'last seen {age} ago', { age: ageLabel(Math.max(0, now - ms)) }) : null,
+    }
+    if (isCurrent || !isQuiet) present.push(choice)
+    else quiet.push(choice)
+  }
+  return { present, quiet }
+}
+
+/** 属性表（状态 / 优先级 / 价值度 / 负责人 / 裁决人 / 持球人 / 时间 / 里程碑）。 */
+export function drawerProps(task: Task, board: Board | null, now: number = Date.now()): DrawerProp[] {
+  const holder = currentHolder(task, board, now)
+  const staleness = stalenessOf(task, now)
+  const reviewer = task.reviewer
+  const reviewerQuiet = reviewer ? isQuietActor(board, reviewer, now) : false
+  const holderQuiet = holder?.who ? isQuietActor(board, holder.who, now) : false
+  const quietSuffix = L(' · 久未活动', ' · quiet')
+  const rows: DrawerProp[] = [
+    { key: 'status', label: L('状态', 'Status'), value: statusLabel(task) },
+    { key: 'priority', label: L('优先级', 'Priority'), value: priorityLabel(task.priority) },
+    { key: 'value', label: L('价值度', 'Value'), value: task.value !== null ? `◆${valueText(task.value)}` : L('未评估', 'unestimated') },
+    {
+      key: 'assignee',
+      label: L('负责人', 'Owner'),
+      value: task.assignee ?? L('待认领', 'unclaimed'),
+      ...(task.assignee ? { copy: task.assignee } : {}),
+    },
+    {
+      key: 'reviewer',
+      label: L('裁决人', 'Reviewer'),
+      value: reviewer ? `${reviewer}${reviewerQuiet ? quietSuffix : ''}` : L('—（没人欠这次裁决）', '— (nobody owes a verdict)'),
+      warn: reviewerQuiet,
+      ...(reviewer
+        ? {
+            copy: reviewer,
+            title: reviewerQuiet
+              ? L('{who} 欠这次审核，但花名册里它已久未活动', '{who} owes this review but has been quiet per the roster', { who: reviewer })
+              : L('裁决人：{who}', 'reviewer: {who}', { who: reviewer }),
+          }
+        : {}),
+    },
+    {
+      key: 'holder',
+      label: L('持球人', 'Holder'),
+      value: holder
+        ? `${holder.who ?? (task.waiting_on ? waitKindLabel(task.waiting_on.kind) : L('池子里', 'the pool'))}${holderQuiet ? quietSuffix : ''}`
+        : L('—（已结清）', '— (settled)'),
+      warn: holderQuiet,
+      ...(holder ? { title: holderTitle(task, holder, reviewerQuiet) } : {}),
+      ...(holder?.who ? { copy: holder.who } : {}),
+    },
+    {
+      key: 'created',
+      label: L('创建', 'Created'),
+      value: relTime(task.created_at),
+      copy: task.created_at,
+      title: L('由 {by} 创建 · {at}', 'created by {by} · {at}', { by: task.created_by, at: task.created_at }),
+    },
+    {
+      key: 'column',
+      label: L('当前列', 'In column'),
+      value: `${statusLabel(task)} · ${ageLabel(staleness.ageMs)}`,
+      title: L('在这一列已经 {age} · 创建于 {created}', '{age} in this column · created {created}', { age: ageLabel(staleness.ageMs), created: task.created_at }),
+    },
+    {
+      key: 'age',
+      label: L('列龄', 'Column age'),
+      value: staleness.stale ? `${ageLabel(staleness.ageMs)}${L(' · 已超时', ' · overdue')}` : ageLabel(staleness.ageMs),
+      copy: ageLabel(staleness.ageMs),
+      warn: staleness.stale,
+      ...(staleness.stale && staleness.slaMs !== null
+        ? { title: L('在这一列待了 {age}，已超过该列 {sla} 的阈值', '{age} in this column — past its {sla} threshold', { age: ageLabel(staleness.ageMs), sla: ageLabel(staleness.slaMs) }) }
+        : { title: L('在这一列待了 {age}', '{age} in this column', { age: ageLabel(staleness.ageMs) }) }),
+    },
+    {
+      key: 'milestone',
+      label: L('里程碑', 'Milestone'),
+      value: milestoneTags(task).join(' · ') || L('—', '—'),
+      ...(milestoneTags(task).length > 0 ? { copy: milestoneTags(task).join(' '), title: L('来自标签，与统计页里程碑同一口径', 'derived from tags — same rule as the stats milestones') } : {}),
+    },
+  ]
+  return rows
+}
+
 // ------------------------------------------------------------------ panel
 
 export function BoardPanel(props: BoardPanelProps): JSX.Element {
@@ -758,7 +1107,17 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
           {createOpen ? (
             <CreateForm state={state} store={store} actors={actors} onClose={() => setCreateOpen(false)} />
           ) : (
-            selected && <DetailDrawer key={selected.id} task={selected} state={state} store={store} actors={actors} onClose={() => store.select(null)} />
+            selected && (
+              <DetailDrawer
+                key={selected.id}
+                task={selected}
+                state={state}
+                store={store}
+                actors={actors}
+                onClose={() => store.select(null)}
+                onOpenTask={(id) => store.select(id)}
+              />
+            )
           )}
         </>
       )}
@@ -1440,18 +1799,70 @@ function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; bo
 }
 
 /**
- * The in-panel detail drawer (absolute, no portal; 560px wide). Three tabs:
- * 详情 (read-only by default — meta, status actions, roster chips, detail;
- * an explicit 编辑 button opens the edit form), 评论 (the comment thread +
- * composer) and 动态 (the log timeline). Keyed by task id at the call site,
- * so the tab, edit mode and drafts reset when the selection changes — but
- * survive background refreshes of the same task.
+ * The in-panel detail drawer (absolute, no portal; 560px wide).
+ *
+ * v2 (T-29) — the structure the owner asked for after 「这个任务右侧拉抽屉的布局和
+ * 样式也可以好好再优化下」. Three tabs (详情 / 评论 / 动态) as before; what changed
+ * is that the drawer now answers the same questions the CARD answers, in the same
+ * language (marks + the 10px caption tier), instead of printing a text stream:
+ *
+ *   · STICKY head — 「#id 标题」 + 持球行 (currentHolder) + 主操作 + the tab strip
+ *     stay on screen while the description scrolls. No library: it is
+ *     `position: sticky` inside the drawer's own overflowY:auto container
+ *     (see styles.drawerHeadWrap for the negative-margin trick that makes the
+ *     bar cover the container's 14px padding band).
+ *   · ATTRIBUTE TABLE — label left / value right, click a value to copy it:
+ *     状态 / 优先级 / 价值度 / 负责人 / 裁决人 / 持球人 / 创建 / 当前列 / 列龄
+ *     (+ SLA stale mark) / 里程碑 (tag-derived, same rule as the stats page).
+ *   · ACTION TABLE — every action states its OUTCOME (「提交审核 → 进入「待审核」·
+ *     裁决人 X」), and the actions that are NOT available are still listed, greyed,
+ *     with the reason — a button that silently disappears is a question mark.
+ *   · ASSIGNEE — a searchable list that defaults to the actors who are actually
+ *     around (`isQuietActor`), with 「显示全部（含 N 个久未活动）」 for the rest and
+ *     an amber dot + 「最近活动 X 前」 on the quiet ones.
+ *   · Folding description, clickable tags (they list the cards carrying that tag
+ *     in place — the store has no tag-filter state), a count on BOTH loose tabs
+ *     (评论 N / 动态 N, the latter with an unseen dot), and `/` to jump into the
+ *     comment box.
+ *
+ * Keyed by task id at the call site, so the tab, edit mode and drafts reset when
+ * the selection changes — but survive background refreshes of the same task.
  *
  * Exported for the mini board (MiniBoard), which stacks it as the layer-2
  * drawer with a `style` override (its default positioning is the board
  * panel's right edge).
  */
-export function DetailDrawer({ task, state, store, actors, onClose, style, initialTab }: { task: Task; state: TaskboardState; store: TaskboardStore; actors: string[]; onClose(): void; style?: CSSProperties; initialTab?: 'detail' | 'comments' | 'activity' }): JSX.Element {
+
+/** 展开过的描述，本次页面会话内记住（抽屉按 task id 键控 = 切走再回来也不塌）。 */
+const expandedDetails = new Set<string>()
+
+/** 一个动作按钮的样式：终态动作危险、主操作实心、其余描边。 */
+function actionClass(row: ActionRow): string {
+  if (row.tone === 'danger') return 'tb-btn tb-btn-danger'
+  if (row.tone === 'primary') return 'tb-btn tb-btn-primary'
+  return 'tb-btn'
+}
+
+export function DetailDrawer({
+  task,
+  state,
+  store,
+  actors,
+  onClose,
+  style,
+  initialTab,
+  onOpenTask,
+}: {
+  task: Task
+  state: TaskboardState
+  store: TaskboardStore
+  actors: string[]
+  onClose(): void
+  style?: CSSProperties
+  initialTab?: 'detail' | 'comments' | 'activity'
+  /** 标签筛选结果里点一张卡 → 把抽屉切到那张卡（不给 = 只列出来，不可点）。 */
+  onOpenTask?(id: string): void
+}): JSX.Element {
   const [tab, setTab] = useState<'detail' | 'comments' | 'activity'>(initialTab ?? 'detail')
   const [editing, setEditing] = useState(false)
   const [titleDraft, setTitleDraft] = useState(task.title)
@@ -1461,12 +1872,68 @@ export function DetailDrawer({ task, state, store, actors, onClose, style, initi
   const [tagsDraft, setTagsDraft] = useState(task.tags.join(', '))
   const [rejectNote, setRejectNote] = useState('')
   const [commentDraft, setCommentDraft] = useState('')
+  // v2 state: the assignee disclosure, the in-place tag listing, the copy
+  // confirmation, the folded description and the activity baseline.
+  const [showQuiet, setShowQuiet] = useState(false)
+  const [actorQuery, setActorQuery] = useState('')
+  const [tagFilter, setTagFilter] = useState<string | null>(null)
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  const [descOpen, setDescOpen] = useState(() => expandedDetails.has(task.id))
+  const [seenLog, setSeenLog] = useState(task.log.length)
+  const commentRef = useRef<HTMLTextAreaElement | null>(null)
+
   const busy = state.busy
+  const board = state.board
   const column = columnOf(task)
   const staleness = stalenessOf(task)
   const waiting = task.waiting_on
-  const reviewerQuiet = task.reviewer ? isQuietActor(state.board, task.reviewer) : false
+  const holder = currentHolder(task, board)
+  const reviewerQuiet = task.reviewer ? isQuietActor(board, task.reviewer) : false
+  const holderQuiet = holder?.who ? isQuietActor(board, holder.who) : false
+  // Every derived answer comes from the pure functions above — the JSX below
+  // renders them, it does not re-derive them (that is what makes the invariants
+  // testable without a browser).
+  const props = useMemo(() => drawerProps(task, board), [task, board])
+  const actions = useMemo(() => drawerActions(task, board), [task, board])
+  const available = actions.filter((row) => row.disabledReason === null)
+  const blocked = actions.filter((row) => row.disabledReason !== null)
+  // 主操作 = 该列的主色调动作；没有主色调就退到第一个可执行动作（已结清 → 重开）。
+  const chosen = available.find((row) => row.tone === 'primary') ?? available[0] ?? null
+  const choices = useMemo(() => assigneeChoices(board, actors, task.assignee), [board, actors, task.assignee])
+  const shownChoices = useMemo(() => {
+    const query = actorQuery.trim().toLowerCase()
+    // 搜索永远搜全部（搜不到自己刚打的字才是坏的）；不搜索时默认只列在场者。
+    const pool = query
+      ? [...choices.present, ...choices.quiet]
+      : showQuiet
+        ? [...choices.present, ...choices.quiet]
+        : choices.present
+    return query ? pool.filter((choice) => choice.name.toLowerCase().includes(query)) : pool
+  }, [choices, showQuiet, actorQuery])
+  const tagged = useMemo(() => (tagFilter ? tasksWithTag(board, tagFilter) : []), [board, tagFilter])
   const log = useMemo(() => [...task.log].sort((a, b) => a.at.localeCompare(b.at)), [task.log])
+  const unseen = unseenActivity(log.length, seenLog)
+  const foldable = detailNeedsFold(task.detail)
+
+  // 「有新动态」= 抽屉打开之后日志又长出来的条数；看着动态 tab 时自动清零。
+  useEffect(() => {
+    if (tab === 'activity') setSeenLog(log.length)
+  }, [tab, log.length])
+
+  // `/` 聚焦评论输入框（只在评论 tab、且焦点不在别的输入框里时抢键）。
+  useEffect(() => {
+    if (tab !== 'comments') return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== '/' || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return
+      const target = event.target as HTMLElement | null
+      const tag = target?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return
+      event.preventDefault()
+      commentRef.current?.focus()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [tab])
 
   const update = (patch: Parameters<TaskboardStore['update']>[0]): void => {
     void store.update(patch)
@@ -1523,70 +1990,183 @@ export function DetailDrawer({ task, state, store, actors, onClose, style, initi
     if (ok) setCommentDraft('')
   }
 
+  /** 动作区的唯一出口：认领走 claim 端点，打回带上原因，其余都是状态机 action。 */
+  const runAction = (action: DrawerAction): void => {
+    if (action === 'claim') {
+      void store.claim(task.id)
+      return
+    }
+    if (action === 'reject') {
+      void submitReject()
+      return
+    }
+    update({ id: task.id, action })
+  }
+
+  /** 属性表的值可复制：点一下进剪贴板，1.2s 内右侧挂一个 ✓。 */
+  const copyProp = async (key: string, text: string): Promise<void> => {
+    if (!(await copyText(text))) return
+    setCopiedKey(key)
+    window.setTimeout(() => setCopiedKey((current) => (current === key ? null : current)), 1200)
+  }
+
   return (
     <aside style={{ ...styles.drawer, ...style }}>
-      <div style={styles.drawerHead}>
-        <span style={styles.drawerRef} title={task.id}>
-          {taskRef(task.id)}
-        </span>
-        <span style={styles.drawerTitle}>{task.title}</span>
-        {tab === 'detail' && !editing && (
-          <button type="button" className="tb-btn" onClick={startEdit}>
-            {L('编辑', 'Edit')}
+      {/* Sticky head: 「#id 标题 + 持球行 + 主操作 + tabs」 stay put while the
+          description scrolls. It has to be the FIRST child of the drawer's own
+          scroll container, and the negative margin + matching padding is what
+          covers the container's 14px padding band — without it, scrolled
+          content peeks through the strip above the bar. */}
+      <div style={styles.drawerHeadWrap}>
+        <div style={styles.drawerHead}>
+          <span style={styles.drawerRef} title={task.id}>
+            {taskRef(task.id)}
+          </span>
+          <span style={styles.drawerTitle} title={task.title}>
+            {task.title}
+          </span>
+          {tab === 'detail' && !editing && chosen && (
+            <button type="button" className={actionClass(chosen)} disabled={busy} onClick={() => runAction(chosen.action)} title={chosen.outcome}>
+              {chosen.label}
+            </button>
+          )}
+          {tab === 'detail' && !editing && (
+            <button type="button" className="tb-btn" onClick={startEdit}>
+              {L('编辑', 'Edit')}
+            </button>
+          )}
+          <button type="button" className="tb-iconbtn" onClick={onClose} title={L('关闭（Esc）', 'Close (Esc)')}>
+            ×
           </button>
-        )}
-        <button type="button" className="tb-iconbtn" onClick={onClose} title={L('关闭', 'Close')}>
-          ×
-        </button>
-      </div>
-      <div style={styles.tabRow}>
-        <button type="button" className={tab === 'detail' ? 'tb-tab active' : 'tb-tab'} onClick={() => switchTab('detail')}>
-          {L('详情', 'Details')}
-        </button>
-        <button type="button" className={tab === 'comments' ? 'tb-tab active' : 'tb-tab'} onClick={() => switchTab('comments')}>
-          {L('评论 ({n})', 'Comments ({n})', { n: task.comments.length })}
-        </button>
-        <button type="button" className={tab === 'activity' ? 'tb-tab active' : 'tb-tab'} onClick={() => switchTab('activity')}>
-          {L('动态', 'Activity')}
-        </button>
+        </div>
+
+        {/* 持球行 —— 卡面回答的那一个问题，抽屉里也必须在第一屏：球在谁手上、
+            欠什么动作、欠了多久。等待中的卡用琥珀描边（和卡面同一个记号）。 */}
+        <div style={styles.holderRow}>
+          {holder ? (
+            <>
+              <span
+                className={task.waiting_on ? 'tb-badge-wait' : 'tb-badge-outline'}
+                style={styles.holderChip}
+                title={holderTitle(task, holder, reviewerQuiet)}
+              >
+                <span style={styles.cardHoldMark}>{HOLDER_MARKS[holder.action]}</span>
+                <span style={styles.cardWaitWho}>
+                  {holder.who ?? (task.waiting_on ? waitKindLabel(task.waiting_on.kind) : L('池子里', 'the pool'))}
+                </span>
+              </span>
+              <span style={styles.holderAction}>{holderActionLabel(holder.action)}</span>
+              {holder.sinceMs !== undefined && <span style={styles.holderAction}>· {ageLabel(holder.sinceMs)}</span>}
+              {holderQuiet && <span className="tb-quiet-dot" title={L('花名册里它已久未活动', 'quiet per the roster')} />}
+            </>
+          ) : (
+            <span style={styles.detailEmpty}>{L('已结清——球不在任何人手上', 'settled — the ball is with nobody')}</span>
+          )}
+        </div>
+
+        <div style={styles.tabRow}>
+          <button type="button" className={tab === 'detail' ? 'tb-tab active' : 'tb-tab'} onClick={() => switchTab('detail')}>
+            {L('详情', 'Details')}
+          </button>
+          <button
+            type="button"
+            className={tab === 'comments' ? 'tb-tab active' : 'tb-tab'}
+            onClick={() => switchTab('comments')}
+            title={L('按 / 直接聚焦输入框', 'Press / to jump into the box')}
+          >
+            {L('评论 ({n})', 'Comments ({n})', { n: task.comments.length })}
+          </button>
+          <button type="button" className={tab === 'activity' ? 'tb-tab active' : 'tb-tab'} onClick={() => switchTab('activity')}>
+            {L('动态 ({n})', 'Activity ({n})', { n: log.length })}
+            {tab !== 'activity' && unseen > 0 && (
+              <span className="tb-tab-dot" title={L('有 {n} 条新动态', '{n} new entries', { n: unseen })} />
+            )}
+          </button>
+        </div>
       </div>
 
       {tab === 'detail' && !editing && (
         <>
-          <div style={styles.drawerMeta}>
-            <span>{task.id}</span>
-            <span>{statusLabel(task)}</span>
-            <span>{L('优先级 {p}', 'priority {p}', { p: priorityLabel(task.priority) })}</span>
-            <span>{task.value != null ? `◆${valueText(task.value)}` : L('未评估', 'unestimated')}</span>
-            <span>{task.assignee ?? L('待认领', 'unclaimed')}</span>
-            {task.tags.map((tag) => (
-              <span key={tag} className="tb-tag">{tag}</span>
-            ))}
-          </div>
-          <div style={styles.drawerMeta}>
-            <span>{L('由 {by} 创建', 'created by {by}', { by: task.created_by })}</span>
-            <span>{relTime(task.created_at)}</span>
-          </div>
-
-          {/* Collaboration facts (v0.5.4): how long this card has sat where it
-              is, who owes the verdict, and who it is parked on. */}
-          <div style={styles.drawerMeta}>
-            <span
-              title={L('在当前列 {age} · 创建于 {created}', '{age} in this column · created {created}', { age: ageLabel(staleness.ageMs), created: task.created_at })}
-            >
-              {L('在当前列 {age}', '{age} in this column', { age: ageLabel(staleness.ageMs) })}
-              {staleness.stale ? L(' · 已超时', ' · overdue') : ''}
-            </span>
-            {column === 'review' && (
-              <span style={reviewerQuiet ? { color: WARN } : undefined}>
-                {task.reviewer
-                  ? (reviewerQuiet
-                    ? L('审核人 {who}（久未活动）', 'reviewer {who} (inactive)', { who: task.reviewer })
-                    : L('审核人 {who}', 'reviewer {who}', { who: task.reviewer }))
-                  : L('审核人未指定——没人欠这次审核', 'no reviewer set — nobody owes this verdict')}
-              </span>
+          {/* 属性表：左标签右值、值右对齐、点值即复制；标签语言与卡面同一套。 */}
+          <div style={styles.drawerSection}>
+            <div style={styles.sectionTitle}>{L('属性', 'Attributes')}</div>
+            <div style={styles.propTable}>
+              {props.map((row) => (
+                <div key={row.key} className="tb-prop-row">
+                  <span className="tb-prop-label">{row.label}</span>
+                  {row.copy ? (
+                    <button
+                      type="button"
+                      className="tb-prop-val tb-prop-copy"
+                      style={row.warn ? { color: WARN } : undefined}
+                      title={L('点击复制：{value}', 'Click to copy: {value}', { value: row.copy })}
+                      onClick={() => void copyProp(row.key, row.copy ?? '')}
+                    >
+                      {row.value}
+                      {copiedKey === row.key && <span style={styles.copiedMark}>✓</span>}
+                    </button>
+                  ) : (
+                    <span className="tb-prop-val" style={row.warn ? { color: WARN } : undefined} title={row.title}>
+                      {row.value}
+                    </span>
+                  )}
+                </div>
+              ))}
+              <div className="tb-prop-row">
+                <span className="tb-prop-label">{L('标签', 'Tags')}</span>
+                <span className="tb-prop-val" style={styles.tagCell}>
+                  {task.tags.length === 0 ? (
+                    <span style={styles.detailEmpty}>—</span>
+                  ) : (
+                    task.tags.map((tag) => (
+                      <button
+                        key={tag}
+                        type="button"
+                        className={tag === tagFilter ? 'tb-tag tb-tag-btn active' : 'tb-tag tb-tag-btn'}
+                        title={L('筛出带「{tag}」的卡', 'Show the cards tagged “{tag}”', { tag })}
+                        onClick={() => setTagFilter(tag === tagFilter ? null : tag)}
+                      >
+                        {tag}
+                      </button>
+                    ))
+                  )}
+                </span>
+              </div>
+            </div>
+            {/* 就地列出（store 没有 tag 过滤态）：点了标签就在这里列出同标签的卡，
+                口径是精确匹配 trim 后的 tag —— 与统计页里程碑同一套。 */}
+            {tagFilter && (
+              <div style={styles.tagBox}>
+                <div style={styles.tagBoxHead}>
+                  <span style={styles.tagBoxTitle}>
+                    {L('标签「{tag}」· {n} 张', 'Tag “{tag}” · {n} card(s)', { tag: tagFilter, n: tagged.length })}
+                  </span>
+                  <button type="button" className="tb-iconbtn" onClick={() => setTagFilter(null)} title={L('清除筛选', 'Clear the filter')}>
+                    ×
+                  </button>
+                </div>
+                <div style={styles.tagBoxList}>
+                  {tagged.map((row) => (
+                    <button
+                      key={row.id}
+                      type="button"
+                      className="tb-stats-row"
+                      disabled={onOpenTask === undefined}
+                      onClick={() => onOpenTask?.(row.id)}
+                      title={row.title}
+                    >
+                      <span style={styles.tagBoxRef}>{taskRef(row.id)}</span>
+                      <span style={styles.tagBoxName}>{row.title}</span>
+                      <span style={styles.tagBoxStatus}>{statusLabel(row)}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
+
+          {/* Collaboration fact that is NOT an attribute: a parked card says what
+              it is parked on, in full, so nobody has to open the log. */}
           {waiting && (
             <div style={styles.waitBox}>
               <div style={styles.humanItemHead}>
@@ -1599,91 +2179,131 @@ export function DetailDrawer({ task, state, store, actors, onClose, style, initi
             </div>
           )}
 
-          <div style={styles.drawerActions}>
-            {column === 'pool' && (
-              <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => void store.claim(task.id)}>
-                {L('认领', 'Claim')}
-              </button>
-            )}
-            {column === 'assigned' && (
-              <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => update({ id: task.id, action: 'start' })}>
-                {L('开始', 'Start')}
-              </button>
-            )}
-            {column === 'in_progress' && (
-              <>
-                <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => update({ id: task.id, action: 'submit' })}>
-                  {L('提交审核', 'Submit for review')}
-                </button>
-                <button type="button" className="tb-btn" disabled={busy} onClick={() => update({ id: task.id, action: 'done' })}>
-                  {L('完成', 'Done')}
-                </button>
-              </>
-            )}
+          {/* 动作表：可执行的先列（按钮 + 结果列），不可执行的仍然逐条列出并说明
+              原因 —— 「按钮凭空消失」正是这一版要消灭的东西。 */}
+          <div style={styles.drawerSection}>
+            <div style={styles.sectionTitle}>{L('动作', 'Actions')}</div>
+            <div style={styles.actionTable}>
+              {available.map((row) => (
+                <div key={row.action} className="tb-action-row">
+                  <button type="button" className={actionClass(row)} disabled={busy} onClick={() => runAction(row.action)}>
+                    {row.label}
+                  </button>
+                  <span className="tb-action-outcome">{row.outcome}</span>
+                </div>
+              ))}
+              {blocked.length > 0 && <div style={styles.actionBlockTitle}>{L('暂不可用', 'Not available now')}</div>}
+              {blocked.map((row) => (
+                <div key={row.action} className="tb-action-row" data-off="1" title={row.disabledReason ?? undefined}>
+                  <button type="button" className="tb-btn" disabled>
+                    {row.label}
+                  </button>
+                  <span className="tb-action-reason">{row.disabledReason}</span>
+                </div>
+              ))}
+            </div>
             {column === 'review' && (
-              <>
-                <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => update({ id: task.id, action: 'approve' })}>
-                  {L('通过', 'Approve')}
-                </button>
-                <button type="button" className="tb-btn" disabled={busy} onClick={() => void submitReject()}>
-                  {L('打回', 'Reject')}
-                </button>
-              </>
-            )}
-            {column === 'done' && (
-              <>
-                {/* done is not terminal in v0.6: the primary action here is the
-                    settle, so a finished card cannot silently stay unsettled. */}
-                <button type="button" className="tb-btn tb-btn-primary" disabled={busy} onClick={() => update({ id: task.id, action: 'close' })}>
-                  {L('收口结清', 'Settle (close)')}
-                </button>
-                <button type="button" className="tb-btn" disabled={busy} onClick={() => update({ id: task.id, action: 'reopen' })}>
-                  {L('重开', 'Reopen')}
-                </button>
-              </>
-            )}
-            {column === 'closed' && (
-              <button type="button" className="tb-btn" disabled={busy} onClick={() => update({ id: task.id, action: 'reopen' })}>
-                {L('重开（结清错了）', 'Reopen (settled by mistake)')}
-              </button>
-            )}
-            {(column === 'pool' || column === 'assigned' || column === 'in_progress' || column === 'review') && (
-              <button type="button" className="tb-btn tb-btn-danger" disabled={busy} onClick={() => update({ id: task.id, action: 'close' })}>
-                {L('关闭', 'Close')}
-              </button>
+              <input
+                className="tb-input"
+                value={rejectNote}
+                placeholder={L('打回原因（可选，随打回一起提交）', 'Reject reason (optional, sent with the rejection)')}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => setRejectNote(event.target.value)}
+              />
             )}
           </div>
-          {column === 'review' && (
-            <input
-              className="tb-input"
-              value={rejectNote}
-              placeholder={L('打回原因（可选，随打回一起提交）', 'Reject reason (optional, sent with the rejection)')}
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(event) => setRejectNote(event.target.value)}
-            />
-          )}
 
+          {/* 指派：默认只列在场者；久未活动的收进「显示全部」，带琥珀点与最近活动。 */}
           <div style={styles.drawerSection}>
             <div style={styles.sectionTitle}>{L('指派', 'Assignee')}</div>
-            <ActorChips
-              actors={actors}
-              current={task.assignee}
-              busy={busy}
-              onSelect={(name) => {
-                if (name !== task.assignee) update({ id: task.id, assignee: name })
-              }}
-              poolLabel={L('移回待认领', 'Back to pool')}
-              emptyHint={L('暂无可指派成员——Agent 或人认领过一次就会出现在这里', 'No assignable members yet — an agent or human shows up here after claiming once.')}
-            />
+            {actors.length === 0 ? (
+              <div style={styles.detailEmpty}>
+                {L('暂无可指派成员——Agent 或人认领过一次就会出现在这里', 'No assignable members yet — an agent or human shows up here after claiming once.')}
+              </div>
+            ) : (
+              <div style={styles.assignBox}>
+                {actors.length > 5 && (
+                  <input
+                    className="tb-input"
+                    style={styles.assignSearch}
+                    value={actorQuery}
+                    placeholder={L('搜索成员…', 'Search members…')}
+                    autoComplete="off"
+                    spellCheck={false}
+                    onChange={(event) => setActorQuery(event.target.value)}
+                  />
+                )}
+                <div style={styles.assignList}>
+                  {shownChoices.map((choice) => (
+                    <button
+                      key={choice.name}
+                      type="button"
+                      className="tb-picker-row"
+                      disabled={busy || choice.current}
+                      onClick={() => update({ id: task.id, assignee: choice.name })}
+                    >
+                      <span style={styles.pickerName}>{choice.name}</span>
+                      {choice.current && <span style={styles.pickerCurrent}>{L('当前', 'current')}</span>}
+                      {choice.quiet && (
+                        <span style={styles.assignSeen}>
+                          <span className="tb-quiet-dot" />
+                          {choice.seenText ?? L('花名册里没有它', 'not on the roster')}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                  {shownChoices.length === 0 && <div style={styles.pickerEmpty}>{L('没有匹配的成员', 'No member matches')}</div>}
+                </div>
+                <div style={styles.assignFoot}>
+                  <button
+                    type="button"
+                    className="tb-picker-row"
+                    disabled={busy || task.assignee === null}
+                    onClick={() => update({ id: task.id, assignee: null })}
+                  >
+                    {L('移回待认领', 'Back to pool')}
+                  </button>
+                  {choices.quiet.length > 0 && (
+                    <button type="button" className="tb-picker-row" style={styles.pickerCancel} onClick={() => setShowQuiet(!showQuiet)}>
+                      {showQuiet
+                        ? L('只看在场（{n}）', 'Only present ({n})', { n: choices.present.length })
+                        : L('显示全部（含 {n} 个久未活动）', 'Show all ({n} quiet)', { n: choices.quiet.length })}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           <div style={styles.drawerSection}>
             <div style={styles.sectionTitle}>{L('描述', 'Description')}</div>
             {task.detail ? (
-              // Rendered markdown (XSS-safe — markdown.ts escapes first); the
-              // read-only default stays read-only, just no longer raw text.
-              <div className="tb-md" style={styles.detailBody} dangerouslySetInnerHTML={{ __html: renderMarkdown(task.detail) }} />
+              <>
+                {/* Rendered markdown (XSS-safe — markdown.ts escapes first) and
+                    clipped to ~6 rows by CSS until 展开; the fold is remembered
+                    for this page session (expandedDetails), not persisted. */}
+                <div
+                  className="tb-md"
+                  style={foldable && !descOpen ? styles.detailBodyFolded : styles.detailBody}
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(task.detail) }}
+                />
+                {foldable && (
+                  <button
+                    type="button"
+                    className="tb-btn"
+                    style={styles.descToggle}
+                    onClick={() => {
+                      const next = !descOpen
+                      setDescOpen(next)
+                      if (next) expandedDetails.add(task.id)
+                      else expandedDetails.delete(task.id)
+                    }}
+                  >
+                    {descOpen ? L('收起', 'Collapse') : L('展开全部', 'Show all')}
+                  </button>
+                )}
+              </>
             ) : (
               <div style={styles.detailEmpty}>{L('（没有描述）', '(no description)')}</div>
             )}
@@ -1761,10 +2381,11 @@ export function DetailDrawer({ task, state, store, actors, onClose, style, initi
           )}
           <div style={styles.commentComposer}>
             <textarea
+              ref={commentRef}
               className="tb-textarea"
               rows={3}
               value={commentDraft}
-              placeholder={L('写下发现、交接说明或测试反馈…', 'Findings, handoff notes or test feedback…')}
+              placeholder={L('写下发现、交接说明或测试反馈…（按 / 直接到这里）', 'Findings, handoff notes or test feedback… (press / to jump here)')}
               onChange={(event) => setCommentDraft(event.target.value)}
             />
             <div style={styles.drawerActions}>
@@ -2478,7 +3099,70 @@ const styles: Record<string, CSSProperties> = {
   drawerHead: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
   drawerRef: { fontSize: 13, fontWeight: 600, color: FAINT, marginTop: 1, flexShrink: 0 },
   drawerTitle: { flex: 1, minWidth: 0, fontSize: 14, fontWeight: 600, lineHeight: 1.45, overflowWrap: 'anywhere' },
-  drawerMeta: { display: 'flex', flexWrap: 'wrap', gap: '2px 10px', color: DIM, fontSize: 11 },
+  // 粘性头部（T-29）：抽屉自己就是滚动容器（overflowY:auto），头部是它的第一个
+  // 孩子 ⇒ position:sticky 不需要任何库。细节全在那两个 -14 上：overflow 容器的
+  // 可见区是 padding box，所以 top:0 只会把头部钉在 14px 内边距的下沿，上面那一条
+  // 缝里会露出滚上去的正文（首版就是这样）。top:-14 + marginTop:-14 让它顶到
+  // border box 上沿，paddingTop:14 再把内容推回原位 —— 缝隙被自己的背景盖住。
+  drawerHeadWrap: {
+    position: 'sticky',
+    top: -14,
+    zIndex: 2,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    marginTop: -14,
+    marginLeft: -14,
+    marginRight: -14,
+    padding: '12px 14px 8px',
+    background: BG,
+    borderBottom: `1px solid ${BORDER}`,
+  },
+  // 持球行：与卡面同一套记号（`➤ dsh · 待提交 · 1h12m`）。
+  holderRow: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', minHeight: 18, minWidth: 0 },
+  holderChip: { maxWidth: '100%' },
+  holderAction: { flexShrink: 0, fontSize: 10, color: DIM },
+  // 属性表 + 标签筛选结果（就地列出同标签的卡）。
+  propTable: { display: 'flex', flexDirection: 'column', gap: 2 },
+  copiedMark: { marginLeft: 5, color: LINK, fontSize: 10 },
+  tagCell: { display: 'flex', flexWrap: 'wrap', gap: 4, justifyContent: 'flex-end', alignItems: 'center' },
+  tagBox: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    border: `1px solid ${BORDER}`,
+    borderRadius: 8,
+    background: BG_SUNK,
+    padding: '6px 8px',
+  },
+  tagBoxHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  tagBoxTitle: { fontSize: 11, fontWeight: 600, minWidth: 0 },
+  tagBoxList: { display: 'flex', flexDirection: 'column', gap: 1, maxHeight: 180, overflowY: 'auto' },
+  tagBoxRef: { flexShrink: 0, fontSize: 10, color: FAINT, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+  tagBoxName: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  tagBoxStatus: { flexShrink: 0, fontSize: 10, color: DIM },
+  // 动作表：左按钮右结果列（不可执行的也列出来，右侧换成原因）。
+  actionTable: { display: 'flex', flexDirection: 'column', gap: 4 },
+  actionBlockTitle: { fontSize: 10, color: FAINT, marginTop: 4 },
+  // 指派：可搜索的下拉面板（默认只列在场者，久未活动的收进「显示全部」）。
+  assignBox: { display: 'flex', flexDirection: 'column', gap: 4, border: `1px solid ${BORDER}`, borderRadius: 8, background: BG_SUNK, padding: 6 },
+  assignSearch: { marginBottom: 2 },
+  // 指派列表不设内部滚动条：抽屉自己就滚，内层再挖一个 176px 的洞只会把第 5 行
+  // 拦腰截断（首版就是这个问题）。成员多了靠上面的搜索框收窄。
+  assignList: { display: 'flex', flexDirection: 'column', gap: 1 },
+  assignFoot: { display: 'flex', flexDirection: 'column', gap: 1, borderTop: `1px solid ${BORDER}`, paddingTop: 4 },
+  assignSeen: { display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0, fontSize: 10, color: WARN },
+  // 折叠描述：默认露前 ~6 行，展开状态记在本次页面会话里。
+  detailBodyFolded: {
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    fontSize: 12.5,
+    lineHeight: 1.65,
+    maxWidth: '70ch',
+    maxHeight: 124,
+    overflow: 'hidden',
+  },
+  descToggle: { alignSelf: 'flex-start' },
   drawerActions: { display: 'flex', gap: 6, flexWrap: 'wrap' },
   drawerSection: {
     display: 'flex',
