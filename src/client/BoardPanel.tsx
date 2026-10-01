@@ -200,6 +200,39 @@ function statusLabel(task: Task): string {
   return columnLabel(columnOf(task))
 }
 
+/**
+ * Titles on a real board often carry their own id and owner — 「【kimi】 T-93 ·
+ * iOS v2 M7 连接与推送」— which the card already renders as badges. Owner
+ * request (2026-10-01): row 2 should be the TITLE, not title + redundant
+ * bookkeeping. A prefix is stripped ONLY when it duplicates what this very card
+ * already shows:
+ *   · 【name】 when name is this card's assignee or creator — never some other
+ *     actor (「【kimi】」 on cc's card is information, not noise);
+ *   · T-93 / #93 when the number is this card's own id.
+ * Three passes, so 「【kimi】 T-93 · …」 collapses fully. Display-only: the board
+ * is never mutated, and the original string stays in the card's tooltip.
+ */
+export function displayTitle(task: Task, _board?: Board | null): string {
+  const n = task.id.replace(/^T-/, '')
+  let title = task.title
+  for (let pass = 0; pass < 3; pass += 1) {
+    const before = title
+    const boxed = /^\s*[【\[](?<who>[^】\]]{1,32})[】\]]\s*[·:：\-–—,]?\s*/.exec(title)
+    if (boxed && (boxed.groups?.who === task.assignee || boxed.groups?.who === task.created_by || boxed.groups?.who === task.reviewer)) {
+      title = title.slice(boxed[0].length)
+    }
+    // The id may sit behind a boxed prefix that is NOT redundant (an unassigned
+    // card's 「【kimi】」 names the requester and stays) — 「【kimi】 T-93 · X」 must
+    // still lose its redundant T-93.
+    // Capture (and re-emit) any non-redundant boxed prefix, so this replacement
+    // drops ONLY the id — 「【kimi】 T-93 · X」 → 「【kimi】 X」.
+    const ref = new RegExp(`^(\\s*(?:[【\\[][^】\\]]{1,32}[】\\]]\\s*[·:：\\-–—,]?\\s*)?)(?:T-?|#)${n}\\s*[·:：\\-–—,]?\\s*`, 'i')
+    if (ref.test(title)) title = title.replace(ref, '$1')
+    if (title === before) break
+  }
+  return title.trim() || task.title
+}
+
 const EVENT_LABELS: Record<TaskEvent, [string, string]> = {
   created: ['创建', 'created'],
   assigned: ['指派', 'assigned'],
@@ -1138,20 +1171,50 @@ function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; bo
       }}
       onClick={onOpen}
     >
-      {/* Row 1 — priority dot + title (2-line clamp). The `#N` ref and the
-          ◆value badge used to own a whole row above the title; they now ride
-          the meta row, which is what turns five rows into three. */}
-      <div style={styles.cardTop}>
+      {/* Row 1 — the card's FIXED attributes on one 10px line: priority dot,
+          #id, ◆value, status, creator … with the column age pinned right.
+          Owner request 2026-10-01: attributes on top (caption-sized), title in
+          the middle, everything that MOVES (owner / who owes / tags) at the foot. */}
+      <div style={styles.cardMetaTop}>
         <span
           style={{ ...styles.dot, background: PRIORITY_COLORS[task.priority] ?? FAINT }}
           title={L('优先级：{p}', 'Priority: {p}', { p: priorityLabel(task.priority) })}
         />
-        <div style={styles.cardTitle}>{task.title}</div>
+        <span style={styles.cardRef} title={task.id}>{taskRef(task.id)}</span>
+        {task.value != null && (
+          <span style={styles.valueBadge} title={L('价值度 {v}', 'Value {v}', { v: valueText(task.value) })}>
+            ◆{valueText(task.value)}
+          </span>
+        )}
+        <span style={styles.cardStatus} title={L('状态：{s}', 'Status: {s}', { s: statusLabel(task) })}>
+          {statusLabel(task)}
+        </span>
+        <span style={styles.cardSep}>·</span>
+        <span style={styles.cardCreator} title={L('由 {by} 创建', 'created by {by}', { by: task.created_by })}>
+          {L('{by} 创建', 'by {by}', { by: task.created_by })}
+        </span>
+        <span
+          style={styles.cardAge}
+          title={L('在当前列 {age} · 创建于 {created}', '{age} in this column · created {created}', { age: ageLabel(staleness.ageMs), created: task.created_at })}
+        >
+          {ageLabel(staleness.ageMs)}
+        </span>
+        {staleness.stale && (
+          <span
+            className="tb-stale"
+            title={L('在这一列待了 {age}，已超过该列 {sla} 的阈值', '{age} in this column — past its {sla} threshold', { age: ageLabel(staleness.ageMs), sla: ageLabel(staleness.slaMs ?? 0) })}
+          />
+        )}
       </div>
-      {/* Row 2 — who owes / who waits (left cluster, wraps) … and the small
-          facts pinned to the right edge: ◆value · #N · column age (+ the stale
-          dot). One glance answers "whose is it, is it stuck, what is it worth". */}
-      <div style={styles.cardMeta}>
+      {/* Row 2 — the title alone, at most two lines. A redundant leading
+          「【owner】 T-93 ·」 is stripped for DISPLAY only (displayTitle); the
+          untouched string stays in the tooltip. */}
+      <div style={styles.cardTitle} title={displayTitle(task, board) === task.title ? undefined : task.title}>
+        {displayTitle(task, board)}
+      </div>
+      {/* Row 3 — what actually moves, strictly one line: owner, who owes /
+          waits, then the tags pinned right. */}
+      <div style={styles.cardFoot}>
         <div style={styles.cardWho}>
           {task.assignee ? (
             <span className="tb-badge" title={task.assignee}>{task.assignee}</span>
@@ -1159,12 +1222,15 @@ function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; bo
             <span className="tb-badge-outline">{L('待认领', 'unclaimed')}</span>
           )}
           {waiting && (
-            // The card's waiting chip may wrap internally: on the merged meta
-            // row a long "waiting on human · 1h12m" would otherwise lose the
-            // AGE to ellipsis — and the age is the half that says "this is
-            // stuck", which is the whole reason the chip is on the card.
-            <span className="tb-badge-wait" style={styles.cardWait} title={waiting.question}>
-              {waitLabel(waiting)} · {ageLabel(Math.max(0, now - (Date.parse(waiting.since) || now)))}
+            <span
+              className="tb-badge-wait"
+              style={styles.cardWait}
+              title={`${waitLabel(waiting)}${waiting.question ? ` — ${waiting.question}` : ''}`}
+            >
+              ◷ {waiting.who && <><span style={styles.cardWaitWho}>{waiting.who}</span> · </>}
+              {/* The age must never be the part that gets clipped: it is the
+                  half that says "this is stuck". The WHO ellipsizes instead. */}
+              <span style={styles.cardWaitAge}>{ageLabel(Math.max(0, now - (Date.parse(waiting.since) || now)))}</span>
             </span>
           )}
           {reviewer && (
@@ -1179,37 +1245,15 @@ function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; bo
             </span>
           )}
         </div>
-        <div style={styles.cardFacts}>
-          {task.value != null && (
-            <span style={styles.valueBadge} title={L('价值度 {v}', 'Value {v}', { v: valueText(task.value) })}>
-              ◆{valueText(task.value)}
-            </span>
-          )}
-          <span style={styles.cardRef} title={task.id}>
-            {taskRef(task.id)}
-          </span>
-          <span
-            style={styles.cardAge}
-            title={L('在当前列 {age} · 创建于 {created}', '{age} in this column · created {created}', { age: ageLabel(staleness.ageMs), created: task.created_at })}
-          >
-            {ageLabel(staleness.ageMs)}
-          </span>
-          {staleness.stale && (
-            <span
-              className="tb-stale"
-              title={L('在这一列待了 {age}，已超过该列 {sla} 的阈值', '{age} in this column — past its {sla} threshold', { age: ageLabel(staleness.ageMs), sla: ageLabel(staleness.slaMs ?? 0) })}
-            />
-          )}
-        </div>
+        {task.tags.length > 0 && (
+          <div style={styles.cardTags}>
+            {task.tags.slice(0, 2).map((tag) => (
+              <span key={tag} className="tb-tag">{tag}</span>
+            ))}
+            {task.tags.length > 2 && <span className="tb-tag">+{task.tags.length - 2}</span>}
+          </div>
+        )}
       </div>
-      {task.tags.length > 0 && (
-        <div style={styles.cardTags}>
-          {task.tags.slice(0, 2).map((tag) => (
-            <span key={tag} className="tb-tag">{tag}</span>
-          ))}
-          {task.tags.length > 2 && <span className="tb-tag">+{task.tags.length - 2}</span>}
-        </div>
-      )}
     </button>
   )
 }
@@ -2091,16 +2135,20 @@ const styles: Record<string, CSSProperties> = {
   },
   closedStripText: { writingMode: 'vertical-rl', fontSize: 11, color: DIM, letterSpacing: 1, whiteSpace: 'nowrap' },
   // Meta row of a card: one compact line (dot · value · #N at the right end).
-  cardTop: { display: 'flex', alignItems: 'flex-start', gap: 6 },
-  dot: { width: 8, height: 8, borderRadius: 4, flexShrink: 0, marginTop: 5 },
+  // Row 1: the card's FIXED attributes — one 10px line, read as a caption.
+  cardMetaTop: { display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, lineHeight: '15px', minWidth: 0 },
+  dot: { width: 8, height: 8, borderRadius: 4, flexShrink: 0 },
+  cardStatus: { flexShrink: 0, color: DIM, fontSize: 10 },
+  cardSep: { flexShrink: 0, color: FAINT, fontSize: 10 },
+  cardCreator: { color: FAINT, fontSize: 10, flexShrink: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   // The title is its own full-width row below the meta row, clamped to 2 lines.
   cardTitle: {
-    flex: 1,
     minWidth: 0,
     fontSize: 12.5,
     fontWeight: 500,
     lineHeight: 1.35,
     overflowWrap: 'anywhere',
+    marginTop: 3,
     display: '-webkit-box',
     WebkitLineClamp: 2,
     WebkitBoxOrient: 'vertical',
@@ -2117,15 +2165,21 @@ const styles: Record<string, CSSProperties> = {
     whiteSpace: 'nowrap',
   },
   cardRef: { flexShrink: 0, fontSize: 10, color: FAINT, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
-  // Row 2: the left cluster wraps (owner + waiting/reviewer), the right cluster
-  // is pinned and never shrinks — the facts stay on one line while the people
-  // take as many lines as they need.
-  cardMeta: { display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, minWidth: 0 },
-  cardWho: { display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', minWidth: 0, flex: '0 1 auto' },
-  cardFacts: { display: 'flex', alignItems: 'center', gap: 4, marginLeft: 'auto', flexShrink: 0 },
-  cardAge: { color: FAINT, fontSize: 10, flexShrink: 0 },
+  // Row 3: strictly ONE line (owner request 2026-10-01) — owner + who owes /
+  // waits on the left (shrinkable, ellipsized rather than wrapped), tags pinned
+  // right; row 1 keeps the column age at its right end.
+  cardFoot: { display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, minWidth: 0 },
+  cardWho: { display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'nowrap', minWidth: 0, flex: '0 1 auto' },
+  cardAge: { marginLeft: 'auto', color: FAINT, fontSize: 10, flexShrink: 0 },
   reviewerBadge: { maxWidth: '100%' },
-  cardWait: { whiteSpace: 'normal', lineHeight: 1.35, textAlign: 'left' },
+  // One line ⇒ the chip truncates instead of wrapping — which is why its text
+  // is the compact 「◷ who · 1h12m」 (full sentence + question live in the
+  // tooltip): the AGE is the half that says "this is stuck" and must survive.
+  // Never squeezed: the people cluster yields only as a last resort, so the
+  // waiting chip keeps谁 + 时长 whole; the TAGS are the ones that clip.
+  cardWait: { whiteSpace: 'nowrap', overflow: 'hidden', minWidth: 0, flexShrink: 0 },
+  cardWaitWho: { overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 },
+  cardWaitAge: { flexShrink: 0 },
   // The human strip: the only warn-tinted surface on the board (amber, never
   // alarm-red — the shell has no warn-bg token, so the raised surface plus a
   // warn left rule carries the emphasis).
@@ -2183,7 +2237,7 @@ const styles: Record<string, CSSProperties> = {
     padding: '7px 10px',
     background: BG_SUNK,
   },
-  cardTags: { display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 },
+  cardTags: { display: 'flex', gap: 4, marginLeft: 'auto', flex: '1 1 auto', minWidth: 0, overflow: 'hidden', justifyContent: 'flex-end' },
   center: {
     margin: 'auto',
     padding: 24,

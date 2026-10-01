@@ -46,7 +46,7 @@ export const MINI_OVERLAY_ID = 'taskboard-mini'
 // by another client plugin): the store, the components, the bridge, and the
 // shared board math.
 export { BoardPanel } from './BoardPanel.tsx'
-export { taskRef } from './BoardPanel.tsx'
+export { taskRef, displayTitle } from './BoardPanel.tsx'
 export { MiniBoardButton, MiniBoardDrawer } from './MiniBoard.tsx'
 export { createBridgeClient } from './api.ts'
 export { createTaskboardStore, getTaskboardStore } from './store.ts'

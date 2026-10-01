@@ -970,7 +970,16 @@ await check('human strip: cards parked on a PERSON get their own surface', async
   assert.ok(html.includes('>overdue<'), 'a 48h wait passes the 24h human SLA and is marked')
   assert.ok(html.includes('Reply'), 'an answer affordance is offered inline')
   // The agent-parked card still carries its badge on the CARD (not the strip).
-  assert.ok(html.includes('waiting on agent kimi · 1h'), 'agent waits ride the card badge')
+  // 2026-10-01: the card's footer is strictly ONE line, so the chip is the
+  // compact 「◷ who · age」 and the full sentence moved into its tooltip — the
+  // invariant (agent waits ride the card badge, humans get the strip) is
+  // unchanged, only the copy got shorter.
+  // Assert on the RENDERED TEXT (tags stripped): the chip is built from two
+  // spans — the who part ellipsizes, the age is pinned — so matching raw markup
+  // would test the markup rather than what the user reads.
+  const cardText = html.replace(/<[^>]*>/g, '')
+  assert.ok(cardText.includes('◷ kimi · 1h'), 'agent waits ride the card badge (compact chip)')
+  assert.ok(html.includes('waiting on agent kimi'), 'the full sentence survives in the tooltip')
 
   // Selecting the waiting card unfolds the inline answer box (textarea + the
   // one-gesture 「回复并解除等待」 submit). SSR drives the selection via the store.
@@ -980,6 +989,36 @@ await check('human strip: cards parked on a PERSON get their own surface', async
   assert.ok(opened.includes('Reply &amp; release'), 'the one-gesture answer button is there')
   assert.ok(opened.includes('>Hide<'), 'and it can be folded away again')
   store.select(null)
+})
+
+await check('displayTitle: 只剥「与本卡重复」的前缀（【owner】/T-<本卡id>），且不动数据', async () => {
+  const t = (over) => ({ id: 'T-93', title: '', status: 'in_progress', assignee: 'kimi', created_by: 'dsh', ...over })
+  // ① 两种前缀一次剥干净（主人 2026-10-01 的诉求：第 2 行只放标题）
+  assert.equal(
+    client.displayTitle(t({ title: '【kimi】 T-93 · iOS v2 M7 连接与推送：退避/去重' })),
+    'iOS v2 M7 连接与推送：退避/去重',
+  )
+  // ② 只有【owner】前缀（无 T 号）也剥；创建者前缀同样算重复
+  assert.equal(client.displayTitle(t({ title: '【kimi】v1.42.0 iOS v2 独立验收' })), 'v1.42.0 iOS v2 独立验收')
+  assert.equal(client.displayTitle(t({ title: '【dsh】交给 kimi 的活' })), '交给 kimi 的活')
+  // ③ 别的 actor 的前缀是【信息】不是噪音：不剥
+  assert.equal(client.displayTitle(t({ title: '【cc】等 kimi 回执' })), '【cc】等 kimi 回执')
+  // ④ T 号不是本卡的：不剥（否则会吃掉真实标题内容）
+  assert.equal(client.displayTitle(t({ title: 'T-89 的前置条件' })), 'T-89 的前置条件')
+  // ④b 非重复的 boxed 前缀保留，但【本卡 id】仍要剥（它一定重复）
+  assert.equal(
+    client.displayTitle(t({ assignee: null, created_by: 'dsh', title: '【kimi】 T-93 · 别人提的活' })),
+    '【kimi】 别人提的活',
+  )
+  // ④c reviewer 的前缀也算重复（卡上已经有「审核 cc」徽章）
+  assert.equal(client.displayTitle(t({ assignee: 'dsh', reviewer: 'cc', title: '【cc】整理回填' })), '整理回填')
+  assert.equal(client.displayTitle(t({ title: 'T-93' })), 'T-93', '剥空了就退回原文')
+  // ⑤ 无前缀的标题原样返回
+  assert.equal(client.displayTitle(t({ title: '普通标题' })), '普通标题')
+  // ⑥ 纯展示：绝不改数据
+  const src = t({ title: '【kimi】 T-93 · 标题' })
+  client.displayTitle(src)
+  assert.equal(src.title, '【kimi】 T-93 · 标题', 'displayTitle 不得改动 task')
 })
 
 await check('stale + reviewer: column age, a quiet dot, and who owes the verdict', async () => {
