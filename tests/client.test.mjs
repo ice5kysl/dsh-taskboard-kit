@@ -978,7 +978,14 @@ await check('human strip: cards parked on a PERSON get their own surface', async
   // spans — the who part ellipsizes, the age is pinned — so matching raw markup
   // would test the markup rather than what the user reads.
   const cardText = html.replace(/<[^>]*>/g, '')
-  assert.ok(cardText.includes('◷ kimi · 1h'), 'agent waits ride the card badge (compact chip)')
+  // 2026-10-01（持球人）：等待不再是一枚「◷ who · age」徽章，而是卡面唯一回答的那句
+  // 「球在 kimi（待回执）」——同一条不变量（agent 的等待上卡面、人类的等待进 strip），
+  // 只是把「谁持球」和「欠什么动作」合成了一句。
+  // 测试进程没有 navigator ⇒ locale.ts 解析为英文，所以这里断言英文文案；
+  // 中文（全角括号）由双主题预览图核对 —— 见 docs/images/card-holder.png。
+  assert.ok(cardText.includes('with kimi (to reply)'), 'agent waits ride the card badge as the holder phrase')
+  assert.ok(/with kimi \(to reply\)/.test(cardText), '英文用 ASCII 括号且前面留一个空格')
+  assert.ok(cardText.includes('1h'), 'and the holder chip still counts how long the ball has been held')
   assert.ok(html.includes('waiting on agent kimi'), 'the full sentence survives in the tooltip')
 
   // Selecting the waiting card unfolds the inline answer box (textarea + the
@@ -989,6 +996,59 @@ await check('human strip: cards parked on a PERSON get their own surface', async
   assert.ok(opened.includes('Reply &amp; release'), 'the one-gesture answer button is there')
   assert.ok(opened.includes('>Hide<'), 'and it can be folded away again')
   store.select(null)
+})
+
+await check('currentHolder: 任何阶段有且只有一个持球人（closed 除外），且指向该阶段的正确字段', async () => {
+  const base = {
+    id: 'T-1', title: 'x', detail: '', status: 'open', assignee: 'dsh', reviewer: null,
+    waiting_on: null, priority: 'medium', value: null, tags: [], created_by: 'dsh',
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    log: [], comments: [],
+  }
+  const statuses = ['open', 'in_progress', 'review', 'done', 'closed']
+  const waits = [null, { kind: 'human', who: 'iceskyls' }, { kind: 'agent', who: 'kimi' }]
+  let cases = 0
+  for (const status of statuses) {
+    for (const assignee of [null, 'dsh']) {
+      for (const reviewer of [null, 'kimi']) {
+        for (const waiting_on of waits) {
+          cases += 1
+          const task = { ...base, status, assignee, reviewer, waiting_on }
+          const h = client.currentHolder(task)
+          if (status === 'closed') {
+            assert.equal(h, null, 'closed 是终态：没人该动')
+            continue
+          }
+          assert.ok(h, `${status} 必须有一个持球人`)
+          // 唯一性：持球人是一个 actor，不是一串 actor
+          if (h.who !== null) {
+            assert.equal(typeof h.who, 'string')
+            assert.ok(!/[,，、/]/.test(h.who), `持球人必须唯一，实际 ${h.who}`)
+          }
+          // 指向该阶段的正确字段
+          if (waiting_on) {
+            assert.equal(h.who, waiting_on.who, '等待优先：球在必须回答的那一方')
+            assert.equal(h.action, waiting_on.kind === 'human' ? 'answer' : 'reply')
+          } else if (status === 'review') {
+            assert.equal(h.who, reviewer ?? 'dsh', 'review：球在裁决人（缺省回落到卡主）')
+            assert.equal(h.action, 'decide')
+          } else if (status === 'done') {
+            assert.equal(h.who, 'dsh', 'done：球在卡主（收口权）')
+            assert.equal(h.action, 'settle')
+          } else if (!assignee) {
+            assert.equal(h.who, null, '没人认领时球在池子里')
+            assert.equal(h.action, 'claim')
+          } else {
+            assert.equal(h.who, assignee, '干活阶段：球在负责人')
+            assert.equal(h.action, 'work')
+          }
+        }
+      }
+    }
+  }
+  assert.ok(cases >= 60, `组合覆盖 ${cases} 例`)
+  // 动作文案两种语言都在
+  assert.ok(client.holderActionLabel('decide').length > 0)
 })
 
 await check('displayTitle: 只剥「与本卡重复」的前缀（【owner】/T-<本卡id>），且不动数据', async () => {
@@ -1034,7 +1094,10 @@ await check('stale + reviewer: column age, a quiet dot, and who owes the verdict
   // A 1h-old review card is inside the 24h SLA: no stale mark.
   const fresh = await renderBoard(collabBoard([reviewTask('kimi', 3600_000)]))
   assert.ok(!fresh.html.includes('class="tb-stale"'), 'a fresh review card carries no stale mark')
-  assert.ok(fresh.html.includes('review kimi'), 'the reviewer badge names who owes the verdict')
+  assert.ok(
+    fresh.html.replace(/<[^>]*>/g, '').includes('with kimi (to decide)'),
+    'the holder phrase names who owes the verdict',
+  )
   assert.ok(!fresh.html.includes('(inactive)'), 'a reviewer seen 2 minutes ago is not flagged quiet')
 
   // 3 days in the review column: stale, and the age badge counts time in the
@@ -1047,7 +1110,11 @@ await check('stale + reviewer: column age, a quiet dot, and who owes the verdict
   // A reviewer the roster has never heard of (the lost claude case): hinted,
   // never reassigned.
   const ghost = await renderBoard(collabBoard([reviewTask('ghost', 3 * 24 * 3600_000)]))
-  assert.ok(ghost.html.includes('review ghost (inactive)'), 'an unknown reviewer is marked quiet')
+  // 2026-10-01（持球人）：裁决人不再是一枚独立徽章，而卡面只有一句「球在 ghost（待裁决）」；
+  // 「久未活动」这条证据落在 tooltip 里（可见性靠 hover/详情抽屉），不再污染卡面 —— 但不变量不变：
+  // 一个花名册里查无此人的裁决人必须被显式点名。
+  assert.ok(ghost.html.replace(/<[^>]*>/g, '').includes('with ghost (to decide)'), 'the holder phrase names the ghost')
+  assert.ok(/ghost owes this review but has been quiet/.test(ghost.html), 'an unknown reviewer is still flagged quiet (tooltip)')
   assert.equal(ghost.store.getState().board.tasks['T-4'].reviewer, 'ghost', 'the hint never reassigns the card')
 })
 

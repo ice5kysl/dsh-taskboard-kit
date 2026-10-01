@@ -233,6 +233,107 @@ export function displayTitle(task: Task, _board?: Board | null): string {
   return title.trim() || task.title
 }
 
+/** The four actions a card can owe, and who owes them. */
+export type HolderAction = 'claim' | 'work' | 'answer' | 'reply' | 'decide' | 'settle'
+
+export interface Holder {
+  /** The actor the ball is with; null when nobody holds it (closed) or the
+   *  card is unclaimed (the ball is in the pool). */
+  who: string | null
+  action: HolderAction
+  /** Milliseconds the current holder has held the ball, when the board knows. */
+  sinceMs?: number
+}
+
+const HOLDER_ACTIONS: Record<HolderAction, [string, string]> = {
+  claim: ['待认领', 'to claim'],
+  work: ['待提交', 'to submit'],
+  answer: ['待回复', 'to answer'],
+  reply: ['待回执', 'to reply'],
+  decide: ['待裁决', 'to decide'],
+  settle: ['待收口', 'to settle'],
+}
+
+export function holderActionLabel(action: HolderAction): string {
+  const pair = HOLDER_ACTIONS[action]
+  return L(pair[0], pair[1])
+}
+
+/**
+ * WHO HOLDS THE BALL — the one question a card must answer, and the only place
+ * the answer lives (owner decision 2026-10-01).
+ *
+ * The board already moves the ball between stages — but it expresses that with
+ * three different fields, so a reader had to combine four signals (assignee +
+ * status + waiting_on + reviewer) and could easily combine them wrongly:
+ *   · review:   assignee is FROZEN (the store refuses to reassign outside
+ *               open/in_progress) while the verdict is owed by the reviewer;
+ *   · waiting:  the assignee still owns the work, but the ball is with whoever
+ *               must answer;
+ *   · done:     the reviewer is cleared and the settle is owed by the creator.
+ * In all three, 「当前处理人」 read literally points at the WRONG person.
+ *
+ * The derivation is total: every status yields exactly ONE holder (or none for
+ * closed), which is what makes the ball *timable* — and therefore warnable
+ * (a holder who has had it too long, a holder who has gone quiet).
+ */
+export function currentHolder(task: Task, board?: Board | null): Holder | null {
+  const now = Date.now()
+  if (task.status === 'closed') return null
+  const since = (at?: string): number | undefined => {
+    const ms = at ? Date.parse(at) : NaN
+    return Number.isFinite(ms) ? Math.max(0, now - ms) : undefined
+  }
+  // A wait outranks everything: while a card is parked, the ball is with the
+  // person who must answer — including a review that got stuck mid-verdict.
+  if (task.waiting_on) {
+    const who = task.waiting_on.who ?? null
+    return {
+      who,
+      action: task.waiting_on.kind === 'human' ? 'answer' : 'reply',
+      sinceMs: since(task.waiting_on.since),
+    }
+  }
+  if (task.status === 'review') {
+    const reviewer = task.reviewer ?? task.created_by
+    return { who: reviewer, action: 'decide', sinceMs: since(lastEventAt(task, 'submitted')) }
+  }
+  if (task.status === 'done') {
+    return { who: task.created_by, action: 'settle', sinceMs: since(lastEventAt(task, 'approved') ?? lastEventAt(task, 'done')) }
+  }
+  if (!task.assignee) return { who: null, action: 'claim' }
+  return { who: task.assignee, action: 'work', sinceMs: since(lastEventAt(task, 'started') ?? lastEventAt(task, 'assigned') ?? lastEventAt(task, 'claimed')) }
+}
+
+/** The holder chip's tooltip: the full sentence behind the compact phrase. */
+function holderTitle(task: Task, holder: Holder, reviewerQuiet: boolean): string {
+  const parts: string[] = []
+  if (holder.who === null) parts.push(L('还没有人认领这张卡', 'nobody has claimed this card yet'))
+  else if (task.waiting_on) {
+    parts.push(`${waitLabel(task.waiting_on)}${task.waiting_on.who ? ` (${task.waiting_on.who})` : ''}`)
+    if (task.waiting_on.question) parts.push(task.waiting_on.question)
+  } else if (holder.action === 'decide') {
+    parts.push(reviewerQuiet
+      ? L('{who} 欠这次审核，但花名册里它已久未活动', '{who} owes this review but has been quiet per the roster', { who: holder.who })
+      : L('裁决人：{who}', 'reviewer: {who}', { who: holder.who }))
+  } else if (holder.action === 'settle') {
+    parts.push(L('已完成待收口，收口权在卡主 {who}', 'done and awaiting settle — the owner {who} closes it', { who: holder.who }))
+  } else {
+    parts.push(L('负责人：{who}', 'owner: {who}', { who: holder.who }))
+  }
+  if (holder.sinceMs !== undefined) parts.push(L('已 {age}', '{age} so far', { age: ageLabel(holder.sinceMs) }))
+  return parts.join(' — ')
+}
+
+/** The most recent timestamp of one event type, if the log carries one. */
+function lastEventAt(task: Task, event: TaskEvent): string | undefined {
+  for (let i = task.log.length - 1; i >= 0; i -= 1) {
+    const entry = task.log[i]
+    if (entry && entry.event === event) return entry.at
+  }
+  return undefined
+}
+
 const EVENT_LABELS: Record<TaskEvent, [string, string]> = {
   created: ['创建', 'created'],
   assigned: ['指派', 'assigned'],
@@ -1150,6 +1251,7 @@ function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; bo
   const waiting = task.waiting_on
   const reviewer = task.status === 'review' ? task.reviewer : null
   const reviewerQuiet = reviewer ? isQuietActor(board, reviewer, now) : false
+  const holder = currentHolder(task, board)
   return (
     <button
       type="button"
@@ -1189,10 +1291,29 @@ function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; bo
         <span style={styles.cardStatus} title={L('状态：{s}', 'Status: {s}', { s: statusLabel(task) })}>
           {statusLabel(task)}
         </span>
-        <span style={styles.cardSep}>·</span>
-        <span style={styles.cardCreator} title={L('由 {by} 创建', 'created by {by}', { by: task.created_by })}>
-          {L('{by} 创建', 'by {by}', { by: task.created_by })}
-        </span>
+        {/* 负责人 (accountable, stage-independent) — shown only when there IS
+            one (the status already reads 待认领 otherwise: the same phrase twice
+            is the redundancy the owner asked us to remove) — and the creator
+            only when it is somebody else. */}
+        {task.assignee !== null && (
+          <>
+            <span style={styles.cardSep}>·</span>
+            <span
+              style={styles.cardCreator}
+              title={L('负责人：{who} · 由 {by} 创建', 'owner: {who} · created by {by}', { who: task.assignee, by: task.created_by })}
+            >
+              {task.assignee}
+            </span>
+          </>
+        )}
+        {task.assignee !== task.created_by && (
+          <>
+            <span style={styles.cardSep}>·</span>
+            <span style={styles.cardCreator} title={L('由 {by} 创建', 'created by {by}', { by: task.created_by })}>
+              {L('{by} 创建', 'by {by}', { by: task.created_by })}
+            </span>
+          </>
+        )}
         <span
           style={styles.cardAge}
           title={L('在当前列 {age} · 创建于 {created}', '{age} in this column · created {created}', { age: ageLabel(staleness.ageMs), created: task.created_at })}
@@ -1212,36 +1333,34 @@ function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; bo
       <div style={styles.cardTitle} title={displayTitle(task, board) === task.title ? undefined : task.title}>
         {displayTitle(task, board)}
       </div>
-      {/* Row 3 — what actually moves, strictly one line: owner, who owes /
-          waits, then the tags pinned right. */}
+      {/* Row 3 — what actually moves, strictly one line: WHO HOLDS THE BALL
+          (one derivation, not three overlapping name badges) + the tags pinned
+          right. See currentHolder() for why 「当前处理人」 read literally would
+          point at the wrong person in review / waiting / done. */}
       <div style={styles.cardFoot}>
         <div style={styles.cardWho}>
-          {task.assignee ? (
-            <span className="tb-badge" title={task.assignee}>{task.assignee}</span>
-          ) : (
-            <span className="tb-badge-outline">{L('待认领', 'unclaimed')}</span>
-          )}
-          {waiting && (
+          {holder && (
             <span
-              className="tb-badge-wait"
+              className={task.waiting_on ? 'tb-badge-wait' : 'tb-badge-outline'}
               style={styles.cardWait}
-              title={`${waitLabel(waiting)}${waiting.question ? ` — ${waiting.question}` : ''}`}
+              title={holderTitle(task, holder, reviewerQuiet)}
             >
-              ◷ {waiting.who && <><span style={styles.cardWaitWho}>{waiting.who}</span> · </>}
-              {/* The age must never be the part that gets clipped: it is the
-                  half that says "this is stuck". The WHO ellipsizes instead. */}
-              <span style={styles.cardWaitAge}>{ageLabel(Math.max(0, now - (Date.parse(waiting.since) || now)))}</span>
+              {holder.who === null ? (
+                <span style={styles.cardWaitWho}>{L('球在池子里', 'unclaimed — in the pool')}</span>
+              ) : (
+                <>
+                  {L('球在', 'with')}{' '}
+                  <span style={styles.cardWaitWho}>{holder.who}</span>
+                  <span style={styles.cardHoldAction}>
+                    {L('（{a}）', ' ({a})', { a: holderActionLabel(holder.action) })}
+                  </span>
+                </>
+              )}
             </span>
           )}
-          {reviewer && (
-            <span
-              className="tb-badge-outline"
-              style={reviewerQuiet ? { ...styles.reviewerBadge, color: WARN } : styles.reviewerBadge}
-              title={reviewerQuiet
-                ? L('{who} 欠这次审核，但花名册里它已久未活动', '{who} owes this review but has been quiet per the roster', { who: reviewer })
-                : L('审核人：{who}', 'reviewer: {who}', { who: reviewer })}
-            >
-              {reviewerQuiet ? L('审核 {who}（久未活动）', 'review {who} (inactive)', { who: reviewer }) : L('审核 {who}', 'review {who}', { who: reviewer })}
+          {holder && holder.sinceMs !== undefined && (
+            <span style={styles.cardHoldAge} title={L('球在它手上已经 {age}', 'holding the ball for {age}', { age: ageLabel(holder.sinceMs) })}>
+              {ageLabel(holder.sinceMs)}
             </span>
           )}
         </div>
@@ -2179,6 +2298,8 @@ const styles: Record<string, CSSProperties> = {
   // waiting chip keeps谁 + 时长 whole; the TAGS are the ones that clip.
   cardWait: { whiteSpace: 'nowrap', overflow: 'hidden', minWidth: 0, flexShrink: 0 },
   cardWaitWho: { overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 },
+  cardHoldAction: { flexShrink: 0, color: DIM, marginLeft: 3 },
+  cardHoldAge: { flexShrink: 0, color: FAINT, fontSize: 10 },
   cardWaitAge: { flexShrink: 0 },
   // The human strip: the only warn-tinted surface on the board (amber, never
   // alarm-red — the shell has no warn-bg token, so the raised surface plus a
