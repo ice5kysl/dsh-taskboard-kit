@@ -983,8 +983,10 @@ await check('human strip: cards parked on a PERSON get their own surface', async
   // 只是把「谁持球」和「欠什么动作」合成了一句。
   // 测试进程没有 navigator ⇒ locale.ts 解析为英文，所以这里断言英文文案；
   // 中文（全角括号）由双主题预览图核对 —— 见 docs/images/card-holder.png。
-  assert.ok(cardText.includes('with kimi (to reply)'), 'agent waits ride the card badge as the holder phrase')
-  assert.ok(/with kimi \(to reply\)/.test(cardText), '英文用 ASCII 括号且前面留一个空格')
+  // 2026-10-01（图标化）：标签词换成记号 —— 等待用◷、裁决用⚑、收口用⌂、持球用➤，
+  // 名字与数字保留，整句进 tooltip。图标是语言中立的，所以这条断言不再依赖 locale。
+  // 记号与名字是两个 span（用 margin 分隔，不靠会被折叠的空格）⇒ 用 \s* 容忍两种形态
+  assert.ok(/◷\s*kimi/.test(cardText), 'agent waits ride the card badge (wait mark + who)')
   assert.ok(cardText.includes('1h'), 'and the holder chip still counts how long the ball has been held')
   assert.ok(html.includes('waiting on agent kimi'), 'the full sentence survives in the tooltip')
 
@@ -1095,9 +1097,10 @@ await check('stale + reviewer: column age, a quiet dot, and who owes the verdict
   const fresh = await renderBoard(collabBoard([reviewTask('kimi', 3600_000)]))
   assert.ok(!fresh.html.includes('class="tb-stale"'), 'a fresh review card carries no stale mark')
   assert.ok(
-    fresh.html.replace(/<[^>]*>/g, '').includes('with kimi (to decide)'),
-    'the holder phrase names who owes the verdict',
+    /⚑\s*kimi/.test(fresh.html.replace(/<[^>]*>/g, '')),
+    'the decide mark names who owes the verdict',
   )
+  assert.ok(fresh.html.includes('reviewer: kimi'), 'and the words live in the tooltip')
   assert.ok(!fresh.html.includes('(inactive)'), 'a reviewer seen 2 minutes ago is not flagged quiet')
 
   // 3 days in the review column: stale, and the age badge counts time in the
@@ -1113,7 +1116,7 @@ await check('stale + reviewer: column age, a quiet dot, and who owes the verdict
   // 2026-10-01（持球人）：裁决人不再是一枚独立徽章，而卡面只有一句「球在 ghost（待裁决）」；
   // 「久未活动」这条证据落在 tooltip 里（可见性靠 hover/详情抽屉），不再污染卡面 —— 但不变量不变：
   // 一个花名册里查无此人的裁决人必须被显式点名。
-  assert.ok(ghost.html.replace(/<[^>]*>/g, '').includes('with ghost (to decide)'), 'the holder phrase names the ghost')
+  assert.ok(/⚑\s*ghost/.test(ghost.html.replace(/<[^>]*>/g, '')), 'the decide mark names the ghost')
   assert.ok(/ghost owes this review but has been quiet/.test(ghost.html), 'an unknown reviewer is still flagged quiet (tooltip)')
   assert.equal(ghost.store.getState().board.tasks['T-4'].reviewer, 'ghost', 'the hint never reassigns the card')
 })
@@ -1173,7 +1176,7 @@ await check('panel: the「按负责人」view renders owner lanes, the switch an
   assert.ok(ownerHtml.includes('Unassigned'), 'the pool gets its own lane')
   assert.ok(ownerHtml.includes('>kimi<'), 'kimi has a lane')
   // dsh-agent folds into dsh's lane: one lane, not two.
-  assert.equal((ownerHtml.match(/>dsh</g) ?? []).length, 1, 'aliases fold to ONE dsh lane')
+  assert.equal((ownerHtml.match(/data-lane="dsh"/g) ?? []).length, 1, 'aliases fold to ONE dsh lane')
   assert.ok(ownerHtml.includes('Waiting on human · kimi'), 'the blocked lane is labelled as such')
   assert.ok(ownerHtml.includes('Include closed'), 'the settled toggle appears in the owner view')
   // The owner view is a projection, not a status board: cards are not draggable.

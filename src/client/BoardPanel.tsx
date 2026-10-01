@@ -233,6 +233,31 @@ export function displayTitle(task: Task, _board?: Board | null): string {
   return title.trim() || task.title
 }
 
+/**
+ * The card's marks. Owner request 2026-10-01: 「卡上好多文字显得啰嗦」 — the
+ * LABELS become marks, the DATA (ids, numbers, names) stays.
+ *
+ * 只用**文本呈现**的 Unicode 字形，绝不用 emoji：emoji 会被系统字体渲染成
+ * 彩色位图、跟主题色打架、在不同平台大小不一，10px 的说明行会立刻散架。
+ * 每个记号的含义都写在各自的 tooltip 里 —— 图标省的是重复的标签，不是信息。
+ */
+const MARK = {
+  /** 负责人（跨阶段不变的责任人） */
+  owner: '@',
+  /** 创建者 */
+  creator: '✎',
+  /** 球在谁手上（持球人） */
+  holder: '➤',
+  /** 球在池子里（没人认领） */
+  pool: '○',
+  /** 等待某人（human / agent / external） —— 保留上一版的表盘字形 */
+  wait: '◷',
+  /** 等一个裁决 */
+  decide: '⚑',
+  /** 等一个收口 */
+  settle: '⌂',
+} as const
+
 /** The four actions a card can owe, and who owes them. */
 export type HolderAction = 'claim' | 'work' | 'answer' | 'reply' | 'decide' | 'settle'
 
@@ -243,6 +268,16 @@ export interface Holder {
   action: HolderAction
   /** Milliseconds the current holder has held the ball, when the board knows. */
   sinceMs?: number
+}
+
+/** 每个动作一个记号：提交 ➤ / 认领 ○ / 回复·回执 ◷ / 裁决 ⚑ / 收口 ⌂ */
+const HOLDER_MARKS: Record<HolderAction, string> = {
+  work: MARK.holder,
+  claim: MARK.pool,
+  answer: MARK.wait,
+  reply: MARK.wait,
+  decide: MARK.decide,
+  settle: MARK.settle,
 }
 
 const HOLDER_ACTIONS: Record<HolderAction, [string, string]> = {
@@ -1163,7 +1198,7 @@ function OwnerLanes({
   return (
     <>
       {groups.map((group) => (
-        <section key={group.key} style={styles.column} className="tb-column">
+        <section key={group.key} style={styles.column} className="tb-column" data-lane={group.key}>
           <div style={styles.columnHead}>
             <span style={styles.columnTitle}>{ownerLabel(group)}</span>
             <span style={styles.columnCount}>{group.tasks.length}</span>
@@ -1294,25 +1329,20 @@ function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; bo
         {/* 负责人 (accountable, stage-independent) — shown only when there IS
             one (the status already reads 待认领 otherwise: the same phrase twice
             is the redundancy the owner asked us to remove) — and the creator
-            only when it is somebody else. */}
+            only when it is somebody else. Both are now a MARK + the name: the
+            labels 「负责人」/「创建」 live in the tooltip. */}
         {task.assignee !== null && (
-          <>
-            <span style={styles.cardSep}>·</span>
-            <span
-              style={styles.cardCreator}
-              title={L('负责人：{who} · 由 {by} 创建', 'owner: {who} · created by {by}', { who: task.assignee, by: task.created_by })}
-            >
-              {task.assignee}
-            </span>
-          </>
+          <span
+            style={styles.cardFact}
+            title={L('负责人：{who} · 由 {by} 创建', 'owner: {who} · created by {by}', { who: task.assignee, by: task.created_by })}
+          >
+            <span style={styles.cardMark}>{MARK.owner}</span>{task.assignee}
+          </span>
         )}
         {task.assignee !== task.created_by && (
-          <>
-            <span style={styles.cardSep}>·</span>
-            <span style={styles.cardCreator} title={L('由 {by} 创建', 'created by {by}', { by: task.created_by })}>
-              {L('{by} 创建', 'by {by}', { by: task.created_by })}
-            </span>
-          </>
+          <span style={styles.cardFact} title={L('由 {by} 创建', 'created by {by}', { by: task.created_by })}>
+            <span style={styles.cardMark}>{MARK.creator}</span>{task.created_by}
+          </span>
         )}
         <span
           style={styles.cardAge}
@@ -1345,16 +1375,15 @@ function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; bo
               style={styles.cardWait}
               title={holderTitle(task, holder, reviewerQuiet)}
             >
+              {/* The mark carries the ACTION (see HOLDER_MARKS), the name carries
+                  the WHO, and the words 「球在 kimi（待裁决）」 live in the tooltip.
+                  The stage word on row 1 already says what is owed, so repeating
+                  it as copy here was the noise the owner asked us to drop. */}
+              <span style={styles.cardHoldMark}>{HOLDER_MARKS[holder.action]}</span>
               {holder.who === null ? (
-                <span style={styles.cardWaitWho}>{L('球在池子里', 'unclaimed — in the pool')}</span>
+                <span style={styles.cardWaitWho}>{L('池子里', 'in the pool')}</span>
               ) : (
-                <>
-                  {L('球在', 'with')}{' '}
-                  <span style={styles.cardWaitWho}>{holder.who}</span>
-                  <span style={styles.cardHoldAction}>
-                    {L('（{a}）', ' ({a})', { a: holderActionLabel(holder.action) })}
-                  </span>
-                </>
+                <span style={styles.cardWaitWho}>{holder.who}</span>
               )}
             </span>
           )}
@@ -2259,7 +2288,9 @@ const styles: Record<string, CSSProperties> = {
   dot: { width: 8, height: 8, borderRadius: 4, flexShrink: 0 },
   cardStatus: { flexShrink: 0, color: DIM, fontSize: 10 },
   cardSep: { flexShrink: 0, color: FAINT, fontSize: 10 },
-  cardCreator: { color: FAINT, fontSize: 10, flexShrink: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  cardFact: { color: FAINT, fontSize: 10, flexShrink: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  // 记号本身稍微提亮一档：它是"这是什么字段"的锚，比值更需要被一眼看到
+  cardMark: { color: DIM, marginRight: 3 },
   // The title is its own full-width row below the meta row, clamped to 2 lines.
   cardTitle: {
     minWidth: 0,
@@ -2273,16 +2304,8 @@ const styles: Record<string, CSSProperties> = {
     WebkitBoxOrient: 'vertical',
     overflow: 'hidden',
   },
-  valueBadge: {
-    flexShrink: 0,
-    fontSize: 10,
-    lineHeight: '13px',
-    color: FAINT,
-    border: `1px solid ${FAINT}`,
-    borderRadius: 999,
-    padding: '0 4px',
-    whiteSpace: 'nowrap',
-  },
+  // 价值点从"描边药丸"降为"记号 + 数字"：10px 行里一圈边框就是一圈噪声
+  valueBadge: { flexShrink: 0, fontSize: 10, color: FAINT, whiteSpace: 'nowrap' },
   cardRef: { flexShrink: 0, fontSize: 10, color: FAINT, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
   // Row 3: strictly ONE line (owner request 2026-10-01) — owner + who owes /
   // waits on the left (shrinkable, ellipsized rather than wrapped), tags pinned
@@ -2298,7 +2321,7 @@ const styles: Record<string, CSSProperties> = {
   // waiting chip keeps谁 + 时长 whole; the TAGS are the ones that clip.
   cardWait: { whiteSpace: 'nowrap', overflow: 'hidden', minWidth: 0, flexShrink: 0 },
   cardWaitWho: { overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 },
-  cardHoldAction: { flexShrink: 0, color: DIM, marginLeft: 3 },
+  cardHoldMark: { flexShrink: 0, color: DIM, marginRight: 3 },
   cardHoldAge: { flexShrink: 0, color: FAINT, fontSize: 10 },
   cardWaitAge: { flexShrink: 0 },
   // The human strip: the only warn-tinted surface on the board (amber, never
