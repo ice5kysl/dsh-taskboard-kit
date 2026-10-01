@@ -862,7 +862,7 @@ export function holderGroups(board: Board | null, options: { now?: number } = {}
     const actions = [...buckets.values()]
       .map((bucket) => ({ ...bucket, ids: [...bucket.ids].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })) }))
       .sort((a, b) => b.count - a.count || (b.maxAgeMs ?? 0) - (a.maxAgeMs ?? 0) || a.action.localeCompare(b.action))
-    groups.push({ key, who: row.who, total: row.rows.length, maxAgeMs, quiet, actions })
+    groups.push({ key, kind: row.kind, who: row.who, total: row.rows.length, maxAgeMs, quiet, actions })
   }
   return groups.sort(
     (a, b) => b.total - a.total || (b.maxAgeMs ?? 0) - (a.maxAgeMs ?? 0) || (a.who ?? '').localeCompare(b.who ?? ''),

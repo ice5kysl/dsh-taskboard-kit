@@ -1008,7 +1008,9 @@ await check('currentHolder: 任何阶段有且只有一个持球人（closed 除
     log: [], comments: [],
   }
   const statuses = ['open', 'in_progress', 'review', 'done', 'closed']
-  const waits = [null, { kind: 'human', who: 'iceskyls' }, { kind: 'agent', who: 'kimi' }]
+  // 4 档等待（含 who 为空 —— kimi 打回的遗漏档：store 拒绝认领等待中的卡，
+  // 渲染成「池子里」会给出一个点了必然失败的入口）
+  const waits = [null, { kind: 'human', who: 'iceskyls' }, { kind: 'agent', who: 'kimi' }, { kind: 'human', who: null }]
   let cases = 0
   for (const status of statuses) {
     for (const assignee of [null, 'dsh']) {
@@ -1031,6 +1033,7 @@ await check('currentHolder: 任何阶段有且只有一个持球人（closed 除
           if (waiting_on) {
             assert.equal(h.who, waiting_on.who, '等待优先：球在必须回答的那一方')
             assert.equal(h.action, waiting_on.kind === 'human' ? 'answer' : 'reply')
+            assert.notEqual(h.action, 'claim', '等待中的卡永远不是"待认领"（store 会拒绝认领）')
           } else if (status === 'review') {
             assert.equal(h.who, reviewer ?? 'dsh', 'review：球在裁决人（缺省回落到卡主）')
             assert.equal(h.action, 'decide')
@@ -1048,7 +1051,7 @@ await check('currentHolder: 任何阶段有且只有一个持球人（closed 除
       }
     }
   }
-  assert.ok(cases >= 60, `组合覆盖 ${cases} 例`)
+  assert.ok(cases >= 80, `组合覆盖 ${cases} 例（5×2×2×4）`)
   // 动作文案两种语言都在
   assert.ok(client.holderActionLabel('decide').length > 0)
 })
@@ -1075,6 +1078,22 @@ await check('displayTitle: 只剥「与本卡重复」的前缀（【owner】/T-
   // ④c reviewer 的前缀也算重复（卡上已经有「审核 cc」徽章）
   assert.equal(client.displayTitle(t({ assignee: 'dsh', reviewer: 'cc', title: '【cc】整理回填' })), '整理回填')
   assert.equal(client.displayTitle(t({ title: 'T-93' })), 'T-93', '剥空了就退回原文')
+  // ④d kimi 打回的反例（过度剥离 = 篡改真实标题，最坏方向）：编号必须是一个**完整 token**
+  assert.equal(client.displayTitle(t({ title: 'T-930 的回归' })), 'T-930 的回归', 'T-930 不是 T-93')
+  assert.equal(client.displayTitle(t({ title: 'T-93X 贴连' })), 'T-93X 贴连', 'T-93X 不是 T-93')
+  assert.equal(client.displayTitle(t({ title: 'T-93-2 子任务' })), 'T-93-2 子任务', 'T-93-2 是子编号')
+  assert.equal(client.displayTitle(t({ id: 'T-9', title: 'T-93 别人的卡' })), 'T-93 别人的卡', 'T-9 不得吃掉 T-93 的前缀')
+  assert.equal(client.displayTitle(t({ id: 'T-9', title: 'T-90 的回归' })), 'T-90 的回归', 'T-9 不得吃掉 T-90')
+  // 但本卡自己的编号仍然要剥（各种分隔符）
+  assert.equal(client.displayTitle(t({ title: 'T-93 · 正题' })), '正题')
+  assert.equal(client.displayTitle(t({ title: 'T-93: 正题' })), '正题')
+  assert.equal(client.displayTitle(t({ title: '#93 正题' })), '正题')
+  assert.equal(client.displayTitle(t({ title: 'T-93' })), 'T-93', '剥空退回原文')
+  // ④e 归一化（kimi nit ①）：大小写/空格不同也算同一个 actor
+  assert.equal(client.displayTitle(t({ title: '【Kimi】 正题' })), '正题', '大小写不敏感')
+  assert.equal(client.displayTitle(t({ title: '【 kimi 】 正题' })), '正题', '空格不敏感')
+  // ④f 分隔符残留（kimi nit ②）
+  assert.equal(client.displayTitle(t({ title: 'T-93 · - X' })), 'X', '不留悬挂分隔符')
   // ⑤ 无前缀的标题原样返回
   assert.equal(client.displayTitle(t({ title: '普通标题' })), '普通标题')
   // ⑥ 纯展示：绝不改数据
@@ -1716,6 +1735,9 @@ await check('stats/holders: 每张未结清卡恰好归属一个持球人（别�
     { id: 'T-4', status: 'review', assignee: 'cc', reviewer: 'dsh-agent', created_at: ago({ d: 1 }), log: [ev({ d: 1 }, 'h', 'created'), ev({ d: 1 }, 'cc', 'submitted')] },
     { id: 'T-5', status: 'done', assignee: 'kimi', created_by: 'human', created_at: ago({ d: 1 }), log: [ev({ d: 1 }, 'h', 'created'), ev({ d: 1 }, 'k', 'approved')] },
     { id: 'T-6', status: 'open', assignee: 'cc', created_at: ago({ d: 1 }), waiting_on: { kind: 'agent', who: 'dsh', question: 'q', since: ago({ h: 2 }) }, log: [ev({ d: 1 }, 'h', 'created')] },
+    // 无名等待：`waiting_on.who` 允许为 null（types.ts）。它**不是**池子里的卡
+    // —— store 明确拒绝认领等待中的卡，渲染成"可认领"就是骗人（T-26 复核抓到过）。
+    { id: 'T-8', status: 'open', assignee: null, created_at: ago({ d: 2 }), waiting_on: { kind: 'human', who: null, question: '叫谁来答？', since: ago({ h: 3 }) }, log: [ev({ d: 2 }, 'h', 'created')] },
     { id: 'T-7', status: 'closed', assignee: 'kimi', created_at: ago({ d: 1 }), log: [ev({ d: 1 }, 'h', 'created'), ev({ d: 1 }, 'h', 'closed')] },
   ])
   // 名册把 dsh-agent 折成 dsh：T-4 的审核人和 T-6 要等的人是同一个 Actor。
@@ -1730,14 +1752,22 @@ await check('stats/holders: 每张未结清卡恰好归属一个持球人（别�
     assert.equal(typeof key, 'string', '分组键是字符串（池子组为 ""）')
     assert.ok(['claim', 'work', 'answer', 'reply', 'decide', 'settle'].includes(action), `${id} 的动作合法`)
   }
-  // 池子组：没有人认领的那张，who === null，动作是"待认领"。
-  const pool = groups.find((group) => group.who === null)
+  // 池子组只装"真的没人认领"的那张：无名等待必须自成一组，不许混进来。
+  const pool = groups.find((group) => group.kind === 'pool')
   assert.ok(pool, '池子组存在')
+  assert.equal(pool.who, null)
   assert.deepEqual(pool.actions.map((bucket) => bucket.action), ['claim'])
-  assert.deepEqual(pool.actions[0].ids, ['T-1'])
+  assert.deepEqual(pool.actions[0].ids, ['T-1'], '池子里只有 T-1')
+  const unnamed = groups.find((group) => group.kind === 'unnamed_wait')
+  assert.ok(unnamed, '无名等待自成一类，不被当成池子')
+  assert.equal(unnamed.who, null)
+  assert.deepEqual(unnamed.actions[0].ids, ['T-8'])
+  assert.equal(unnamed.actions[0].action, 'answer', '它是"待回复"，不是"待认领"')
+  assert.equal(unnamed.quiet, false, '没指名就没人可怪（失联判断对它沉默）')
   // 别名折叠：审核人 dsh-agent 与等待对象 dsh 落在同一个持球人身上。
   const dshRow = groups.find((group) => group.key === 'dsh')
   assert.ok(dshRow, 'dsh 组存在（dsh-agent 折进来）')
+  assert.equal(dshRow.kind, 'actor')
   assert.equal(dshRow.total, 2)
   assert.deepEqual(dshRow.actions.map((bucket) => bucket.action).sort(), ['decide', 'reply'])
   // 已结清的卡不在任何分组里。
@@ -1746,13 +1776,30 @@ await check('stats/holders: 每张未结清卡恰好归属一个持球人（别�
   assert.equal(groups.reduce((sum, group) => sum + group.total, 0), open.length)
 })
 
+await check('panel: 无名等待不被统计页渲染成「可认领的池子」', async () => {
+  const board = collabBoard([
+    { id: 'T-1', title: 'unnamedWait', status: 'open', assignee: null, created_at: ago({ d: 2 }), waiting_on: { kind: 'human', who: null, question: '叫谁来答？', since: ago({ h: 30 }) }, log: [
+      { at: ago({ d: 2 }), by: 'human', event: 'created' },
+    ] },
+  ])
+  const { store } = await renderBoard(board)
+  store.setGroupBy('stats')
+  const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+  // 持球人排行那一行的名字（`.tb-holder-name` 是这一行唯一的钩子 —— 负责人表里
+  // 也有一个 '(pool)'，那是"没人认领的卡归在谁名下"，两者不能混着断言）。
+  const names = [...html.matchAll(/class="tb-holder-name"[^>]*>([^<]*)/g)].map((match) => match[1])
+  assert.deepEqual(names, ['(unnamed wait)'], '持球人排行里它是「未指名的等待」，不是池子')
+  assert.ok(html.includes('wait overdue'), '而且它确实是"等待超时"这条异常')
+  assert.ok(html.includes('>unnamed<'), '异常行的"谁"一列是「未指名」而不是"池子"')
+})
+
 await check('stats/anomalies: 阈值沿用看板自己的陈旧规则，一张卡只占一行', () => {
   const now = Date.now()
   const board = statsBoard([
     // 评审列躺了 30h（SLA 24h）→ review_overdue
     { id: 'T-1', status: 'review', assignee: 'cc', reviewer: 'kimi', created_at: ago({ d: 3 }), log: [ev({ d: 3 }, 'h', 'created'), ev({ d: 3 }, 'cc', 'started'), ev({ h: 30 }, 'cc', 'submitted')] },
     // 在等人类 30h（SLA 24h）→ wait_overdue（比"久未动"更急）；卡自己在进行中躺了 5 天
-    { id: 'T-2', status: 'in_progress', assignee: 'kimi', created_at: ago({ d: 5 }), waiting_on: { kind: 'human', who: 'iceskyls', question: 'q', since: ago({ h: 30 }) }, log: [ev({ d: 5 }, 'h', 'created'), ev({ d: 5, h: 1 }, 'k', 'started')] },
+    { id: 'T-2', status: 'in_progress', assignee: 'kimi', created_at: ago({ d: 5 }), waiting_on: { kind: 'human', who: 'iceskysl', question: 'q', since: ago({ h: 30 }) }, log: [ev({ d: 5 }, 'h', 'created'), ev({ d: 5, h: 1 }, 'k', 'started')] },
     // 窗口内被打回 → recent_reject
     { id: 'T-3', status: 'in_progress', assignee: 'dsh', created_at: ago({ d: 5 }), log: [ev({ d: 5 }, 'h', 'created'), ev({ d: 3 }, 'dsh', 'submitted'), ev({ d: 1 }, 'kimi', 'rejected')] },
     // 刚开工、什么都正常 → 不该出现

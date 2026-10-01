@@ -56,6 +56,7 @@ import {
   DEFAULT_QUIET_MS,
   ageInColumnMs,
   resolveActor,
+  sameActor,
   stalenessOf,
   waitingOnHuman,
   type HealthIssue,
@@ -212,22 +213,36 @@ function statusLabel(task: Task): string {
  * Three passes, so 「【kimi】 T-93 · …」 collapses fully. Display-only: the board
  * is never mutated, and the original string stays in the card's tooltip.
  */
-export function displayTitle(task: Task, _board?: Board | null): string {
+export function displayTitle(task: Task, board?: Board | null): string {
   const n = task.id.replace(/^T-/, '')
+  /** Same actor? Board aliases when we have the board, case/space-insensitive otherwise. */
+  const isSame = (a: string | null | undefined, b: string | null | undefined): boolean => {
+    if (!a || !b) return false
+    if (board) return sameActor(board, a, b)
+    return a.trim().toLowerCase() === b.trim().toLowerCase()
+  }
   let title = task.title
   for (let pass = 0; pass < 3; pass += 1) {
     const before = title
     const boxed = /^\s*[【\[](?<who>[^】\]]{1,32})[】\]]\s*[·:：\-–—,]?\s*/.exec(title)
-    if (boxed && (boxed.groups?.who === task.assignee || boxed.groups?.who === task.created_by || boxed.groups?.who === task.reviewer)) {
+    if (boxed?.groups?.who && (isSame(boxed.groups.who, task.assignee) || isSame(boxed.groups.who, task.created_by) || isSame(boxed.groups.who, task.reviewer))) {
       title = title.slice(boxed[0].length)
     }
-    // The id may sit behind a boxed prefix that is NOT redundant (an unassigned
-    // card's 「【kimi】」 names the requester and stays) — 「【kimi】 T-93 · X」 must
-    // still lose its redundant T-93.
+    // The id must be a WHOLE token. Reviewer's catch (2026-10-01): without a
+    // boundary, id=T-93 turned 「T-930 的回归」 into 「0 的回归」 and id=T-9 turned
+    // 「T-93 别人的卡」 into 「3 别人的卡」 — it ate a real title, the worst possible
+    // direction (the "stripped to nothing" fallback cannot catch it, the result
+    // is non-empty). So: not followed by a word char, not followed by -<digit>
+    // (that is a sub-id like T-93-2), and only then consume the separator run.
     // Capture (and re-emit) any non-redundant boxed prefix, so this replacement
     // drops ONLY the id — 「【kimi】 T-93 · X」 → 「【kimi】 X」.
-    const ref = new RegExp(`^(\\s*(?:[【\\[][^】\\]]{1,32}[】\\]]\\s*[·:：\\-–—,]?\\s*)?)(?:T-?|#)${n}\\s*[·:：\\-–—,]?\\s*`, 'i')
-    if (ref.test(title)) title = title.replace(ref, '$1')
+    const ref = new RegExp(
+      `^(\\s*(?:[【\\[][^】\\]]{1,32}[】\\]]\\s*[·:：\\-–—,]?\\s*)?)(?:T-?|#)${n}(?![\\d\\w])(?!-\\d)[\\s·:：,.、]*`,
+      'i',
+    )
+    // A separator run can survive the id (「T-93 · - X」 → 「- X」): tidy it away,
+    // but only when something was actually stripped this pass.
+    if (ref.test(title)) title = title.replace(ref, '$1').replace(/^[\s·:：,.、–—-]+/, '')
     if (title === before) break
   }
   return title.trim() || task.title
@@ -258,7 +273,7 @@ const MARK = {
   settle: '⌂',
 } as const
 
-/** The four actions a card can owe, and who owes them. */
+/** The six actions a card can owe, and who owes them. */
 export type HolderAction = 'claim' | 'work' | 'answer' | 'reply' | 'decide' | 'settle'
 
 export interface Holder {
@@ -342,16 +357,18 @@ export function currentHolder(task: Task, board?: Board | null, now: number = Da
 /** The holder chip's tooltip: the full sentence behind the compact phrase. */
 function holderTitle(task: Task, holder: Holder, reviewerQuiet: boolean): string {
   const parts: string[] = []
-  if (holder.who === null) parts.push(L('还没有人认领这张卡', 'nobody has claimed this card yet'))
-  else if (task.waiting_on) {
-    parts.push(`${waitLabel(task.waiting_on)}${task.waiting_on.who ? ` (${task.waiting_on.who})` : ''}`)
+  if (task.waiting_on) {
+    // Waiting first: a wait with no named who is still a wait (and not claimable).
+    // Full sentence when a who is known (the tooltip has room), kind-only when not.
+    parts.push(task.waiting_on.who ? waitLabel(task.waiting_on) : waitKindLabel(task.waiting_on.kind))
     if (task.waiting_on.question) parts.push(task.waiting_on.question)
-  } else if (holder.action === 'decide') {
+  } else if (holder.who === null) parts.push(L('还没有人认领这张卡', 'nobody has claimed this card yet'))
+  else if (holder.action === 'decide') {
     parts.push(reviewerQuiet
       ? L('{who} 欠这次审核，但花名册里它已久未活动', '{who} owes this review but has been quiet per the roster', { who: holder.who })
       : L('裁决人：{who}', 'reviewer: {who}', { who: holder.who }))
   } else if (holder.action === 'settle') {
-    parts.push(L('已完成待收口，收口权在卡主 {who}', 'done and awaiting settle — the owner {who} closes it', { who: holder.who }))
+    parts.push(L('已完成待收口，默认由卡主 {who} 收口（约定，非权限）', 'done and awaiting settle — normally closed by {who} (a convention, not a permission)', { who: holder.who }))
   } else {
     parts.push(L('负责人：{who}', 'owner: {who}', { who: holder.who }))
   }
@@ -409,6 +426,15 @@ export function ageLabel(ms: number): string {
 }
 
 /** 「等人类 / 等 Agent / 等外部」 + who, for the card and drawer badges. */
+/** Just the KIND of a wait — used when nobody is named (waiting_on.who is null). */
+export function waitKindLabel(kind: WaitOn['kind']): string {
+  switch (kind) {
+    case 'human': return L('等人类', 'a human')
+    case 'agent': return L('等 Agent', 'an agent')
+    case 'external': return L('等外部', 'an external party')
+  }
+}
+
 export function waitLabel(waiting: WaitOn): string {
   const who = waiting.who ? ` ${waiting.who}` : ''
   switch (waiting.kind) {
@@ -1379,7 +1405,15 @@ function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; bo
                   The stage word on row 1 already says what is owed, so repeating
                   it as copy here was the noise the owner asked us to drop. */}
               <span style={styles.cardHoldMark}>{HOLDER_MARKS[holder.action]}</span>
-              {holder.who === null ? (
+              {/* A wait with no named who (types allow it) is NOT the pool: the
+                  store refuses to claim a waiting card, so rendering it as
+                  claimable would offer an action that always fails (reviewer's
+                  catch, 2026-10-01). Name the KIND instead. */}
+              {task.waiting_on ? (
+                <span style={styles.cardWaitWho}>
+                  {holder.who ?? waitKindLabel(task.waiting_on.kind)}
+                </span>
+              ) : holder.who === null ? (
                 <span style={styles.cardWaitWho}>{L('池子里', 'in the pool')}</span>
               ) : (
                 <span style={styles.cardWaitWho}>{holder.who}</span>

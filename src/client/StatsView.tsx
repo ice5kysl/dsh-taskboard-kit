@@ -714,19 +714,34 @@ function StackedBar({ slices, labelOf }: { slices: Array<Slice & { tone: string 
 
 /**
  * 持球人排行：谁欠什么动作、欠了多久。派生来自 `currentHolder`，所以一张
- * 未结清卡**必然**出现在某一行里（没认领的出现在「待认领池」那一行）。
+ * 未结清卡**必然**出现在某一行里：指名道姓的排前面，「待认领池」与
+ * 「无名等待」是两行不同的事 —— 后者（`waiting_on.who === null`）球在某个
+ * 没指名的人手上，store 拒绝认领，绝不能渲染成池子。
  */
 function HolderRanking({ groups, onOpenTask }: {
   groups: HolderGroup[]
   onOpenTask?: (id: string) => void
 }): JSX.Element {
   if (groups.length === 0) return <p style={styles.note}>{L('没有未结清的卡 —— 球都在地上。', 'No open cards — nobody is holding anything.')}</p>
+  const nameOf = (group: HolderGroup): string => {
+    if (group.who) return group.who
+    return group.kind === 'pool'
+      ? L('（待认领池）', '(pool)')
+      : L('（未指名的等待）', '(unnamed wait)')
+  }
   return (
     <ul style={styles.plainList}>
       {groups.slice(0, 8).map((group) => (
         <li key={group.key || '(pool)'} style={styles.holderRow}>
           <span style={styles.holderName}>
-            {group.who ?? L('（待认领池）', '(pool)')}
+            <span
+              className="tb-holder-name"
+              title={group.kind === 'unnamed_wait'
+                ? L('这张卡在等人，但没写是谁；它不能被认领 —— 缺的是"叫谁来答"。', 'This card waits on someone unnamed; it cannot be claimed — what is missing is WHO should answer.')
+                : undefined}
+            >
+              {nameOf(group)}
+            </span>
             {group.quiet && (
               <span className="tb-badge-outline" style={styles.quietBadge} title={L('名册里这个人已经久未活动（36h 内没动过手）', 'The roster has not seen this actor act in 36h')}>
                 {L('久未活动', 'quiet')}
@@ -811,7 +826,10 @@ function AnomalyList({ rows, tasks, onOpenTask }: {
               {L(ANOMALY_LABEL[row.kind][0], ANOMALY_LABEL[row.kind][1])}
               {row.also.length > 0 && <span style={styles.alsoMark}> +{row.also.length}</span>}
             </span>
-            <span style={styles.anomWho}>{row.who ?? L('池子', 'pool')}</span>
+            {/* 无名等待不是"池子"：它不能被认领，缺的是"叫谁来答"。 */}
+            <span style={styles.anomWho}>
+              {row.who ?? (row.action === 'claim' ? L('池子', 'pool') : L('未指名', 'unnamed'))}
+            </span>
             <span style={styles.anomAge}>{durationText(row.ageMs)}</span>
           </button>
         )
