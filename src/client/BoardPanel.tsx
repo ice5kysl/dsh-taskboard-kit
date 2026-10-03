@@ -106,7 +106,7 @@ import {
   WARN,
   ensureTaskboardStyles,
 } from './theme.ts'
-import { columnLabel, escapeTarget, groupByOwner, priorityLabel, runPlanOps, taskRef, useSessionCwd, valueText, type OwnerGroup, type SessionListLike } from './view.ts'
+import { boardKeyIntent, columnLabel, escapeTarget, groupByOwner, keyboardOrderFor, priorityLabel, runPlanOps, stepSelection, taskRef, useSessionCwd, valueText, type OwnerGroup, type SessionListLike } from './view.ts'
 
 // taskRef moved to view.ts (shared with the mini board); keep the export path.
 export { taskRef } from './view.ts'
@@ -928,6 +928,18 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   )
   const selected: Task | null = selectedId && board ? board.tasks[selectedId] ?? null : null
   const pickerTask: Task | null = assignPickerId && board ? board.tasks[assignPickerId] ?? null : null
+  /**
+   * The cards `j` / `k` walk, in VISUAL order (v0.7.4) — the DOM order this
+   * view paints: 按进度 = 列序 × 列内序, 按负责人 = 泳道序 × 卡序. Derived from the
+   * very same `columns` / `ownerGroups` the lanes render (keyboardOrderFor), so
+   * the walk can never drift from what is on screen — including the two cases
+   * that must NOT be walkable: the collapsed 已关闭 strip (not painted) and the
+   * 统计 view (no cards at all).
+   */
+  const keyOrder = useMemo(
+    () => keyboardOrderFor({ groupBy: state.groupBy, showClosed: state.showClosed, columns, groups: ownerGroups }),
+    [state.groupBy, state.showClosed, columns, ownerGroups],
+  )
   // The human's own list: cards parked on a PERSON. (等 Agent / 等外部 are the
   // agents' business — they carry a card badge, not a place in this strip.)
   const waitingHuman = useMemo(() => humanWaiting(board), [board])
@@ -966,6 +978,46 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [drawerOpen, guideOpen, assignPickerId, store])
+
+  // j / k walk the board in VISUAL order; Enter opens the first card when
+  // nothing is selected (T-36, v0.7.4). One predicate decides whether the key
+  // is ours at all (boardKeyIntent): a focused input / textarea /
+  // contenteditable keeps `j`, `k` and `Enter` for itself — typing in the
+  // comment box, the create form or the member search must never move the
+  // selection out from under the caret — and so does a modal layer that is up
+  // (create form / roster picker / guide / about). ⌘/Ctrl/Alt shortcuts and
+  // in-flight IME compositions pass through untouched.
+  //
+  // The step goes through `store.select` — the exact path a click takes — so
+  // the highlight (.tb-card.active) and the open drawer follow for free, and
+  // the drawer's content switches with the selection (DetailDrawer is keyed by
+  // task id). The drawer itself is NOT a blocking layer: browsing with the
+  // drawer open is the point.
+  //
+  // ESC stays out of here on purpose: `escapeTarget` above owns the layer
+  // unwind (one key, one layer). This is navigation, not a second Esc.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      const intent = boardKeyIntent(event, {
+        about: aboutOpen,
+        guide: guideOpen,
+        picker: assignPickerId !== null,
+        create: createOpen,
+      })
+      if (!intent) return
+      if (intent.kind === 'open') {
+        // A selected card already has its drawer open: Enter is not a toggle.
+        if (selectedId) return
+        const first = keyOrder[0]
+        if (first) store.select(first)
+        return
+      }
+      const next = stepSelection(keyOrder, selectedId, intent.delta)
+      if (next !== null && next !== selectedId) store.select(next)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [keyOrder, selectedId, store, aboutOpen, guideOpen, assignPickerId, createOpen])
 
   /**
    * Execute one shared `planDrop` op sequence in order through the store
@@ -2782,6 +2834,8 @@ function GuideOverlay({ cli, cwd, boardFile, onClose }: { cli: string | null; cw
               <li>{L('拖卡片换列推进状态；拖到「已指派」会弹出成员选择器，拖到最右的窄竖条 = 关闭任务。', 'Drag cards between lanes to move them; dropping on 已指派 opens the roster picker, dropping on the narrow strip at the right edge closes the task.')}</li>
               <li>{L('点卡片开抽屉：详情（默认只读，改内容点「编辑」）/ 评论 / 动态 三个 tab。', 'Click a card for its drawer: three tabs — 详情 (read-only until you hit 编辑), 评论 and 动态.')}</li>
               <li>{L('标准流程：认领或指派 → 开始 → 提交审核 → 通过/打回 → 完成；任何非终态都可关闭。', 'The flow: claim or assign → start → submit for review → approve/reject → done; anything not final can be closed.')}</li>
+              {/* T-36（v0.7.4）：快捷键一句话 —— 怎么走，以及为什么打进输入框不会动。 */}
+              <li>{L('键盘：j / k 在当前视图里按视觉顺序（从上到下、从左到右）移动选中，抽屉开着内容也跟着换；Enter 打开第一张卡。焦点在输入框 / 评论框里时 j / k 交还给输入框，照常打字。Esc 只关最上面一层（关于 → 指南 → 成员选择器 → 抽屉）。', 'Keyboard: j / k move the selection through the current view in visual order (top to bottom, left to right) — with the drawer open its content follows — and Enter opens the first card. While a text box has focus, j / k stay with it so typing is never hijacked. Escape closes exactly one layer (about → guide → roster picker → drawer).')}</li>
             </ul>
           </section>
 

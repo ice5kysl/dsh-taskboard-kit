@@ -76,6 +76,10 @@ export { stalenessOf, ageInColumnMs, columnSince, DEFAULT_QUIET_MS } from '../sh
 export { conventionSnippet, dispatchSnippet, guideProjectDir, hookSnippetClaude, hookSnippetKimi } from './guide.ts'
 export { renderMarkdown } from './markdown.ts'
 export { openTaskCount, runPlanOps, groupByOwner, isFinal, escapeTarget, UNASSIGNED_KEY } from './view.ts'
+// T-36（v0.7.4）：键盘导航的判定与走位全是纯函数（焦点守卫 / 视觉顺序 / 边界），
+// 导出以便 node 单测直接跑面板真正用的那条判定路径。
+export { boardKeyIntent, isTypingTarget, stepSelection, visualOrder, keyboardOrderFor } from './view.ts'
+export type { BoardKeyIntent, BoardKeyLayers, KeyEventLike, KeyboardOrderInput } from './view.ts'
 export { StatsView } from './StatsView.tsx'
 export {
   headline, byStatus, byPriority, byOwner, flow, dwellByColumn, actionsByActor,

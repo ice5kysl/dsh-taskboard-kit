@@ -1299,6 +1299,190 @@ await check('escapeTarget: the「关于」popover is its own topmost layer (T-35
   assert.equal(client.escapeTarget(layers({ about: true }), { defaultPrevented: true }), null)
 })
 
+// ------------------------------------------ keyboard navigation (T-36, v0.7.4)
+// `j` / `k` walk the board in visual order, `Enter` opens the first card, and a
+// focused text control keeps all three keys. The unit under test is NOT a DOM
+// listener but the exact predicates the panel's keydown handler runs
+// (boardKeyIntent → stepSelection), so a regression here is a regression in the
+// real path. SSR cannot dispatch keys at all — the browser-side probe
+// (.probe-ui/preview4-keys.mjs) covers the wiring and the drawer follow-through.
+
+/** The panel's dispatcher, reduced: a key sequence → the selection it ends on. */
+function walkKeys(order, start, keys) {
+  let sel = start
+  for (const key of keys) {
+    const intent = client.boardKeyIntent({ key, target: { tagName: 'BODY' } })
+    if (!intent) continue
+    if (intent.kind === 'open') {
+      if (sel === null) sel = order[0] ?? null
+      continue
+    }
+    const next = client.stepSelection(order, sel, intent.delta)
+    if (next !== null) sel = next
+  }
+  return sel
+}
+
+await check('T-36 · ★ 焦点在输入框 / 评论框 / contenteditable 里时 j / k / Enter 一律放行原生行为', () => {
+  const body = { tagName: 'BODY' }
+  const input = { tagName: 'INPUT' }
+  const textarea = { tagName: 'TEXTAREA' }
+  const editable = { tagName: 'DIV', isContentEditable: true }
+  const editableByAttr = { tagName: 'DIV', getAttribute: (name) => (name === 'contenteditable' ? '' : null) }
+
+  assert.equal(client.isTypingTarget(input), true, 'input 是文本控件')
+  assert.equal(client.isTypingTarget(textarea), true, 'textarea（评论框）是文本控件')
+  assert.equal(client.isTypingTarget(editable), true, 'contenteditable 是文本控件')
+  assert.equal(client.isTypingTarget(editableByAttr), true, '只带 contenteditable 属性的元素也算')
+  assert.equal(client.isTypingTarget(body), false)
+  assert.equal(client.isTypingTarget(null), false)
+  assert.equal(client.isTypingTarget('j'), false, '非元素目标不算')
+  assert.equal(client.isTypingTarget({ tagName: 'DIV', getAttribute: () => 'false' }), false, 'contenteditable="false" 不是')
+
+  for (const target of [input, textarea, editable, editableByAttr]) {
+    assert.equal(client.boardKeyIntent({ key: 'j', target }), null, 'j 不抢输入框')
+    assert.equal(client.boardKeyIntent({ key: 'k', target }), null, 'k 不抢输入框')
+    assert.equal(client.boardKeyIntent({ key: 'Enter', target }), null, 'Enter 不抢输入框')
+  }
+  // …而在文本控件之外，同样三个键就是看板的。
+  assert.deepEqual(client.boardKeyIntent({ key: 'j', target: body }), { kind: 'step', delta: 1 })
+  assert.deepEqual(client.boardKeyIntent({ key: 'k', target: body }), { kind: 'step', delta: -1 })
+  assert.deepEqual(client.boardKeyIntent({ key: 'Enter', target: body }), { kind: 'open' })
+})
+
+await check('T-36 · ★ j / k 按视觉顺序走位：两块泳道 × 每道两张卡（列序 × 列内序）', async () => {
+  // ids are deliberately anti-correlated with the walk: whatever "sorted by id"
+  // would produce, the visual order is the lanes' own (priority-sorted) order.
+  const board = collabBoard([
+    { id: 'T-9', title: 'poolHigh', status: 'open', priority: 'high' },
+    { id: 'T-2', title: 'poolLow', status: 'open', priority: 'low' },
+    { id: 'T-5', title: 'assignedHigh', status: 'assigned', assignee: 'kimi', priority: 'high' },
+    { id: 'T-1', title: 'assignedLow', status: 'assigned', assignee: 'kimi', priority: 'low' },
+  ])
+  const { store, html } = await renderBoard(board)
+  // The order the browser paints, read straight out of the markup: lane by
+  // lane, card by card (each card's first T-id title is its ref span).
+  const rendered = html
+    .split('class="tb-card')
+    .slice(1)
+    .map((chunk) => chunk.match(/title="(T-\d+)"/)?.[1])
+    .filter(Boolean)
+  assert.deepEqual(rendered, ['T-9', 'T-2', 'T-5', 'T-1'], '画出来的次序是 列序 × 列内序，不是 id 序')
+
+  const order = client.keyboardOrderFor({
+    groupBy: 'column',
+    showClosed: false,
+    columns: [
+      { column: 'pool', tasks: [{ id: 'T-9' }, { id: 'T-2' }] },
+      { column: 'assigned', tasks: [{ id: 'T-5' }, { id: 'T-1' }] },
+    ],
+    groups: [],
+  })
+  assert.deepEqual(order, rendered, '键盘顺序 === 渲染顺序')
+  assert.deepEqual(
+    client.visualOrder([[{ id: 'T-9' }, { id: 'T-2' }], [{ id: 'T-5' }, { id: 'T-1' }]]),
+    rendered,
+    'visualOrder = 泳道序 × 道内卡序',
+  )
+
+  assert.equal(walkKeys(order, null, ['j']), 'T-9', 'j 从空选中进入第一张')
+  assert.equal(walkKeys(order, null, ['j', 'j']), 'T-2', 'j 在同一道内往下')
+  assert.equal(walkKeys(order, null, ['j', 'j', 'j']), 'T-5', 'j 跨泳道继续往下（不是按 id 跳）')
+  assert.equal(walkKeys(order, null, ['j', 'j', 'j', 'j']), 'T-1')
+  assert.equal(walkKeys(order, null, ['j', 'j', 'k']), 'T-9', 'j j k 回到第一张')
+  assert.equal(walkKeys(order, null, ['k']), 'T-1', 'k 从空选中自底部进入')
+  assert.equal(walkKeys(order, 'T-5', ['k', 'k']), 'T-9', 'k 反向跨泳道')
+
+  // 走位走的就是点击那条路（store.select）⇒ 高亮与抽屉必然跟着换。
+  store.select('T-9')
+  assert.equal(store.getState().selectedId, 'T-9')
+  const after = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+  const activeChunks = after.split('class="tb-card active').slice(1)
+  assert.equal(activeChunks.length, 1, '同一时刻只有一张卡带 active（用现有的 tb-card active 样式）')
+  assert.equal(activeChunks[0].match(/title="(T-\d+)"/)?.[1], 'T-9', 'active 高亮落在被选中的那张卡上')
+})
+
+await check('T-36 · 边界不越界；空板 / 统计视图 / 收起的已关闭列都"无处可去"且不报错', () => {
+  const order = ['T-1', 'T-2']
+  assert.equal(client.stepSelection(order, 'T-2', 1), 'T-2', '最后一张按 j 停在原地（不循环）')
+  assert.equal(client.stepSelection(order, 'T-1', -1), 'T-1', '第一张按 k 停在原地')
+  assert.equal(client.stepSelection([], null, 1), null, '空板：无处可去')
+  assert.equal(client.stepSelection([], 'T-1', -1), null)
+  assert.equal(walkKeys([], null, ['j', 'k', 'Enter']), null, '空板连按不报错、也选不中任何东西')
+  // 没有选中：j 从顶部进入，k 从底部进入 —— 键往哪走就从哪头进。
+  assert.equal(client.stepSelection(order, null, 1), 'T-1')
+  assert.equal(client.stepSelection(order, null, -1), 'T-2')
+  // 选中项不在当前视图里（被「含已关闭」过滤掉 / 换了视图）：按方向重新进入，
+  // 而不是把高亮甩到不相干的邻居上。
+  assert.equal(client.stepSelection(order, 'T-99', 1), 'T-1')
+  assert.equal(client.stepSelection(order, 'T-99', -1), 'T-2')
+
+  // 收起的「已关闭」列不渲染 ⇒ 不是可走目标；展开后才进顺序；统计页没有卡。
+  const cards = (ids) => ids.map((id) => ({ id }))
+  const base = {
+    groupBy: 'column',
+    showClosed: false,
+    columns: [
+      { column: 'pool', tasks: cards(['T-1']) },
+      { column: 'closed', tasks: cards(['T-8', 'T-7']) },
+    ],
+    groups: [],
+  }
+  assert.deepEqual(client.keyboardOrderFor(base), ['T-1'], '收起的已关闭条不是可走目标')
+  assert.deepEqual(client.keyboardOrderFor({ ...base, showClosed: true }), ['T-1', 'T-8', 'T-7'], '展开后进顺序')
+  assert.deepEqual(client.keyboardOrderFor({ ...base, groupBy: 'stats' }), [], '统计页没有卡可走')
+  assert.deepEqual(
+    client.keyboardOrderFor({
+      ...base,
+      groupBy: 'owner',
+      groups: [{ tasks: cards(['T-1']) }, { tasks: cards(['T-5', 'T-3']) }],
+    }),
+    ['T-1', 'T-5', 'T-3'],
+    '按负责人 = 泳道序 × 卡序',
+  )
+})
+
+await check('T-36 · 只拿该拿的键：Esc 仍归 escapeTarget，模态层 / ⌘ 快捷键 / 输入法一律放行', () => {
+  const body = { tagName: 'BODY' }
+  const layers = (over) => ({ about: false, guide: false, picker: false, create: false, ...over })
+
+  // Esc 不在这套判定里：分层仍由 escapeTarget 一处负责（不新增第二套语义）。
+  assert.equal(client.boardKeyIntent({ key: 'Escape', target: body }), null, 'Esc 不走 j/k 这条路')
+  assert.equal(client.escapeTarget({ about: false, guide: false, picker: false, drawer: true }), 'drawer', 'Esc 分层原样')
+
+  // 模态层浮在上面时（指南 / 关于 / 成员选择器 / 新建表单），j / k / Enter 不是看板的。
+  for (const layer of ['about', 'guide', 'picker', 'create']) {
+    assert.equal(client.boardKeyIntent({ key: 'j', target: body }, layers({ [layer]: true })), null, `${layer} 浮层持有键盘`)
+    assert.equal(client.boardKeyIntent({ key: 'Enter', target: body }, layers({ [layer]: true })), null, `${layer} 浮层持有 Enter`)
+  }
+  // 抽屉不是阻碍层：抽屉开着时继续浏览正是这个功能的本意。
+  assert.deepEqual(client.boardKeyIntent({ key: 'j', target: body }, layers({})), { kind: 'step', delta: 1 })
+
+  // 已消费 / 带修饰键 / 输入法组字中 / 非绑定键：全部交还给页面。
+  assert.equal(client.boardKeyIntent({ key: 'j', target: body, defaultPrevented: true }), null)
+  for (const mod of ['ctrlKey', 'metaKey', 'altKey']) {
+    assert.equal(client.boardKeyIntent({ key: 'j', target: body, [mod]: true }), null, `${mod} 组合键不抢`)
+  }
+  assert.equal(client.boardKeyIntent({ key: 'j', target: body, isComposing: true }), null, '拼音组字中不抢键')
+  assert.equal(client.boardKeyIntent({ key: 'x', target: body }), null)
+  assert.equal(client.boardKeyIntent({ key: 'J', target: body }), null, '只有小写 j / k 是绑定')
+})
+
+await check('T-36 · 帮助浮层（?）里写明快捷键：j / k 走位 + Enter + Esc 分层 + 输入框不生效', async () => {
+  const board = collabBoard([{ id: 'T-1', title: 'one', status: 'open' }])
+  const store = client.createTaskboardStore({ bridge: { board: async () => ({ ok: true, board }) }, pollMs: 10 ** 9 })
+  store.setCwd(board.workspace)
+  await store.refresh()
+  const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store, initialGuideOpen: true }))
+  assert.ok(html.includes('For humans'), '指南照旧渲染')
+  // locale in this process resolves to English; the zh twin lives in the same
+  // L() call (and is checked by the browser probe with locale zh-CN).
+  assert.ok(html.includes('j / k move the selection'), '指南写明 j / k 走位')
+  assert.ok(html.includes('Enter opens the first card'), '指南写明 Enter')
+  assert.ok(html.includes('Escape closes exactly one layer'), '指南写明 Esc 只关最上面一层')
+  assert.ok(html.includes('a text box has focus'), '指南写明输入框里不生效')
+})
+
 await check('panel: the「统计」view renders KPIs, charts and tables from the same board', async () => {
   const board = collabBoard([
     { id: 'T-1', title: 'wip', status: 'in_progress', assignee: 'kimi', value: 3 },

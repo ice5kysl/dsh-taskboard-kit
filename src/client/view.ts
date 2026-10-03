@@ -12,7 +12,7 @@ import { columnOf, compareTasks, isTerminalStatus } from '../shared/types.ts'
 import { DEFAULT_QUIET_MS, actorKey, actorKeyOf, actorSeenAt } from '../shared/board.ts'
 import type { DropOp } from '../shared/dnd.ts'
 import { L } from './locale.ts'
-import type { TaskboardStore } from './store.ts'
+import type { BoardGrouping, TaskboardStore } from './store.ts'
 
 /** The session-list slot share (host-provided hook argument shape). */
 export interface SessionListLike {
@@ -243,6 +243,156 @@ export function escapeTarget(layers: Record<BoardLayer, boolean>, event?: { defa
   if (layers.picker) return 'picker'
   if (layers.drawer) return 'drawer'
   return null
+}
+
+// --------------------------------------------------------- keyboard navigation
+// v0.7.4: `j` / `k` walk the board in VISUAL order and `Enter` opens the first
+// card. Everything here is pure so node tests can drive the exact code path the
+// panel's keydown listener uses — the DOM wiring itself (BoardPanel) is a thin
+// dispatcher. ESC is deliberately NOT part of this: it keeps `escapeTarget`
+// above as its single source of truth (one key, one layer), and adding a second
+// Escape semantics here is exactly what the layering exists to prevent.
+
+/** The slice of a KeyboardEvent the navigation rules read (tests pass literals). */
+export interface KeyEventLike {
+  key: string
+  /** The event target: the focused element in a browser. */
+  target?: unknown
+  defaultPrevented?: boolean
+  ctrlKey?: boolean
+  metaKey?: boolean
+  altKey?: boolean
+  /** True while an IME composition is in flight (pinyin etc.). */
+  isComposing?: boolean
+}
+
+/** What a board-tab key press asks for; `null` = the key is not ours to take. */
+export type BoardKeyIntent = { kind: 'step'; delta: 1 | -1 } | { kind: 'open' }
+
+/**
+ * The modal layers that OWN the keyboard while they are up. Note what is NOT
+ * here: the task drawer. `j`/`k` with the drawer open is the whole point — the
+ * drawer follows the selection. Only the create form (an unsaved draft), the
+ * roster picker and the guide/about overlays take the keys away.
+ */
+export interface BoardKeyLayers {
+  about?: boolean
+  guide?: boolean
+  picker?: boolean
+  create?: boolean
+}
+
+/**
+ * Whether a key event's target is a text control — `input` / `textarea` /
+ * `[contenteditable]`. Those keep `j`, `k` and `Enter` for themselves: typing
+ * into the comment box, the create form or the member search must never move
+ * the board selection out from under the caret.
+ *
+ * Written against the element's shape (tagName + `isContentEditable`), not
+ * against a DOM class, so the same predicate is callable from node tests.
+ */
+export function isTypingTarget(target: unknown): boolean {
+  if (!target || typeof target !== 'object') return false
+  const el = target as { tagName?: unknown; isContentEditable?: unknown; getAttribute?: (name: string) => unknown }
+  const tag = typeof el.tagName === 'string' ? el.tagName.toUpperCase() : ''
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return true
+  if (el.isContentEditable === true) return true
+  // A descendant of a contenteditable is covered by `isContentEditable` in the
+  // browser; the attribute fallback keeps hand-built targets honest too.
+  if (typeof el.getAttribute === 'function') {
+    const attr = el.getAttribute('contenteditable')
+    if (attr !== null && attr !== undefined && attr !== false && attr !== 'false') return true
+  }
+  return false
+}
+
+/**
+ * Classify one `keydown` for the board tab.
+ *
+ * Returns `null` — "not ours, let the page have it" — when…
+ *   • the target is a text control (`isTypingTarget`): focused inputs win, always;
+ *   • a modal layer is up (about / guide / picker / create): the layer owns the key;
+ *   • the event was already consumed (`defaultPrevented`), carries a modifier
+ *     (⌘/Ctrl/Alt shortcuts are the OS's or the app's), or is mid-IME-composition.
+ *
+ * `Escape` never reaches here: it unwinds through `escapeTarget` (the panel's
+ * own effects), so the layering has exactly one owner.
+ */
+export function boardKeyIntent(event: KeyEventLike, layers: BoardKeyLayers = {}): BoardKeyIntent | null {
+  if (!event || typeof event.key !== 'string') return null
+  if (isTypingTarget(event.target)) return null
+  if (event.defaultPrevented) return null
+  if (event.ctrlKey || event.metaKey || event.altKey) return null
+  if (event.isComposing) return null
+  if (layers.about || layers.guide || layers.picker || layers.create) return null
+  if (event.key === 'j') return { kind: 'step', delta: 1 }
+  if (event.key === 'k') return { kind: 'step', delta: -1 }
+  if (event.key === 'Enter') return { kind: 'open' }
+  return null
+}
+
+/**
+ * Flatten the rendered lanes into the ids in VISUAL order: lane by lane, card
+ * by card inside a lane. This is literally the DOM order the board paints —
+ * 按进度 is 列序 × 列内序, 按负责人 is 泳道序 × 卡序 — so `j` moves the selection
+ * the way the eye reads the screen. Lanes that are not rendered (the collapsed
+ * 已关闭 strip) must not be passed in: a keypress cannot land on a card that is
+ * not on screen.
+ */
+export function visualOrder(lanes: ReadonlyArray<ReadonlyArray<{ id: string }>>): string[] {
+  const order: string[] = []
+  for (const lane of lanes) for (const card of lane) order.push(card.id)
+  return order
+}
+
+/** The board-tab view state `keyboardOrderFor` reads (a subset of TaskboardState). */
+export interface KeyboardOrderInput {
+  groupBy: BoardGrouping
+  /** Whether the 已关闭 lane is expanded into a real lane (default: a strip). */
+  showClosed: boolean
+  /** The 按进度 lanes AS RENDERED (BOARD_COLUMNS order, each already sorted). */
+  columns: ReadonlyArray<{ column: BoardColumn; tasks: ReadonlyArray<{ id: string }> }>
+  /** The 按负责人 lanes AS RENDERED (groupByOwner order). */
+  groups: ReadonlyArray<{ tasks: ReadonlyArray<{ id: string }> }>
+}
+
+/**
+ * The card ids `j` / `k` walk for one view state, in visual order.
+ *
+ * Derived from the very lanes the board renders, so the walk can never drift
+ * from what is on screen — and two cases are excluded on purpose:
+ *   • the collapsed 已关闭 strip: those cards are NOT painted, and a keypress
+ *     may not land on a card nobody can see;
+ *   • the 统计 view: it renders no cards at all, so there is nowhere to walk.
+ */
+export function keyboardOrderFor(input: KeyboardOrderInput): string[] {
+  if (input.groupBy === 'stats') return []
+  if (input.groupBy === 'owner') return visualOrder(input.groups.map((group) => group.tasks))
+  return visualOrder(
+    input.columns
+      .filter(({ column }) => column !== 'closed' || input.showClosed)
+      .map(({ tasks: lane }) => lane),
+  )
+}
+
+/**
+ * The id one `j` (+1) / `k` (-1) step lands on, or `null` when there is nowhere
+ * to go (an empty board is a no-op, never an error).
+ *
+ * Boundaries do NOT wrap: `k` on the first card stays on it, `j` on the last
+ * stays on it. With nothing selected, `j` enters the list at the top and `k` at
+ * the bottom — the direction the key moves. A selection that is not in the
+ * current order (the card was filtered away, or the view changed under it) is
+ * treated as "nothing selected" rather than snapping to a neighbour, so a stale
+ * selection can never drag the highlight to an unrelated card.
+ */
+export function stepSelection(order: readonly string[], currentId: string | null, delta: 1 | -1): string | null {
+  if (order.length === 0) return null
+  const at = currentId === null ? -1 : order.indexOf(currentId)
+  if (at < 0) return delta > 0 ? order[0]! : order[order.length - 1]!
+  const next = at + delta
+  if (next < 0 || next >= order.length) return order[at]!
+  return order[next]!
 }
 
 /**
