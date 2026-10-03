@@ -118,7 +118,7 @@ Each task still carries **value points** (Fibonacci scale ½ / 1 / 2 / 3 / 5 / 8
 ## Install
 
 ```bash
-dsh plugin --profile web add dsh-taskboard-kit@0.7.1
+dsh plugin --profile web add dsh-taskboard-kit@0.7.2
 # restart dsh web, open any session, and the「看板」tab is there
 ```
 
@@ -126,8 +126,23 @@ dsh plugin --profile web add dsh-taskboard-kit@0.7.1
 supply-chain `minimumReleaseAge` gate: a version published minutes ago is held
 back, and a bare `add dsh-taskboard-kit` then silently installs an older one —
 you would get a board whose `done` is still treated as terminal without any hint.
-Naming `@0.7.1` opts that release out of the gate and installs what you asked for.
+Naming `@0.7.2` opts that release out of the gate and installs what you asked for.
 Once a release is more than a day old, a bare `add` finds it too.
+
+## v0.7.2 — making the cards and the stats readable at a glance
+
+Four rounds of owner feedback (2026-10-01), shipped together. **Client-side only: refresh the page — no `dsh web` restart needed.**
+
+1. **Three-row cards**: row 1 = the fixed attributes (priority dot · id · value · status · owner/creator … column age pinned right, 10px); row 2 = the title (≤2 lines, redundant prefixes stripped **for display only**); row 3 = what moves (holder · waiting · review · tags, strictly one line). Card height went from 90–123px to a **uniform 88px**.
+2. **Title de-noising**: a `【owner】 T-93 ·` prefix that merely repeats what the card already shows is dropped (the `【owner】` only when it *is* this card's owner/creator/reviewer; the number only when it is this card's own id; the **original string stays in the tooltip**). The id match requires a whole token — `T-930` / `T-93X` / `T-93-2` are no longer eaten alive (a real bug caught in review).
+3. **The holder view**: a card answers exactly one question — **whose ball is it, and what do they owe**. `➤ to submit` / `◷ to answer·to reply` / `⚑ to decide` / `⌂ to settle` / `○ to claim` (`closed` has no holder). It is derived from the state machine: in `review` the assignee is *frozen* and in `done` the reviewer is *cleared*, so reading "current handler" literally points at the **wrong person** in exactly those stages.
+4. **Marks instead of labels**: `@` owner · `✎` creator · `◆` value · `◷` waiting · `⚑` decide · `⌂` settle · `➤` holder. **Text glyphs only, never emoji** (emoji render as colour bitmaps and fight the theme); the meaning lives in each tooltip. Card text is **10.6% shorter**.
+5. **Stats v2**: 7/14/30-day windows; KPIs split into "what needs you" and "background", each with a **delta against the previous equal-length window** (fewer than 3 samples ⇒ an explicit "not enough samples" badge rather than a fake trend); new **"what needs doing now"** (holder ranking + anomalies, **every row opens the card**) and a **value view** (backlog vs delivered, throughput, value/cycle per card); the flow chart gained a y-axis, gridlines and value labels, status became a ring chart, and **milestone progress** is derived from tags (e.g. `v1.42.0`).
+6. **Drawer v2**: sticky header (title + holder row + primary actions); a property table (values copyable); **every action is always listed** with its **outcome** (`Close → moves to 「settled」 · reopenable`) and the unavailable ones are **greyed out with the reason**; the assignee picker is searchable and **lists only present actors by default** (quiet ones need an explicit expand); the description collapses; tags are clickable.
+7. Two **dead ends** closed along the way: pressing "Start" on a pool card used to create an ownerless "In progress"; a waiting card's only exit in the drawer was "Claim", which always fails (now "Release wait").
+8. An **unnamed wait** (`waiting_on.who` empty) is no longer rendered as claimable (both on the card and in the stats) — the store refuses to claim a waiting card, so that used to be an entry point that always failed.
+
+**Verified**: `npm test` **207 checks green** + clean typecheck; every change carries a **mutation check** (break it and the test goes red).
 
 **0.7.1 makes the quiet text readable and the cards tighter.** The card's quiet tier used `--dsw-alias-label-dimmed` — a shell token that is near-invisible by design (`#e1e5ee` on light, `#43454a` on dark; ≈1.1:1 / 1.3:1), so task refs (`#18`), value points (`◆2`) and column ages were unreadable in BOTH themes. They now use `--dsw-alias-label-tertiary` (`#81858c` / `#adb2b8`). Cards were reshaped from **five rows to three** (`#N` and `◆value` moved onto the meta row, owner + waiting/reviewer badges share one row), lanes went `260 → 240px`, and spacing/line-height tightened: **a card is ~22% shorter on the same board (125px → 97px average)**, so one lane shows ~9 cards per screen instead of ~7. The waiting chip may wrap internally so the "how long has this been waiting" half never gets ellipsized away.
 
