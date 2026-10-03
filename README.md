@@ -118,7 +118,7 @@ Each task still carries **value points** (Fibonacci scale ½ / 1 / 2 / 3 / 5 / 8
 ## Install
 
 ```bash
-dsh plugin --profile web add dsh-taskboard-kit@0.7.2
+dsh plugin --profile web add dsh-taskboard-kit@0.7.3
 # restart dsh web, open any session, and the「看板」tab is there
 ```
 
@@ -126,7 +126,7 @@ dsh plugin --profile web add dsh-taskboard-kit@0.7.2
 supply-chain `minimumReleaseAge` gate: a version published minutes ago is held
 back, and a bare `add dsh-taskboard-kit` then silently installs an older one —
 you would get a board whose `done` is still treated as terminal without any hint.
-Naming `@0.7.2` opts that release out of the gate and installs what you asked for.
+Naming `@0.7.3` opts that release out of the gate and installs what you asked for.
 Once a release is more than a day old, a bare `add` finds it too.
 
 <a id="release-notes"></a>

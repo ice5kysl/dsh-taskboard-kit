@@ -92,14 +92,14 @@
 ## 安装
 
 ```bash
-dsh plugin --profile web add dsh-taskboard-kit@0.7.2
+dsh plugin --profile web add dsh-taskboard-kit@0.7.3
 # 重启 dsh web，打开任意会话，「看板」页签就在
 ```
 
 **务必写死版本号。** `dsh plugin` 转发给 pnpm 11，而 pnpm 11 默认带一道供应链
 `minimumReleaseAge` 闸门：刚发布几分钟的版本会被拦下，此时不带版本的
 `add dsh-taskboard-kit` **会静默装上一个旧版本** —— 你拿到的看板里 `done` 仍被当成终点，
-而且没有任何提示。写上 `@0.7.2` 就是让这次安装绕过闸门、装到你指定的版本。
+而且没有任何提示。写上 `@0.7.3` 就是让这次安装绕过闸门、装到你指定的版本。
 等某个版本发布满一天后，不带版本也能装到它。
 
 <a id="release-notes"></a>
