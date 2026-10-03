@@ -87,9 +87,14 @@ export const TB_CSS = `
 .tb-chip { border: 1px solid ${BORDER}; border-radius: 999px; background: transparent; color: ${DIM}; padding: 3px 11px; font-size: 11px; font-family: inherit; cursor: pointer; }
 .tb-chip:hover { color: ${FG}; border-color: ${BORDER_STRONG}; }
 .tb-chip.active { background: ${HOVER_BG}; color: ${LINK}; border-color: ${LINK}; font-weight: 600; }
-.tb-tag { font-size: 10px; color: ${DIM}; border: 1px solid ${BORDER}; border-radius: 999px; padding: 1px 6px; white-space: nowrap; }
+/* 三枚 10px 药丸都必须自己会截断：长 actor 名（或长 tag）以前会**视觉溢出虚线边框**，
+   再被泳道的 overflow:hidden 从中间切掉 —— 看起来像排版坏了而不是"名字太长"。
+   max-width:100% 是给 flex 容器用的（父级再窄也只会截断，不会撑破）；药丸里的文字
+   节点各自再带 min-width:0 + ellipsis（见 BoardPanel/MiniBoard 的 who 样式），
+   因为 inline-flex 容器上的 text-overflow 管不到子元素。 */
+.tb-tag { font-size: 10px; color: ${DIM}; border: 1px solid ${BORDER}; border-radius: 999px; padding: 1px 6px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tb-badge { display: inline-flex; align-items: center; font-size: 10px; color: ${LINK}; background: ${HOVER_BG}; border-radius: 999px; padding: 1px 7px; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tb-badge-outline { display: inline-flex; align-items: center; font-size: 10px; color: ${DIM}; border: 1px dashed ${BORDER_STRONG}; border-radius: 999px; padding: 0 7px; white-space: nowrap; }
+.tb-badge-outline { display: inline-flex; align-items: center; font-size: 10px; color: ${DIM}; border: 1px dashed ${BORDER_STRONG}; border-radius: 999px; padding: 0 7px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* v0.5.4 collaboration marks: "parked on someone" (amber, shared by the card
    and the drawer) and "past its column SLA" (a quiet dot, deliberately NOT a
    red alarm — see the human strip for the one place that speaks up). */
@@ -132,6 +137,8 @@ export const TB_CSS = `
 .tb-tag-btn { background: transparent; font-family: inherit; cursor: pointer; }
 .tb-tag-btn:hover { color: ${FG}; border-color: ${BORDER_STRONG}; }
 .tb-tag-btn.active { color: ${LINK}; border-color: ${LINK}; background: ${HOVER_BG}; font-weight: 600; }
+/* 「关于」浮层里的外链行：整行可点，hover 才浮起来（行内还有一行 10px 的目标提示）。 */
+.tb-about-link:hover { background: ${HOVER_BG}; }
 /* Rendered markdown (drawer detail + comments): compact, both themes. */
 .tb-md { overflow-wrap: break-word; min-width: 0; }
 .tb-md h1, .tb-md h2, .tb-md h3, .tb-md h4, .tb-md h5, .tb-md h6 { margin: 0.7em 0 0.35em; line-height: 1.35; font-weight: 600; }

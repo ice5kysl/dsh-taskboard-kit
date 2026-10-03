@@ -220,15 +220,17 @@ function displayNameOf(board: Board, name: string): string {
   return name
 }
 
-/** The overlay stack of the board tab, topmost last. */
-export type BoardLayer = 'guide' | 'picker' | 'drawer'
+/** The overlay stack of the board tab, topmost first. */
+export type BoardLayer = 'about' | 'guide' | 'picker' | 'drawer'
 
 /**
  * Which layer an Escape keypress should close.
  *
  * One keypress closes exactly ONE layer, innermost/topmost first — never two
- * at once. The order below follows the panel's own z-index stack (guide 30 >
- * picker 25 > drawer 21), so unwinding matches what the user sees on screen.
+ * at once. The order below follows the panel's own z-index stack (about 41 >
+ * guide 31 > picker 25 > drawer 21), so unwinding matches what the user sees
+ * on screen. `about` (v0.7.3) is the ⓘ popover: it floats above everything,
+ * so while it is up Escape closes it and touches nothing underneath.
  *
  * A focused input that already consumed the Escape (`defaultPrevented`) wins:
  * the control keeps the key and nothing closes. Returns `null` when there is
@@ -236,6 +238,7 @@ export type BoardLayer = 'guide' | 'picker' | 'drawer'
  */
 export function escapeTarget(layers: Record<BoardLayer, boolean>, event?: { defaultPrevented?: boolean }): BoardLayer | null {
   if (event?.defaultPrevented) return null
+  if (layers.about) return 'about'
   if (layers.guide) return 'guide'
   if (layers.picker) return 'picker'
   if (layers.drawer) return 'drawer'

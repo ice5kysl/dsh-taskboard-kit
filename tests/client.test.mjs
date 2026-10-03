@@ -16,6 +16,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 
 // Pin the browser locale to English before the bundle's locale module reads
@@ -802,7 +803,13 @@ await check('mini board: entry button badge and the six-block drawer', async () 
     assert.ok(open.includes(title), `row: ${title}`)
   }
   assert.ok(open.includes('>#3<'), 'rows carry the #N ref')
-  assert.ok(open.includes('unclaimed'), 'pool row carries the outline badge')
+  // v0.7.3: the row's holder chip replaced the old per-field badges (wait +
+  // reviewer + assignee, which said the same thing three times). The pool row
+  // now reads `○ the pool` — same words the card and the drawer use — with the
+  // mark carrying the action. (The holder-row assertions proper live in the
+  // T-35 check further down.)
+  assert.ok(open.includes('the pool'), 'a pool row names the pool (holder mark + kind, not a bare badge)')
+  assert.ok(!open.includes('unclaimed'), 'the old per-field「unclaimed」badge is gone')
   assert.ok(open.includes('draggable'), 'rows are draggable (planDrop pipeline)')
 
   // A row click opens the layer-2 detail drawer (shared DetailDrawer),
@@ -1271,6 +1278,25 @@ await check('escapeTarget: one Escape closes exactly ONE layer, topmost first', 
   assert.equal(client.escapeTarget(layers({ drawer: true }), { defaultPrevented: true }), null)
   // …and an event that did NOT consume it still unwinds normally.
   assert.equal(client.escapeTarget(layers({ drawer: true }), { defaultPrevented: false }), 'drawer')
+})
+
+await check('escapeTarget: the「关于」popover is its own topmost layer (T-35)', () => {
+  // `about` was added in 0.7.3. The older callers build their layer record
+  // without the key, which is why it must stay optional at the call sites the
+  // panel does not own (the mini board, other plugins).
+  const layers = (over) => ({ about: false, guide: false, picker: false, drawer: false, ...over })
+
+  // z-order: about (41) > guide (31) > picker (25) > drawer (21).
+  assert.equal(client.escapeTarget(layers({ about: true, guide: true, picker: true, drawer: true })), 'about')
+  assert.equal(client.escapeTarget(layers({ about: true, guide: true })), 'about')
+  // An Escape while ⓘ is up must NEVER reach the drawer or the guide under it:
+  // one keypress, one layer — the regression this wiring exists to prevent.
+  assert.notEqual(client.escapeTarget(layers({ about: true, drawer: true })), 'drawer')
+  assert.notEqual(client.escapeTarget(layers({ about: true, guide: true })), 'guide')
+  // With ⓘ closed the stack below is unchanged (the guide still owns the key).
+  assert.equal(client.escapeTarget(layers({ guide: true, picker: true, drawer: true })), 'guide')
+  // And a key a focused control consumed closes nothing, about included.
+  assert.equal(client.escapeTarget(layers({ about: true }), { defaultPrevented: true }), null)
 })
 
 await check('panel: the「统计」view renders KPIs, charts and tables from the same board', async () => {
@@ -2332,6 +2358,206 @@ await check('T-29 · 小派生：未读动态计数与描述折叠阈值', () =>
   assert.equal(client.detailNeedsFold('一行\n两行\n三行'), false)
   assert.equal(client.detailNeedsFold(Array.from({ length: 8 }, (_, i) => `第 ${i} 行`).join('\n')), true, '超过 6 行要折叠')
   assert.equal(client.detailNeedsFold('x'.repeat(400)), true, '超长单行也要折叠')
+})
+
+// ------------------------------------------------------------- 0.7.3 (T-35)
+// The two cleanups and the「关于」popover. The CSS / dead-key checks read the
+// SOURCE (a stylesheet rule and the absence of an identifier are not observable
+// from the bundle: TB_CSS is a string and inline styles are object keys); the
+// rest is behavior/SSR against the real bundle.
+
+/** The declaration block of one selector inside TB_CSS ('' when absent). */
+function cssRule(css, selector) {
+  const at = css.indexOf(`${selector} {`)
+  if (at < 0) return ''
+  return css.slice(at, css.indexOf('}', at)).replace(/\s+/g, '')
+}
+
+await check('T-35 · theme: every 10px pill truncates instead of spilling out of its border', () => {
+  const css = client.TB_CSS
+  // The reported defect (kimi's T-20 review): a long actor name visually
+  // overflowed the dashed outline of `.tb-badge-outline` and the lane clipped
+  // it mid-glyph — it read as broken layout rather than「the name is long」.
+  const outline = cssRule(css, '.tb-badge-outline')
+  assert.ok(outline, '.tb-badge-outline is still a rule in the sheet')
+  for (const decl of ['max-width:100%', 'overflow:hidden', 'text-overflow:ellipsis', 'white-space:nowrap']) {
+    assert.ok(outline.includes(decl), `.tb-badge-outline carries ${decl}`)
+  }
+  // The same audit applied to its siblings: all four text pills must ellipsize.
+  for (const selector of ['.tb-badge', '.tb-badge-wait', '.tb-tag']) {
+    assert.ok(cssRule(css, selector).includes('text-overflow:ellipsis'), `${selector} ellipsizes`)
+  }
+  // The「关于」popover's link rows hover via the sheet (inline styles cannot
+  // express :hover) and they must hover on a host token, not a hardcoded colour.
+  assert.ok(cssRule(css, '.tb-about-link:hover').includes('background:var(--dsw-alias'), 'the about link hovers on a host token')
+})
+
+await check('T-35 · the three dead style keys are gone (1 definition / 0 references)', () => {
+  const boardSrc = readFileSync(new URL('../src/client/BoardPanel.tsx', import.meta.url), 'utf8')
+  // cardSep / reviewerBadge / cardWaitAge were dead BEFORE this release (T-29
+  // left them behind to keep that diff small). The styles object is
+  // module-private, so「deleted」can only be asserted on the source — which is
+  // also the only place a resurrected reference could appear.
+  for (const key of ['cardSep', 'reviewerBadge', 'cardWaitAge']) {
+    assert.ok(!boardSrc.includes(key), `dead style key「${key}」is gone`)
+  }
+  // …and the keys that took over their job are still declared AND referenced.
+  for (const key of ['cardWait', 'cardHoldMark', 'cardHoldAge']) {
+    assert.ok(boardSrc.split(key).length > 2, `「${key}」is still declared and referenced`)
+  }
+})
+
+await check('T-35 · about: the version falls back to `dev` when the build did not inject one', () => {
+  assert.equal(typeof client.aboutVersion, 'function')
+  // The fallback is the safety net for a build that forgot the `define`: the
+  // panel must print `dev`, never an empty chip or `undefined`.
+  assert.equal(client.aboutVersion(undefined), 'dev')
+  assert.equal(client.aboutVersion(null), 'dev')
+  assert.equal(client.aboutVersion(''), 'dev')
+  assert.equal(client.aboutVersion('   '), 'dev')
+  assert.equal(client.aboutVersion(42), 'dev')
+  assert.equal(client.aboutVersion(' 0.9.9 '), '0.9.9', 'a real version is trimmed and kept')
+  assert.equal(client.aboutVersionLabel('dev'), 'dev', 'the fallback is not prefixed into「vdev」')
+  assert.equal(client.aboutVersionLabel('0.7.3'), 'v0.7.3')
+
+  // The bundle under test WAS built by scripts/build.mjs, which injects
+  // package.json's version — so the injected path is covered too, and a dropped
+  // `define` shows up here as 'dev' instead of the version.
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(client.TB_VERSION, pkg.version, 'the bundle carries package.json version')
+})
+
+await check('T-35 · about: the four GitHub entries are the real URLs with zh/en labels', () => {
+  const links = client.aboutLinks()
+  assert.deepEqual(links.map((row) => row.key), ['repo', 'issues', 'collab', 'changelog'])
+  assert.equal(client.REPO_URL, 'https://github.com/ice5kysl/dsh-taskboard-kit')
+  assert.equal(links[0].href, client.REPO_URL)
+  assert.equal(links[1].href, `${client.REPO_URL}/issues/new`, 'issue filing goes straight to the new-issue form')
+  // The collaboration spec is a FILE IN THE REPO, not the npm page.
+  assert.equal(links[2].href, `${client.REPO_URL}/blob/main/docs/COLLABORATION.md`)
+  assert.equal(links[3].href, `${client.REPO_URL}/blob/main/README.md#release-notes`, 'release notes use the stable anchor')
+  for (const row of links) {
+    assert.match(row.href, /^https:\/\/github\.com\//, `${row.key} points at GitHub`)
+    assert.ok(row.label.length > 0 && row.hint.length > 0, `${row.key} has a label and a hint`)
+  }
+
+  // The transparency block is a pure function: it names the real file and the
+  // real counts (no server, no cloud — the numbers come from the live board).
+  const facts = client.aboutFacts({ boardFile: null, cwd: '/work/a', tasks: 41, roster: 23, boardVersion: 7, pluginId: client.PLUGIN_ID })
+  assert.deepEqual(facts.map((row) => row.key), ['file', 'tasks', 'actors', 'format', 'plugin'])
+  assert.equal(facts[0].value, '/work/a/.dsh/taskboard.json', 'no board_file from the host → the convention path')
+  assert.equal(facts[1].value, '41')
+  assert.equal(facts[2].value, '23')
+  assert.equal(facts[3].value, 'v7', 'board.version is the data-format version')
+  assert.equal(facts[4].value, 'dsh-taskboard-kit')
+  assert.equal(
+    client.aboutFacts({ boardFile: '/x/.dsh/taskboard.json', cwd: '/work/a', tasks: 0, roster: 0, boardVersion: null, pluginId: client.PLUGIN_ID })[0].value,
+    '/x/.dsh/taskboard.json',
+    'the host-reported path wins over the convention',
+  )
+})
+
+await check('T-35 · about: the ⓘ overlay renders version, facts and 5× target=_blank rel=noreferrer', async () => {
+  const board = collabBoard([
+    { id: 'T-1', title: 'pool one', status: 'open', assignee: null },
+    { id: 'T-2', title: 'wip one', status: 'in_progress', assignee: 'kimi' },
+  ])
+  const store = client.createTaskboardStore({
+    bridge: { board: async () => ({ ok: true, board, board_file: '/work/a/.dsh/taskboard.json' }) },
+    pollMs: 10 ** 9,
+  })
+  store.setCwd(board.workspace)
+  await store.refresh()
+  const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store, initialAboutOpen: true }))
+
+  // Identity: the plugin id, the build-injected version, the one-sentence intro.
+  assert.ok(html.includes(`v${client.TB_VERSION}`), 'the injected version is shown as vX.Y.Z')
+  assert.ok(html.includes(client.aboutTagline()), 'the tagline is rendered')
+  assert.ok(html.includes('dsh-taskboard-kit'), 'the plugin id is named')
+
+  // Local transparency — read each fact row as「label then value」so a passing
+  // assertion cannot come from an unrelated count elsewhere on the board.
+  const factRow = (label) => {
+    const at = html.indexOf(`>${label}</span>`)
+    return at < 0 ? '' : html.slice(at, at + 400)
+  }
+  assert.ok(factRow('Board file').includes('>/work/a/.dsh/taskboard.json</span>'), 'the real board file path is on screen')
+  assert.ok(factRow('Cards').includes('>2</span>'), 'card count = the fixture’s 2 tasks')
+  assert.equal(factRow('Roster').includes(`>${Object.keys(board.actors).length}</span>`), true, 'roster size = the board.actors roster')
+  assert.ok(factRow('Data format').includes('>v1</span>'), 'board.version')
+  assert.ok(factRow('Plugin id').includes('>dsh-taskboard-kit</span>'), 'plugin id')
+  assert.ok(html.includes('Local transparency'), 'the transparency block has a heading')
+
+  // Four outbound links + the author: all of them new-tab and referrer-free.
+  assert.equal((html.match(/target="_blank"/g) ?? []).length, 5, 'four links + the author open in a new tab')
+  assert.equal((html.match(/rel="noreferrer"/g) ?? []).length, 5, 'and every one of them carries rel=noreferrer')
+  for (const url of [client.REPO_URL, client.ISSUES_URL, client.COLLAB_URL, client.CHANGELOG_URL]) {
+    assert.ok(html.includes(`href="${url}"`), `href is rendered verbatim: ${url}`)
+  }
+  assert.ok(html.includes('MIT'), 'the licence is stated')
+  assert.ok(html.includes(client.AUTHOR), 'the author is named')
+  assert.ok(html.includes('role="dialog"'), 'it renders as a dialog')
+
+  // …and nothing of it is in the markup while ⓘ has never been opened.
+  const shut = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+  assert.ok(!shut.includes(client.aboutTagline()), 'ⓘ closed → no overlay in the markup')
+})
+
+await check('T-35 · mini drawer: one holder line per row (mark + name), not three stacked badges', async () => {
+  const now = Date.now()
+  const iso = (ms) => new Date(now - ms).toISOString()
+  const mk = (id, title, status, over) => ({
+    id, title, detail: '', status, assignee: null, priority: 'medium', value: null,
+    tags: [], created_by: 'human', created_at: iso(3600_000), updated_at: iso(60_000),
+    log: [], comments: [], reviewer: null, waiting_on: null, ...over,
+  })
+  const board = {
+    version: 1, workspace: '/work/a', next_seq: 8,
+    actors: {
+      dsh: { kind: 'agent', aliases: [], first_seen_at: iso(9 * 24 * 3600_000), last_seen_at: iso(60_000) },
+      kimi: { kind: 'agent', aliases: [], first_seen_at: iso(9 * 24 * 3600_000), last_seen_at: iso(120_000) },
+      iceskysl: { kind: 'human', aliases: [], first_seen_at: iso(9 * 24 * 3600_000), last_seen_at: iso(300_000) },
+    },
+    tasks: {
+      'T-1': mk('T-1', 'pool one', 'open'),
+      'T-2': mk('T-2', 'wip one', 'in_progress', { assignee: 'kimi' }),
+      'T-3': mk('T-3', 'review one', 'review', { assignee: 'kimi', reviewer: 'dsh' }),
+      'T-4': mk('T-4', 'done one', 'done', { assignee: 'kimi' }),
+      'T-5': mk('T-5', 'parked one', 'in_progress', {
+        assignee: 'kimi',
+        waiting_on: { kind: 'human', who: 'iceskysl', question: '哪一版？', since: iso(3600_000) },
+      }),
+    },
+  }
+  const store = client.createTaskboardStore({ bridge: { board: async () => ({ ok: true, board }) }, pollMs: 10 ** 9 })
+  store.setCwd(board.workspace)
+  await store.refresh()
+  store.setMiniOpen(true)
+  const html = renderToStaticMarkup(React.createElement(client.MiniBoardDrawer, { store }))
+  // The row as a reader sees it: strip the markup between the mark and the name.
+  const text = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')
+
+  // ONE derivation (currentHolder) drives the row, exactly like the card:
+  //   ➤ work · ○ claim/pool · ⚑ decide · ⌂ settle · ◷ answer/reply.
+  assert.ok(text.includes('➤ kimi'), 'in_progress + assignee → ➤ kimi')
+  assert.ok(text.includes('⚑ dsh'), 'review → ⚑ the reviewer')
+  assert.ok(text.includes('⌂ human'), 'done → ⌂ the creator (settle)')
+  assert.ok(text.includes('○ the pool'), 'unclaimed → ○ the pool')
+  assert.ok(text.includes('◷ iceskysl'), 'parked on a person → ◷ who must answer')
+  // The old per-field badges are gone: no separate reviewer / assignee chips.
+  assert.ok(!text.includes('review dsh'), 'the「review X」badge is gone')
+  assert.ok(!text.includes('unclaimed'), 'the「unclaimed」badge is gone')
+  // A waiting row keeps the amber outline (it must not look like ordinary work).
+  assert.ok(html.includes('tb-badge-wait'), 'the parked row rides the amber wait chip')
+  // Strictly one line: the row is a nowrap flex line, and the name ellipsizes
+  // inside the chip (an inline-flex container's text-overflow cannot reach the
+  // child, so the child carries its own).
+  assert.match(client.TB_CSS, /\.tb-mini-row \{[^}]*display:\s*flex/)
+  assert.ok(!/\.tb-mini-row \{[^}]*flex-wrap/.test(client.TB_CSS), 'the mini row never wraps')
+  assert.ok(html.includes('text-overflow:ellipsis'), 'the holder name ellipsizes inside the chip')
+  // The tooltip leads with the owed action (holderActionLabel) — the one place
+  // those words survive, since the lane header already names the status.
+  assert.ok(html.includes(`title="${client.holderActionLabel('work')} · `), 'the tooltip leads with the owed action (holderActionLabel)')
 })
 
 // ------------------------------------------------------------------ done

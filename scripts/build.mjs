@@ -61,6 +61,11 @@ async function main() {
     external: clientExternals,
     banner: { js: head },
     footer: { js: tail },
+    // The「关于」popover shows the version, and it must never be a hand-edit
+    // that drifts from package.json: the browser face gets it injected here.
+    // A build that forgets this define leaves the identifier undefined, and
+    // about.ts falls back to 'dev' (aboutVersion) instead of printing nothing.
+    define: { __TB_VERSION__: JSON.stringify(pkg.version) },
     logLevel: 'info',
   })
 

@@ -47,6 +47,15 @@ export const MINI_OVERLAY_ID = 'taskboard-mini'
 // shared board math.
 export { BoardPanel, DetailDrawer } from './BoardPanel.tsx'
 export { taskRef, displayTitle, currentHolder, holderActionLabel } from './BoardPanel.tsx'
+// 0.7.3：持球记号 + 持球行 tooltip 只此一处 —— mini 抽屉与卡面/抽屉共用同一套语言。
+export { HOLDER_MARKS, holderTitle } from './BoardPanel.tsx'
+// 0.7.3：「关于」浮层的纯内容（版本回落 / 四个外链 / 本地透明度事实），可 node 单测。
+export {
+  ABOUT_VERSION_RAW, TB_VERSION, aboutVersion, aboutVersionLabel, aboutFacts,
+  aboutLinks, aboutTagline, aboutLocalNote, PLUGIN_ID,
+  REPO_URL, ISSUES_URL, COLLAB_URL, CHANGELOG_URL, AUTHOR, AUTHOR_URL, LICENSE,
+} from './about.ts'
+export type { AboutFact, AboutFactsInput, AboutLink } from './about.ts'
 // T-29：抽屉 v2 的派生全部是纯函数（可 node 单测），一并从包里导出。
 export {
   drawerActions, drawerProps, assigneeChoices, milestoneTags, tasksWithTag,

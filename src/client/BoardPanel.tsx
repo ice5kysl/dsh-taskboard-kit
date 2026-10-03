@@ -64,6 +64,17 @@ import {
   type HealthIssue,
 } from '../shared/board.ts'
 import { planDrop, type DropOp } from '../shared/dnd.ts'
+import {
+  AUTHOR,
+  AUTHOR_URL,
+  LICENSE,
+  TB_VERSION,
+  aboutFacts,
+  aboutLinks,
+  aboutLocalNote,
+  aboutTagline,
+  aboutVersionLabel,
+} from './about.ts'
 import { knownActors } from './actors.ts'
 import { conventionSnippet, dispatchSnippet, guideProjectDir, hookSnippetClaude, hookSnippetKimi } from './guide.ts'
 import { L } from './locale.ts'
@@ -81,6 +92,7 @@ import {
   BG_SUNK,
   BORDER,
   BORDER_STRONG,
+  CLIENT_PLUGIN_ID,
   DANGER,
   DANGER_BG,
   DIM,
@@ -111,6 +123,8 @@ export interface BoardPanelProps {
   sessionId?: string
   /** Open the guide overlay on first render (tests drive the open state). */
   initialGuideOpen?: boolean
+  /** Open the「关于」popover on first render (tests/SSR drive the open state). */
+  initialAboutOpen?: boolean
 }
 
 /** Drag-and-drop wiring the panel hands down to the lanes and their cards. */
@@ -291,8 +305,10 @@ export interface Holder {
   sinceMs?: number
 }
 
-/** 每个动作一个记号：提交 ➤ / 认领 ○ / 回复·回执 ◷ / 裁决 ⚑ / 收口 ⌂ */
-const HOLDER_MARKS: Record<HolderAction, string> = {
+/** 每个动作一个记号：提交 ➤ / 认领 ○ / 回复·回执 ◷ / 裁决 ⚑ / 收口 ⌂
+ *  Exported (v0.7.3) so the status-bar mini drawer renders the SAME marks as
+ *  the card instead of inventing a second iconography. */
+export const HOLDER_MARKS: Record<HolderAction, string> = {
   work: MARK.holder,
   claim: MARK.pool,
   answer: MARK.wait,
@@ -360,8 +376,10 @@ export function currentHolder(task: Task, board?: Board | null, now: number = Da
   return { who: task.assignee, action: 'work', sinceMs: since(lastEventAt(task, 'started') ?? lastEventAt(task, 'assigned') ?? lastEventAt(task, 'claimed')) }
 }
 
-/** The holder chip's tooltip: the full sentence behind the compact phrase. */
-function holderTitle(task: Task, holder: Holder, reviewerQuiet: boolean): string {
+/** The holder chip's tooltip: the full sentence behind the compact phrase.
+ *  Exported (v0.7.3) so the mini drawer's holder row explains itself in the
+ *  exact words the card and the drawer use. */
+export function holderTitle(task: Task, holder: Holder, reviewerQuiet: boolean): string {
   const parts: string[] = []
   if (task.waiting_on) {
     // Waiting first: a wait with no named who is still a wait (and not claimable).
@@ -830,6 +848,8 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   const [assignPickerId, setAssignPickerId] = useState<string | null>(null)
   // The「? 指南」overlay.
   const [guideOpen, setGuideOpen] = useState(props.initialGuideOpen === true)
+  // The「ⓘ 关于」popover (v0.7.3): same overlay discipline as the guide.
+  const [aboutOpen, setAboutOpen] = useState(props.initialAboutOpen === true)
 
   // Follow the current session's workspace.
   useEffect(() => {
@@ -849,27 +869,45 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   }, [store])
 
   // ESC aborts a pending assignment (no request fires). Held back while the
-  // guide is up: that overlay owns the key first (escapeTarget's layer order).
+  // guide / about layer is up: that overlay owns the key first (escapeTarget's
+  // layer order).
   useEffect(() => {
     if (!assignPickerId) return
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return
-      if (escapeTarget({ guide: guideOpen, picker: true, drawer: false }, event) !== 'picker') return
+      if (escapeTarget({ about: aboutOpen, guide: guideOpen, picker: true, drawer: false }, event) !== 'picker') return
       setAssignPickerId(null)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [assignPickerId, guideOpen])
+  }, [assignPickerId, guideOpen, aboutOpen])
 
-  // ESC closes the guide overlay (the topmost layer).
+  // ESC closes the guide overlay. It yields to the about popover, which floats
+  // above it (z 41 > 31) — the same one-key-one-layer rule the drawer obeys.
   useEffect(() => {
     if (!guideOpen) return
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setGuideOpen(false)
+      if (event.key !== 'Escape') return
+      if (escapeTarget({ about: aboutOpen, guide: true, picker: false, drawer: false }, event) !== 'guide') return
+      setGuideOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [guideOpen])
+  }, [guideOpen, aboutOpen])
+
+  // ESC closes the「关于」popover — the topmost layer of the panel (z 41). While
+  // it is up nothing underneath (guide / picker / drawer) may react, which is
+  // exactly what escapeTarget's order encodes.
+  useEffect(() => {
+    if (!aboutOpen) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      if (escapeTarget({ about: true, guide: false, picker: false, drawer: false }, event) !== 'about') return
+      setAboutOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [aboutOpen])
 
   const board = state.board
   const tasks = useMemo(() => (board ? Object.values(board.tasks) : []), [board])
@@ -911,14 +949,15 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
 
   // ESC closes the right-hand drawer (the create form and the task detail),
   // matching the mini board's unwind: one layer at a time, innermost first.
-  // The guide can sit on top of the drawer, so it swallows the first Escape
-  // (its own effect above) while this one is held back by `guideOpen` — a
-  // single keypress must never tear down two layers at once.
+  // The guide / about layers can sit on top of the drawer, so they swallow the
+  // first Escape (their own effects above) while this one is held back by
+  // `guideOpen` / `aboutOpen` — a single keypress must never tear down two
+  // layers at once.
   // The drawer hosts real inputs, so the guard keeps ESC from stealing a key a
   // focused control already handled: such a control calls preventDefault and
   // the drawer stays put.
   useEffect(() => {
-    if (!drawerOpen || guideOpen || assignPickerId) return
+    if (!drawerOpen || guideOpen || aboutOpen || assignPickerId) return
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape' || event.defaultPrevented) return
       setCreateOpen(false)
@@ -1006,7 +1045,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
 
   return (
     <div style={styles.root} ref={rootHeightRef}>
-      <TopBar state={state} store={store} total={tasks.length} onCreate={() => setCreateOpen(true)} onGuide={() => setGuideOpen(true)} />
+      <TopBar state={state} store={store} total={tasks.length} onCreate={() => setCreateOpen(true)} onGuide={() => setGuideOpen(true)} onAbout={() => setAboutOpen(true)} />
       {state.error && (
         <div style={styles.noticeError}>
           <span style={styles.noticeText}>{state.error}</span>
@@ -1129,12 +1168,26 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
           onClose={() => setGuideOpen(false)}
         />
       )}
+      {aboutOpen && (
+        <AboutOverlay
+          version={TB_VERSION}
+          boardFile={state.boardFile}
+          cwd={state.cwd}
+          tasks={tasks.length}
+          // 花名册 = the board's own `actors` map (who has been seen here), NOT
+          // knownActors() — that one is the union of names MENTIONED by tasks and
+          // is the assignment picker's list, a different (smaller) set.
+          roster={board ? Object.keys(board.actors ?? {}).length : 0}
+          boardVersion={board ? board.version : null}
+          onClose={() => setAboutOpen(false)}
+        />
+      )}
     </div>
   )
 }
 
-/** Top bar: title, workspace, count, view switch, refresh, guide, new task. */
-function TopBar({ state, store, total, onCreate, onGuide }: { state: TaskboardState; store: TaskboardStore; total: number; onCreate(): void; onGuide(): void }): JSX.Element {
+/** Top bar: title, workspace, count, view switch, refresh, guide, about, new task. */
+function TopBar({ state, store, total, onCreate, onGuide, onAbout }: { state: TaskboardState; store: TaskboardStore; total: number; onCreate(): void; onGuide(): void; onAbout(): void }): JSX.Element {
   return (
     <header style={styles.topbar}>
       <span style={styles.topbarTitle}>{L('看板', 'Board')}</span>
@@ -1161,6 +1214,11 @@ function TopBar({ state, store, total, onCreate, onGuide }: { state: TaskboardSt
       </button>
       <button type="button" className="tb-iconbtn" onClick={() => void store.refresh()} title={L('刷新', 'Refresh')}>
         ↻
+      </button>
+      {/* ⓘ sits with「?」and「↻」— the three quiet icon buttons are the
+          panel's meta row; the primary「+ 新建任务」stays last. */}
+      <button type="button" className="tb-iconbtn" onClick={onAbout} title={L('关于', 'About')}>
+        ⓘ
       </button>
       <button type="button" className="tb-btn tb-btn-primary" onClick={onCreate}>
         {L('+ 新建任务', '+ New task')}
@@ -2786,6 +2844,117 @@ function GuideOverlay({ cli, cwd, boardFile, onClose }: { cli: string | null; cw
   )
 }
 
+/**
+ * The「关于」(About) popover (v0.7.3) — the owner's「留个关于的按钮，里面放一些
+ * 关于的信息，留个连接去 github」.
+ *
+ * Three blocks, in the order a reader actually wants them:
+ *
+ *   1. WHAT — the name, the BUILD-INJECTED version and one sentence saying
+ *      what the thing is (aboutTagline);
+ *   2. WHERE THE DATA IS — the transparency table (aboutFacts): this board's
+ *      file, how many cards and actors are in it, the board format version and
+ *      the plugin id that wrote it, closed by the plain 「没有服务器」 sentence.
+ *      This is the only block an「关于」can say that a README cannot;
+ *   3. WHERE TO GO — the four GitHub entries (repo · issues · collaboration
+ *      spec · release notes), every one target="_blank" rel="noreferrer".
+ *
+ * The version is never hand-written here: about.ts holds the injected value and
+ * the `dev` fallback, scripts/build.mjs is the one place that defines it.
+ */
+function AboutOverlay({ version, boardFile, cwd, tasks, roster, boardVersion, onClose }: {
+  version: string
+  boardFile: string | null
+  cwd: string | null
+  tasks: number
+  roster: number
+  boardVersion: number | null
+  onClose(): void
+}): JSX.Element {
+  const facts = aboutFacts({ boardFile, cwd, tasks, roster, boardVersion, pluginId: CLIENT_PLUGIN_ID })
+  return (
+    <>
+      <div style={styles.aboutBackdrop} onClick={onClose} />
+      <div style={styles.aboutCard} role="dialog" aria-label={L('关于', 'About')}>
+        <div style={styles.guideHead}>
+          <span style={styles.guideTitle}>{L('关于', 'About')}</span>
+          <button type="button" className="tb-iconbtn" onClick={onClose} title={L('关闭（Esc）', 'Close (Esc)')}>
+            ×
+          </button>
+        </div>
+        <div style={styles.aboutBody}>
+          <div style={styles.aboutNameRow}>
+            <span style={styles.aboutName}>{CLIENT_PLUGIN_ID}</span>
+            <span
+              style={styles.aboutVersion}
+              title={L('版本由构建时从 package.json 注入', 'Version injected from package.json at build time')}
+            >
+              {aboutVersionLabel(version)}
+            </span>
+          </div>
+          <p style={styles.aboutTagline}>{aboutTagline()}</p>
+
+          <section style={styles.aboutSection}>
+            <div style={styles.guideH}>{L('本地透明度', 'Local transparency')}</div>
+            <div style={styles.aboutFacts}>
+              {facts.map((fact) => (
+                // The board FILE gets its own full-width row: an absolute path is
+                // the one value here that must not be truncated, and the 66px
+                // label column would have forced it onto two lines (right-
+                // truncating it hid exactly the readable tail). Every other fact
+                // is a short number/id and keeps the label→value grid.
+                fact.key === 'file' ? (
+                  <div key={fact.key} style={styles.aboutFactFile}>
+                    <span style={styles.aboutFactLabel}>{fact.label}</span>
+                    <span style={styles.aboutFactPath} title={fact.value}>{fact.value}</span>
+                  </div>
+                ) : (
+                  <div key={fact.key} style={styles.aboutFactRow}>
+                    <span style={styles.aboutFactLabel}>{fact.label}</span>
+                    <span style={styles.aboutFactValue} title={fact.value}>{fact.value}</span>
+                  </div>
+                )
+              ))}
+            </div>
+            <p style={styles.aboutNote}>{aboutLocalNote()}</p>
+          </section>
+
+          <section style={styles.aboutSection}>
+            <div style={styles.guideH}>{L('链接', 'Links')}</div>
+            <div style={styles.aboutLinks}>
+              {aboutLinks().map((link) => (
+                <a
+                  key={link.key}
+                  className="tb-about-link"
+                  style={styles.aboutLink}
+                  href={link.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={link.href}
+                >
+                  <span style={styles.aboutLinkLabel}>{link.label}</span>
+                  <span style={styles.aboutLinkHint}>{link.hint}</span>
+                </a>
+              ))}
+            </div>
+          </section>
+
+          <div style={styles.aboutFoot}>
+            <span>{LICENSE}</span>
+            <span>·</span>
+            <span>
+              {L('作者', 'by')}{' '}
+              <a className="tb-about-link" style={styles.aboutFootLink} href={AUTHOR_URL} target="_blank" rel="noreferrer">
+                {AUTHOR}
+              </a>
+            </span>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
 // ------------------------------------------------------------------ styles
 
 const styles: Record<string, CSSProperties> = {
@@ -2941,7 +3110,6 @@ const styles: Record<string, CSSProperties> = {
   cardMetaTop: { display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, lineHeight: '15px', minWidth: 0 },
   dot: { width: 8, height: 8, borderRadius: 4, flexShrink: 0 },
   cardStatus: { flexShrink: 0, color: DIM, fontSize: 10 },
-  cardSep: { flexShrink: 0, color: FAINT, fontSize: 10 },
   cardFact: { color: FAINT, fontSize: 10, flexShrink: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   // 记号本身稍微提亮一档：它是"这是什么字段"的锚，比值更需要被一眼看到
   cardMark: { color: DIM, marginRight: 3 },
@@ -2967,7 +3135,6 @@ const styles: Record<string, CSSProperties> = {
   cardFoot: { display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, minWidth: 0 },
   cardWho: { display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'nowrap', minWidth: 0, flex: '0 1 auto' },
   cardAge: { marginLeft: 'auto', color: FAINT, fontSize: 10, flexShrink: 0 },
-  reviewerBadge: { maxWidth: '100%' },
   // One line ⇒ the chip truncates instead of wrapping — which is why its text
   // is the compact 「◷ who · 1h12m」 (full sentence + question live in the
   // tooltip): the AGE is the half that says "this is stuck" and must survive.
@@ -2977,7 +3144,6 @@ const styles: Record<string, CSSProperties> = {
   cardWaitWho: { overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 },
   cardHoldMark: { flexShrink: 0, color: DIM, marginRight: 3 },
   cardHoldAge: { flexShrink: 0, color: FAINT, fontSize: 10 },
-  cardWaitAge: { flexShrink: 0 },
   // The human strip: the only warn-tinted surface on the board (amber, never
   // alarm-red — the shell has no warn-bg token, so the raised surface plus a
   // warn left rule carries the emphasis).
@@ -3290,4 +3456,87 @@ const styles: Record<string, CSSProperties> = {
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
   },
   snippetCopy: { position: 'absolute', top: 24, right: 8, zIndex: 1 },
+  // The「关于」popover (v0.7.3). A small centered card above EVERYTHING (backdrop
+  // 40 / card 41 — over the guide's 30/31 and the drawer's 21): ⓘ is the last
+  // button a reader reaches for, and it must never end up behind a layer it was
+  // opened from. Narrower than the guide on purpose — this is a card, not a
+  // document; the transparency values get one row each and truncate.
+  aboutBackdrop: { position: 'absolute', inset: 0, background: MASK, zIndex: 40 },
+  aboutCard: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    transform: 'translate(-50%, -50%)',
+    width: 420,
+    maxWidth: '94%',
+    maxHeight: '88%',
+    display: 'flex',
+    flexDirection: 'column',
+    background: BG,
+    border: `1px solid ${BORDER_STRONG}`,
+    borderRadius: 10,
+    boxShadow: '0 16px 44px rgba(0,0,0,0.22)',
+    zIndex: 41,
+    overflow: 'hidden',
+  },
+  aboutBody: {
+    flex: 1,
+    minHeight: 0,
+    overflowY: 'auto',
+    padding: '12px 16px 16px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+    fontSize: 12.5,
+    lineHeight: 1.65,
+  },
+  aboutNameRow: { display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' },
+  aboutName: { fontSize: 14, fontWeight: 600 },
+  aboutVersion: {
+    fontSize: 10.5,
+    color: LINK,
+    background: HOVER_BG,
+    borderRadius: 999,
+    padding: '1px 8px',
+    whiteSpace: 'nowrap',
+  },
+  aboutTagline: { margin: 0, color: DIM },
+  aboutSection: { display: 'flex', flexDirection: 'column', gap: 6, borderTop: `1px solid ${BORDER}`, paddingTop: 10 },
+  aboutFacts: { display: 'flex', flexDirection: 'column', gap: 3 },
+  aboutFactRow: { display: 'grid', gridTemplateColumns: '66px minmax(0, 1fr)', alignItems: 'baseline', gap: 10 },
+  aboutFactLabel: { fontSize: 10, color: DIM },
+  aboutFactValue: {
+    minWidth: 0,
+    fontSize: 11.5,
+    textAlign: 'right',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  },
+  // The board path gets a full-width row of its own（见 aboutFacts 的 file 行）:
+  // 标签在上、路径在下左对齐 —— 388px 足够放下一条绝对路径，overflowWrap 只是
+  // 兜底（真有更长的 workspace 路径时换行，而不是把对话框撑宽）。
+  aboutFactFile: { display: 'flex', flexDirection: 'column', gap: 1, marginBottom: 2 },
+  aboutFactPath: {
+    minWidth: 0,
+    fontSize: 11.5,
+    overflowWrap: 'anywhere',
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  },
+  aboutNote: { margin: 0, fontSize: 11.5, color: FAINT },
+  aboutLinks: { display: 'flex', flexDirection: 'column', gap: 1 },
+  aboutLink: { display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0, borderRadius: 6, padding: '3px 6px', color: LINK, textDecoration: 'none' },
+  aboutLinkLabel: { flexShrink: 0, fontSize: 12 },
+  aboutLinkHint: {
+    marginLeft: 'auto',
+    minWidth: 0,
+    fontSize: 10.5,
+    color: FAINT,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  aboutFoot: { display: 'flex', alignItems: 'center', gap: 6, borderTop: `1px solid ${BORDER}`, paddingTop: 10, fontSize: 11, color: FAINT },
+  aboutFootLink: { color: LINK, textDecoration: 'none' },
 }

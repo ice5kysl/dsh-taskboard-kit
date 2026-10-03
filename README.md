@@ -129,6 +129,19 @@ you would get a board whose `done` is still treated as terminal without any hint
 Naming `@0.7.2` opts that release out of the gate and installs what you asked for.
 Once a release is more than a day old, a bare `add` finds it too.
 
+<a id="release-notes"></a>
+## v0.7.3 — the ⓘ About card, one holder line everywhere, two cleanups
+
+**Client-side only: refresh the page — no `dsh web` restart needed.** The「关于」links are the only thing here that ever leaves your machine, and only when you click one.
+
+1. **The「关于」card (ⓘ, next to `?` and `↻`).** Name + version (the version is **injected at build time** from `package.json` via esbuild's `define`; a build that forgets it falls back to `dev` rather than printing nothing), one sentence on what this is, and then the block that is actually worth reading — **local transparency**: the board file's absolute path, how many cards and how many roster entries it holds, the data-format version (`board.version`), the plugin id, and the plain statement that **all of it lives in that one JSON file: no server, no accounts, no cloud**. Below that, four GitHub entries — repository · report an issue · the collaboration spec (`docs/COLLABORATION.md`) · these release notes — every one `target="_blank" rel="noreferrer"`, plus MIT and the author. Esc closes it (it is the topmost layer: the key never falls through to a drawer or the guide underneath).
+2. **The holder line is now the panel's one answer to「球在谁手上」— on every surface.** The card, the drawer and the status-bar mini drawer all render `mark + name` from the same derivation (`currentHolder`), strictly one line: `➤` to submit · `○` to claim (pool) · `◷` to answer / to reply (parked on a human / an agent) · `⚑` to decide (review) · `⌂` to settle (done). `closed` has no holder. It is derived from the state machine, not from `assignee`: in `review` the assignee is frozen (the reviewer holds the ball) and in `done` the reviewer is cleared (the creator owes the settle), so reading「当前处理人」literally points at the **wrong person** in exactly those stages. The mini drawer used to stack three per-field badges that said the same thing twice; it now shows this single line.
+3. **Title prefixes are stripped for DISPLAY only.** A leading `【owner】 T-93 ·` that merely repeats what the card already shows is dropped from the rendered title — the untouched original stays in the tooltip. Nothing is rewritten in the board file.
+4. **Long names truncate instead of spilling.** `.tb-badge-outline` (and every sibling 10px pill) now carries `max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap`: a long actor name used to overflow its dashed border and get clipped mid-glyph by the lane, which read as broken layout rather than「the name is long」.
+5. **Two cleanups**: three dead style keys from before 0.7.2 (`cardSep` / `reviewerBadge` / `cardWaitAge`, each defined once and referenced nowhere) are gone.
+
+**Verified**: `npm test` **214 checks green** + clean typecheck; the version fallback, the holder marks, the badge ellipsis rule and the Esc layering each carry a **mutation check** (break it ⇒ that test goes red).
+
 ## v0.7.2 — making the cards and the stats readable at a glance
 
 Four rounds of owner feedback (2026-10-01), shipped together. **Client-side only: refresh the page — no `dsh web` restart needed.**

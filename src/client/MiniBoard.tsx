@@ -46,7 +46,19 @@ import { stalenessOf } from '../shared/board.ts'
 import { planDrop } from '../shared/dnd.ts'
 import { knownActors } from './actors.ts'
 import { L } from './locale.ts'
-import { AssignPicker, DetailDrawer, ageLabel, humanWaiting, isQuietActor, waitLabel } from './BoardPanel.tsx'
+import {
+  AssignPicker,
+  DetailDrawer,
+  HOLDER_MARKS,
+  ageLabel,
+  currentHolder,
+  holderActionLabel,
+  holderTitle,
+  humanWaiting,
+  isQuietActor,
+  waitKindLabel,
+  waitLabel,
+} from './BoardPanel.tsx'
 import type { TaskboardState, TaskboardStore } from './store.ts'
 import { getTaskboardStore } from './store.ts'
 import { BG, BG_RAISED, BORDER, BORDER_STRONG, DIM, FAINT, FG, LINK, ON_PRIMARY, PRIORITY_COLORS, WARN, ensureTaskboardStyles } from './theme.ts'
@@ -414,16 +426,25 @@ function MiniSection({
   )
 }
 
-/** One compact task row: #N · title (truncated) · assignee · dot · ◆value.
- *  Collaboration marks (v0.5.4): a quiet stale dot after the ref when the card
- *  has sat in its column past the SLA, and an amber badge when it is parked on
- *  someone — a row waiting on the human must not look like ordinary work. */
+/**
+ * One compact task row: `#N · [stale dot] · title (truncated) · 持球行 · dot · ◆value`.
+ *
+ * v0.7.3 — the row stops stacking per-field badges (wait + reviewer + assignee
+ * said the same thing three times, and a review row could read 「审核 kimi」 and
+ * 「kimi」 at once). It renders the SAME single derivation the card and the
+ * drawer use — `currentHolder` — so 「球在谁手上」 has exactly one answer on every
+ * surface: one chip carrying the action's mark (`➤ work / ○ claim / ◷ answer &
+ * reply / ⚑ decide / ⌂ settle`, the shared HOLDER_MARKS) plus the holder's name,
+ * strictly ONE line (no wrap; the name ellipsizes, the tooltip keeps the whole
+ * sentence). The chip is amber-outlined while the card is parked on someone —
+ * a waiting card must not look like ordinary work.
+ */
 function MiniRow({ task, board, dragging, dnd, busy, onOpen }: { task: Task; board: Board | null; dragging: boolean; dnd: MiniDnd; busy: boolean; onOpen(): void }): JSX.Element {
   const now = Date.now()
   const staleness = stalenessOf(task, now)
   const waiting = task.waiting_on
-  const reviewer = task.status === 'review' ? task.reviewer : null
-  const reviewerQuiet = reviewer ? isQuietActor(board, reviewer, now) : false
+  const holder = currentHolder(task, board, now)
+  const holderQuiet = holder?.who ? isQuietActor(board, holder.who, now) : false
   return (
     <button
       type="button"
@@ -449,26 +470,19 @@ function MiniRow({ task, board, dragging, dnd, busy, onOpen }: { task: Task; boa
         />
       )}
       <span style={styles.miniTitle}>{task.title}</span>
-      {waiting && (
-        <span className="tb-badge-wait" style={styles.miniWait} title={waiting.question}>
-          {waitLabel(waiting)}
-        </span>
-      )}
-      {reviewer && (
+      {holder && (
         <span
-          className="tb-badge-outline"
-          style={reviewerQuiet ? { ...styles.miniAssignee, color: WARN } : styles.miniAssignee}
-          title={reviewerQuiet
-            ? L('{who} 欠这次审核，但已久未活动', '{who} owes this review but has been quiet', { who: reviewer })
-            : L('审核人：{who}', 'reviewer: {who}', { who: reviewer })}
+          className={waiting ? 'tb-badge-wait' : 'tb-badge-outline'}
+          style={styles.miniHolder}
+          // The action words lead the tooltip (the mark alone is 10px of
+          // glyph); the rest is the same sentence the card and drawer show.
+          title={`${holderActionLabel(holder.action)} · ${holderTitle(task, holder, holderQuiet)}`}
         >
-          {reviewerQuiet ? L('审核 {who}（久未活动）', 'review {who} (inactive)', { who: reviewer }) : L('审核 {who}', 'review {who}', { who: reviewer })}
+          <span style={styles.miniHoldMark}>{HOLDER_MARKS[holder.action]}</span>
+          <span style={styles.miniHolderWho}>
+            {holder.who ?? (waiting ? waitKindLabel(waiting.kind) : L('池子里', 'the pool'))}
+          </span>
         </span>
-      )}
-      {task.assignee ? (
-        <span className="tb-badge" style={styles.miniAssignee} title={task.assignee}>{task.assignee}</span>
-      ) : (
-        <span className="tb-badge-outline" style={styles.miniAssignee}>{L('待认领', 'unclaimed')}</span>
       )}
       <span
         style={{ ...styles.miniDot, background: PRIORITY_COLORS[task.priority] ?? FAINT }}
@@ -597,8 +611,11 @@ const styles: Record<string, CSSProperties> = {
   miniEmpty: { color: FAINT, fontSize: 11, padding: '2px 8px 6px' },
   miniRef: { flexShrink: 0, fontSize: 10.5, color: FAINT, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
   miniTitle: { flex: 1, minWidth: 0, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  miniAssignee: { flexShrink: 0 },
-  miniWait: { flexShrink: 0, maxWidth: 120 },
+  // 持球行（v0.7.3）：一枚药丸，严格一行——容器不换行、名字自己省略（inline-flex
+  // 上的 text-overflow 管不到子元素，所以 who 必须自带 min-width:0 + ellipsis）。
+  miniHolder: { flexShrink: 0, maxWidth: 150, minWidth: 0 },
+  miniHoldMark: { flexShrink: 0, color: DIM, marginRight: 3 },
+  miniHolderWho: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' },
   miniDot: { width: 7, height: 7, borderRadius: 4, flexShrink: 0 },
   miniValue: { flexShrink: 0, fontSize: 10, color: FAINT, border: `1px solid ${FAINT}`, borderRadius: 999, padding: '0 5px', lineHeight: '14px' },
   miniClosedBar: {
