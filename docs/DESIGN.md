@@ -85,3 +85,24 @@ React 树里的 `<style>{TB_CSS}</style>` 天然是「无主」的，于是：
 
 dsh 自己的包（ui-conversation 等）建标签时就打 `data-plugin`，所以从不被抢；kit 现在同款做法。`ensureTaskboardStyles` 幂等（按 `data-plugin-css` 去重）且自愈（标签没了下次挂载补回），`apply()` 与每个 surface 挂载都会调一次。回归测试用假 DOM 把 loader 的 claim → remove 两步都跑了一遍（`tests/client.test.mjs`），去掉 `data-plugin` 即红。
 
+## 不要用中文/图标去 grep 构建产物（0.7.x 的坑，两次差点误判）
+
+esbuild 默认 `charset: 'ascii'`，会把**所有非 ASCII 字符转义成 `\uXXXX`** 写进 `lib/*.js`：
+
+```
+源码里的  ➤  ✎  ◷  ⚑  ⌂  ○          以及全部中文文案
+产物里是  \u27a4 \u270e \u25f7 \u2691 \u2302 \u25cb   以及 \u5f85\u8ba4\u9886 …
+```
+
+**后果**：`grep '➤' lib/client.js`、`grep '待认领' lib/client.js` 一律**返回 0** —— 看起来像"构建没生效/特性没打进去"，而实际只是转义了。
+
+**正确核法**（按可靠性排序）：
+
+1. **渲染**：看页面/截图（最终真相）；
+2. **查转义码**：`grep -c '\\u27a4' lib/client.js`（注意 shell 里要写成 `'\\u27a4'`）；
+3. **查 ASCII 标识符**：函数名/样式键/导出名（`currentHolder`、`cardMetaTop`、`drawerActions`）不受转义影响，是最省事的探针。
+
+线上排查同理：`curl "…/plugins/??dsh-taskboard-kit/client.js&rev=<内容指纹>"` 之后，**用 ASCII 名或转义码核**，别用中文/字形。
+
+**这条的代价**：0.7.x 期间我两次据此差点误判"构建没生效/特性没打进去"，白查一轮；写在这里，下次直接查 ASCII 名。
+
