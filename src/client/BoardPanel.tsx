@@ -36,7 +36,7 @@
  * @module dsh-taskboard-kit/client-panel
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type MutableRefObject, type ReactNode } from 'react'
 import {
   BOARD_COLUMNS,
   TASK_VALUES,
@@ -102,11 +102,12 @@ import {
   LINK,
   MASK,
   PRIORITY_COLORS,
+  TB_TOOLBAR,
   TERTIARY,
   WARN,
   ensureTaskboardStyles,
 } from './theme.ts'
-import { boardKeyIntent, columnLabel, escapeTarget, groupByOwner, keyboardOrderFor, priorityLabel, revealIntoView, runPlanOps, stepSelection, taskRef, useSessionCwd, valueText, type OwnerGroup, type RevealBox, type SessionListLike } from './view.ts'
+import { boardKeyIntent, columnLabel, escapeTarget, groupByOwner, keyboardOrderFor, priorityLabel, revealIntoView, runPlanOps, stepSelection, taskRef, toolbarModeFor, toolbarPlanFor, useSessionCwd, valueText, type OwnerGroup, type RevealBox, type SessionListLike, type ToolbarIdentityPart, type ToolbarMode } from './view.ts'
 
 // taskRef moved to view.ts (shared with the mini board); keep the export path.
 export { taskRef } from './view.ts'
@@ -125,6 +126,15 @@ export interface BoardPanelProps {
   initialGuideOpen?: boolean
   /** Open the「关于」popover on first render (tests/SSR drive the open state). */
   initialAboutOpen?: boolean
+  /**
+   * Seed the toolbar's degradation band (T-38). The band is normally MEASURED
+   * from the toolbar's own width (ResizeObserver), but SSR has no layout at all
+   * — tests pin a band here to render the compact / menu toolbar without a
+   * browser. A live panel overrides it on the first measurement.
+   */
+  initialToolbarMode?: ToolbarMode
+  /** Open the「⋯」toolbar dropdown on first render (tests drive the open state). */
+  initialToolbarMenuOpen?: boolean
 }
 
 /** Drag-and-drop wiring the panel hands down to the lanes and their cards. */
@@ -896,6 +906,13 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   const [guideOpen, setGuideOpen] = useState(props.initialGuideOpen === true)
   // The「ⓘ 关于」popover (v0.7.3): same overlay discipline as the guide.
   const [aboutOpen, setAboutOpen] = useState(props.initialAboutOpen === true)
+  // The「⋯」toolbar dropdown (T-38). It only exists in the narrowest band, and it
+  // lives HERE (not inside TopBar) because it is a layer of the panel's own
+  // Escape stack: the drawer has to stand down while it is up (see below).
+  const [toolbarMenuOpen, setToolbarMenuOpen] = useState(props.initialToolbarMenuOpen === true)
+  // Escape puts the caret back on the「⋯」button: the Tab walk must not lose its
+  // place just because the popover it came from is gone.
+  const toolbarMenuButtonRef = useRef<HTMLButtonElement | null>(null)
 
   // Follow the current session's workspace.
   useEffect(() => {
@@ -915,18 +932,18 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   }, [store])
 
   // ESC aborts a pending assignment (no request fires). Held back while the
-  // guide / about layer is up: that overlay owns the key first (escapeTarget's
-  // layer order).
+  // guide / about / toolbar-menu layer is up: that layer owns the key first
+  // (escapeTarget's layer order).
   useEffect(() => {
     if (!assignPickerId) return
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return
-      if (escapeTarget({ about: aboutOpen, guide: guideOpen, picker: true, drawer: false }, event) !== 'picker') return
+      if (escapeTarget({ about: aboutOpen, guide: guideOpen, toolbarMenu: toolbarMenuOpen, picker: true, drawer: false }, event) !== 'picker') return
       setAssignPickerId(null)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [assignPickerId, guideOpen, aboutOpen])
+  }, [assignPickerId, guideOpen, aboutOpen, toolbarMenuOpen])
 
   // ESC closes the guide overlay. It yields to the about popover, which floats
   // above it (z 41 > 31) — the same one-key-one-layer rule the drawer obeys.
@@ -934,26 +951,43 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
     if (!guideOpen) return
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return
-      if (escapeTarget({ about: aboutOpen, guide: true, picker: false, drawer: false }, event) !== 'guide') return
+      if (escapeTarget({ about: aboutOpen, guide: true, toolbarMenu: toolbarMenuOpen, picker: false, drawer: false }, event) !== 'guide') return
       setGuideOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [guideOpen, aboutOpen])
+  }, [guideOpen, aboutOpen, toolbarMenuOpen])
 
   // ESC closes the「关于」popover — the topmost layer of the panel (z 41). While
-  // it is up nothing underneath (guide / picker / drawer) may react, which is
-  // exactly what escapeTarget's order encodes.
+  // it is up nothing underneath (guide / menu / picker / drawer) may react,
+  // which is exactly what escapeTarget's order encodes.
   useEffect(() => {
     if (!aboutOpen) return
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return
-      if (escapeTarget({ about: true, guide: false, picker: false, drawer: false }, event) !== 'about') return
+      if (escapeTarget({ about: true, guide: false, toolbarMenu: toolbarMenuOpen, picker: false, drawer: false }, event) !== 'about') return
       setAboutOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [aboutOpen])
+  }, [aboutOpen, toolbarMenuOpen])
+
+  // ESC closes the「⋯」dropdown (T-38, z 27). It is a first-class layer of the
+  // SAME stack — not a second Escape semantics: it loses to the guide (31) and
+  // the about popover (41) above it, and wins over the picker (25) and the
+  // drawer (21) below — which is why the drawer's own handler stands down while
+  // it is open (one keypress, one layer).
+  useEffect(() => {
+    if (!toolbarMenuOpen) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      if (escapeTarget({ about: aboutOpen, guide: guideOpen, toolbarMenu: true, picker: false, drawer: false }, event) !== 'toolbarMenu') return
+      setToolbarMenuOpen(false)
+      toolbarMenuButtonRef.current?.focus()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [toolbarMenuOpen, aboutOpen, guideOpen])
 
   const board = state.board
   const tasks = useMemo(() => (board ? Object.values(board.tasks) : []), [board])
@@ -1007,15 +1041,15 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
 
   // ESC closes the right-hand drawer (the create form and the task detail),
   // matching the mini board's unwind: one layer at a time, innermost first.
-  // The guide / about layers can sit on top of the drawer, so they swallow the
-  // first Escape (their own effects above) while this one is held back by
-  // `guideOpen` / `aboutOpen` — a single keypress must never tear down two
-  // layers at once.
+  // The guide / about / toolbar-menu layers can sit on top of the drawer, so
+  // they swallow the first Escape (their own effects above) while this one is
+  // held back by `guideOpen` / `aboutOpen` / `toolbarMenuOpen` — a single
+  // keypress must never tear down two layers at once.
   // The drawer hosts real inputs, so the guard keeps ESC from stealing a key a
   // focused control already handled: such a control calls preventDefault and
   // the drawer stays put.
   useEffect(() => {
-    if (!drawerOpen || guideOpen || aboutOpen || assignPickerId) return
+    if (!drawerOpen || guideOpen || aboutOpen || toolbarMenuOpen || assignPickerId) return
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape' || event.defaultPrevented) return
       setCreateOpen(false)
@@ -1023,7 +1057,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [drawerOpen, guideOpen, assignPickerId, store])
+  }, [drawerOpen, guideOpen, aboutOpen, toolbarMenuOpen, assignPickerId, store])
 
   // j / k walk the board in VISUAL order; Enter opens the first card when
   // nothing is selected (T-36, v0.7.4). One predicate decides whether the key
@@ -1162,7 +1196,18 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
 
   return (
     <div style={styles.root} ref={rootRef}>
-      <TopBar state={state} store={store} total={tasks.length} onCreate={() => setCreateOpen(true)} onGuide={() => setGuideOpen(true)} onAbout={() => setAboutOpen(true)} />
+      <TopBar
+        state={state}
+        store={store}
+        total={tasks.length}
+        initialMode={props.initialToolbarMode ?? 'full'}
+        menuOpen={toolbarMenuOpen}
+        onMenuOpen={setToolbarMenuOpen}
+        menuButtonRef={toolbarMenuButtonRef}
+        onCreate={() => setCreateOpen(true)}
+        onGuide={() => setGuideOpen(true)}
+        onAbout={() => setAboutOpen(true)}
+      />
       {state.error && (
         <div style={styles.noticeError}>
           <span style={styles.noticeText}>{state.error}</span>
@@ -1303,44 +1348,371 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   )
 }
 
-/** Top bar: title, workspace, count, view switch, refresh, guide, about, new task. */
-function TopBar({ state, store, total, onCreate, onGuide, onAbout }: { state: TaskboardState; store: TaskboardStore; total: number; onCreate(): void; onGuide(): void; onAbout(): void }): JSX.Element {
+// ------------------------------------------------------------ toolbar icons
+// T-38：导航区的图标必须是**同一种度量**。旧版是一个 ASCII `?` 加两个符号字形
+// （`↻` U+21BB / `ⓘ` U+24D8）：三个字符来自三套字体度量，`.tb-iconbtn` 的 CSS
+// 完全相同也对不齐 —— 这是「导航区排列不稳定」的第二条来源，CSS 修不了它。
+// 所以改成内联 SVG：16×16 视口、currentColor、1.5px 描边，包在 28×28 的居中盒
+// （.tb-toolbtn）里。不引图标库：几何照 16 视口手写，渲染尺寸就是 viewBox 尺寸，
+// 1.5 的 stroke-width 落到屏幕上就是 1.5px。
+
+/** 工具图标的图形名。`checkbox` = `含已关闭` 的方框/勾，`dot` = 菜单里的视角行。 */
+type ToolIconName = 'help' | 'info' | 'refresh' | 'more' | 'checkbox' | 'dot'
+
+/** 一个工具图标的图形（16 视口）。`checkbox` 是 `含已关闭` 的方框 / 勾。 */
+function ToolGlyph({ name, checked }: { name: ToolIconName; checked?: boolean }): JSX.Element {
+  switch (name) {
+    case 'help':
+      return (
+        <>
+          <circle cx="8" cy="8" r="6.6" />
+          <path d="M6.06 6a2 2 0 0 1 3.89.67c0 1.33-2 2-2 2" />
+          <path d="M8 11.33h.01" />
+        </>
+      )
+    case 'info':
+      return (
+        <>
+          <circle cx="8" cy="8" r="6.6" />
+          <path d="M8 10.67V8" />
+          <path d="M8 5.33h.01" />
+        </>
+      )
+    case 'refresh':
+      return (
+        <>
+          <path d="M13.66 10a6 6 0 1 1-1.41-6.24L15.33 6.67" />
+          <path d="M15.33 2.67v4h-4" />
+        </>
+      )
+    case 'more':
+      return (
+        <>
+          <circle cx="3.6" cy="8" r="1.15" fill="currentColor" stroke="none" />
+          <circle cx="8" cy="8" r="1.15" fill="currentColor" stroke="none" />
+          <circle cx="12.4" cy="8" r="1.15" fill="currentColor" stroke="none" />
+        </>
+      )
+    case 'dot':
+      return <circle cx="8" cy="8" r="2.6" fill="currentColor" stroke="none" />
+    case 'checkbox':
+      return (
+        <>
+          <rect x="2.5" y="2.5" width="11" height="11" rx="2.6" />
+          {checked ? <path d="M5.3 8.2l1.9 1.9 3.5-4.1" /> : null}
+        </>
+      )
+  }
+}
+
+/** 一个 16×16 的工具图标；`aria-hidden` —— 按钮自己带 title / aria-label。 */
+function ToolIcon({ name, checked, size = 16 }: { name: ToolIconName; checked?: boolean; size?: number }): JSX.Element {
   return (
-    <header style={styles.topbar}>
-      <span style={styles.topbarTitle}>{L('看板', 'Board')}</span>
-      {state.cwd && (
-        <span style={styles.topbarPath} title={state.cwd}>
-          {shortPath(state.cwd)}
-        </span>
-      )}
-      <span style={styles.topbarCount}>{L('{n} 个任务', '{n} tasks', { n: total })}</span>
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <ToolGlyph name={name} checked={checked} />
+    </svg>
+  )
+}
+
+/**
+ * 用 ResizeObserver 量**工具栏容器自己**的宽度（不是视口宽度）并给出降级档位。
+ *
+ * 量容器而不是视口，是因为这块面板可以被嵌进任意宽的宿主里：视口宽而面板窄是常态
+ * （抽屉、分栏），反过来也是。返回 callback ref，与 `useRootHeightSync` 同款 ——
+ * 卸载时自动断开。
+ *
+ * 宽度 0 不判档：后台标签页 / display:none 里量到的就是 0，据此收成 `menu` 会让
+ * 面板一露脸先闪一下窄样式；量到 0 就保持现状，等下一次真实的盒子变化。
+ * 没有 ResizeObserver（SSR / 老宿主）时停在播种档位（默认 `full`）——宁可画宽，
+ * 不可画窄：宽了只是多几个字，窄了是收走可点的东西。
+ */
+function useToolbarMode(initial: ToolbarMode): { mode: ToolbarMode; width: number | null; ref: (node: HTMLElement | null) => void } {
+  const [mode, setMode] = useState<ToolbarMode>(initial)
+  // 量到的容器宽度（px）：档位由它算，极窄档的"视图组搬进 ⋯"也由它算。
+  const [width, setWidth] = useState<number | null>(null)
+  const cleanupRef = useRef<(() => void) | null>(null)
+  const ref = useCallback((node: HTMLElement | null) => {
+    cleanupRef.current?.()
+    cleanupRef.current = null
+    if (!node || typeof ResizeObserver === 'undefined') return
+    const apply = (): void => {
+      const measured = node.getBoundingClientRect().width
+      if (!(measured > 0)) return
+      setWidth((prev) => (prev !== null && Math.abs(prev - measured) < 0.5 ? prev : measured))
+      const next = toolbarModeFor(measured)
+      setMode((prev) => (prev === next ? prev : next))
+    }
+    apply()
+    const observer = new ResizeObserver(apply)
+    observer.observe(node)
+    cleanupRef.current = () => observer.disconnect()
+  }, [])
+  return { mode, width, ref }
+}
+
+/**
+ * Top bar（T-38）: 三段 + 主操作 ——
+ * `[身份: 看板 · 路径 · N 个任务] …spacer… [视图组] [筛选组] [操作组] [主操作]`。
+ * 组内 4px（`? ⓘ`）· 组间 16px · 主操作前 12px（TB_TOOLBAR），每个可点控件都是
+ * 28px 高 / 6px 圆角的外壳；行内边距保持既有的 `10px 14px` 不动。
+ *
+ * 这一版修掉的三件事，也就是「排列和显示很不稳定」的三个来源：
+ *   · 「含已关闭」**常驻**：以前只在按负责人视角渲染，切视角时这一行凭空多/少一个
+ *     控件；现在任何视角它都在原位，只有 tooltip 随视角换说法；
+ *   · 三个图标是内联 SVG：`?`(ASCII) 与 `↻` / `ⓘ`(符号字形) 的字体度量不同，
+ *     靠 CSS 对齐不了；
+ *   · 动作与信息分开：信息 `? ⓘ` 相邻（组内 4px），`↻` 归动作侧紧邻主操作 ——
+ *     以前刷新夹在指南和关于中间。
+ *
+ * 窄档（toolbarPlanFor）：compact 收掉身份段的路径与计数、筛选 chip 只留方框，
+ * menu 再把筛选 chip 与 `? ⓘ ↻` 收进 `⋯`。**视图组与 `+ 新建任务` 永远在位** ——
+ * 唯一的例外是 menu 档里再窄于 TOOLBAR_VIEWS_MIN（360px）：那时视图组搬进 `⋯`
+ * （仍可达、仍能换视角），行里只剩主操作 + `⋯`，与卡片的极窄边界一致。
+ */
+function TopBar({
+  state,
+  store,
+  total,
+  initialMode,
+  menuOpen,
+  onMenuOpen,
+  menuButtonRef,
+  onCreate,
+  onGuide,
+  onAbout,
+}: {
+  state: TaskboardState
+  store: TaskboardStore
+  total: number
+  initialMode: ToolbarMode
+  menuOpen: boolean
+  onMenuOpen(open: boolean): void
+  menuButtonRef: MutableRefObject<HTMLButtonElement | null>
+  onCreate(): void
+  onGuide(): void
+  onAbout(): void
+}): JSX.Element {
+  const { mode, width, ref } = useToolbarMode(initialMode)
+  const plan = toolbarPlanFor(mode, width ?? undefined)
+  const keeps = (part: ToolbarIdentityPart): boolean => plan.identity.includes(part)
+
+  // 档位离开 menu（面板被拉宽）时把菜单收起来：宽档位根本不渲染它，但状态还开着
+  // 会让抽屉的 Esc 永远让位给一个看不见的层 —— 而且缩回来它会自己弹开。
+  useEffect(() => {
+    if (!plan.toolsInMenu && menuOpen) onMenuOpen(false)
+  }, [plan.toolsInMenu, menuOpen, onMenuOpen])
+
+  // 筛选 chip 接的是**当前视角自己的**那个「已结清」开关：按负责人视角 = 泳道里
+  // 是否包含已结清（includeClosed），按进度 / 统计视角 = 是否展开已结清列
+  // （showClosed）。一个控件、两种「已结清」，这正是 tooltip 必须分视角的原因 ——
+  // 也是它必须常驻的原因：切视角时控件不动，动的只是它管的东西。
+  const closedOn = state.groupBy === 'owner' ? state.includeClosed : state.showClosed
+  const setClosed = (on: boolean): void => {
+    if (state.groupBy === 'owner') store.setIncludeClosed(on)
+    else store.setShowClosed(on)
+  }
+  const closedTitle = state.groupBy === 'owner'
+    ? L('是否包含已结清的任务（已结清默认不进负责人泳道；已完成待收口的仍会显示）', 'Include settled tasks (they stay out of the owner lanes by default; finished-but-unsettled ones always show)')
+    : L('是否显示已结清列（关掉时收成右侧窄条）', 'Show the settled column (collapsed into a narrow strip when off)')
+
+  return (
+    <header style={styles.topbar} ref={ref}>
+      {/* 身份段：不是「组」，是标题 + 路径 + 计数的一条线（既有 8px 间距不动）。
+          它是唯一允许被压窄的一段 —— 超长路径靠 ellipsis 截断，不撑破这一行。 */}
+      <span style={styles.topbarIdentity}>
+        {keeps('title') && <span style={styles.topbarTitle}>{L('看板', 'Board')}</span>}
+        {keeps('path') && state.cwd && (
+          <span style={styles.topbarPath} title={state.cwd}>
+            {shortPath(state.cwd)}
+          </span>
+        )}
+        {keeps('count') && <span style={styles.topbarCount}>{L('{n} 个任务', '{n} tasks', { n: total })}</span>}
+      </span>
       <span style={styles.topbarSpacer} />
-      <ViewSwitch mode={state.groupBy} onSwitch={(mode) => store.setGroupBy(mode)} />
-      {state.groupBy === 'owner' && (
-        <label style={styles.doneToggle} title={L('负责人视角默认只显示未结清的任务（已完成但未收口的仍会显示）', 'The owner view hides settled tasks; finished-but-unsettled ones still show')}>
-          <input
-            type="checkbox"
-            checked={state.includeClosed}
-            onChange={(event) => store.setIncludeClosed(event.target.checked)}
-          />
-          {L('含已关闭', 'Include closed')}
-        </label>
+      {/* 视图组：永远在位 —— 行里放不下时（<TOOLBAR_VIEWS_MIN）它搬进 `⋯`，
+          而不是被删掉：窄面板上仍然换得了视角。 */}
+      {!plan.viewsInMenu && <ViewSwitch mode={state.groupBy} onSwitch={(next) => store.setGroupBy(next)} />}
+      {!plan.toolsInMenu && (
+        <ClosedChip on={closedOn} label={plan.chipLabel} title={closedTitle} onToggle={setClosed} style={styles.toolbarChip} />
       )}
-      <button type="button" className="tb-iconbtn" onClick={onGuide} title={L('使用指南', 'Guide')}>
-        ?
-      </button>
-      <button type="button" className="tb-iconbtn" onClick={() => void store.refresh()} title={L('刷新', 'Refresh')}>
-        ↻
-      </button>
-      {/* ⓘ sits with「?」and「↻」— the three quiet icon buttons are the
-          panel's meta row; the primary「+ 新建任务」stays last. */}
-      <button type="button" className="tb-iconbtn" onClick={onAbout} title={L('关于', 'About')}>
-        ⓘ
-      </button>
-      <button type="button" className="tb-btn tb-btn-primary" onClick={onCreate}>
+      {plan.toolsInMenu ? (
+        <ToolbarMenu
+          open={menuOpen}
+          onOpenChange={onMenuOpen}
+          buttonRef={menuButtonRef}
+          views={plan.viewsInMenu ? state.groupBy : null}
+          onView={(next) => store.setGroupBy(next)}
+          closedOn={closedOn}
+          closedTitle={closedTitle}
+          onClosed={setClosed}
+          store={store}
+          onGuide={onGuide}
+          onAbout={onAbout}
+        />
+      ) : (
+        <>
+          {/* 信息组：指南与关于相邻（组内 4px）—— 它们回答的是同一个问题：
+              「这个东西是什么 / 怎么用」。 */}
+          <span style={styles.toolbarGroup}>
+            <button type="button" className="tb-toolbtn" onClick={onGuide} title={L('使用指南', 'Guide')} aria-label={L('使用指南', 'Guide')}>
+              <ToolIcon name="help" />
+            </button>
+            <button type="button" className="tb-toolbtn" onClick={onAbout} title={L('关于', 'About')} aria-label={L('关于', 'About')}>
+              <ToolIcon name="info" />
+            </button>
+          </span>
+          {/* 动作组：刷新归动作侧、紧邻主操作（旧版它夹在指南和关于中间）。 */}
+          <button
+            type="button"
+            className="tb-toolbtn"
+            style={styles.toolbarGroup}
+            onClick={() => void store.refresh()}
+            title={L('刷新', 'Refresh')}
+            aria-label={L('刷新', 'Refresh')}
+          >
+            <ToolIcon name="refresh" />
+          </button>
+        </>
+      )}
+      <button type="button" className="tb-btn tb-btn-primary tb-toolbtn-primary" style={styles.toolbarPrimary} onClick={onCreate}>
         {L('+ 新建任务', '+ New task')}
       </button>
     </header>
+  )
+}
+
+/**
+ * `含已关闭` 的 toggle chip（T-38）：常驻、28px、方框 → 勾，选中态用宿主 accent
+ * 打底 + 勾记号（不用原生 checkbox —— 它跟着系统字体走、勾选框大小还随平台变，
+ * 和 28px 外壳对不齐）。文字只在 full 档位出现（compact 起收进 tooltip），方框
+ * 永远在 —— 它是状态本身，不是装饰。
+ */
+function ClosedChip({ on, label, title, onToggle, style }: { on: boolean; label: boolean; title: string; onToggle(on: boolean): void; style?: CSSProperties }): JSX.Element {
+  const text = L('含已关闭', 'Include closed')
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      className="tb-chip-toggle"
+      style={style}
+      title={title}
+      aria-label={text}
+      onClick={() => onToggle(!on)}
+    >
+      <ToolIcon name="checkbox" checked={on} />
+      {label ? <span>{text}</span> : null}
+    </button>
+  )
+}
+
+/**
+ * 最窄档位的 `⋯` 下拉：承接被收起来的 `含已关闭` 与 `? ⓘ ↻`。
+ *
+ * 三条行为都不另起一套：Esc 走 `escapeTarget` 的既有分层（effect 在面板里，这里
+ * 只渲染），Tab 是原生按钮顺序（每一行都是真 `<button>`），点外关用捕获阶段的
+ * pointerdown —— 不铺满屏遮罩，因为菜单开着时泳道和卡仍该是活的。
+ */
+function ToolbarMenu({
+  open,
+  onOpenChange,
+  buttonRef,
+  views,
+  onView,
+  closedOn,
+  closedTitle,
+  onClosed,
+  store,
+  onGuide,
+  onAbout,
+}: {
+  open: boolean
+  onOpenChange(open: boolean): void
+  buttonRef: MutableRefObject<HTMLButtonElement | null>
+  /** 当前视角 —— 只有极窄档（视图组搬进来时）才非 null。 */
+  views: BoardGrouping | null
+  onView(next: BoardGrouping): void
+  closedOn: boolean
+  closedTitle: string
+  onClosed(on: boolean): void
+  store: TaskboardStore
+  onGuide(): void
+  onAbout(): void
+}): JSX.Element {
+  const wrapRef = useRef<HTMLSpanElement | null>(null)
+  useEffect(() => {
+    if (!open) return
+    const onDown = (event: Event): void => {
+      const node = wrapRef.current
+      const target = event.target
+      if (node && target instanceof Node && node.contains(target)) return
+      onOpenChange(false)
+    }
+    // 捕获阶段：任何一层 stopPropagation 都挡不住「点外关」。
+    document.addEventListener('pointerdown', onDown, true)
+    return () => document.removeEventListener('pointerdown', onDown, true)
+  }, [open, onOpenChange])
+
+  const more = L('更多操作', 'More actions')
+  const item = (key: string, icon: ToolIconName, text: string, onClick: () => void, extra?: Record<string, unknown>): JSX.Element => (
+    <button key={key} type="button" className="tb-menu-item" onClick={onClick} {...extra}>
+      <ToolIcon name={icon} checked={icon === 'checkbox' ? closedOn : undefined} />
+      <span>{text}</span>
+    </button>
+  )
+
+  return (
+    <span ref={wrapRef} style={styles.toolbarMenuWrap}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="tb-toolbtn"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={more}
+        aria-label={more}
+        onClick={() => onOpenChange(!open)}
+      >
+        <ToolIcon name="more" />
+      </button>
+      {open && (
+        <div style={styles.toolbarMenu} role="menu" aria-label={more}>
+          {item('closed', 'checkbox', L('含已关闭', 'Include closed'), () => onClosed(!closedOn), { role: 'menuitemcheckbox', 'aria-checked': closedOn, title: closedTitle })}
+          {/* 极窄档：视图组搬到这里（不是被删掉）。用 menuitemradio + aria-checked
+              报出当前视角 —— 与视图组自己的 role=tab/aria-selected 同一份状态。 */}
+          {views !== null && [
+            { value: 'column' as const, text: L('按进度', 'By status') },
+            { value: 'owner' as const, text: L('按负责人', 'By owner') },
+            { value: 'stats' as const, text: L('统计', 'Stats') },
+          ].map((row) => item(`view-${row.value}`, 'dot', row.text, () => {
+            onOpenChange(false)
+            onView(row.value)
+          }, { role: 'menuitemradio', 'aria-checked': views === row.value }))}
+          {item('guide', 'help', L('使用指南', 'Guide'), () => {
+            onOpenChange(false)
+            onGuide()
+          }, { role: 'menuitem' })}
+          {item('about', 'info', L('关于', 'About'), () => {
+            onOpenChange(false)
+            onAbout()
+          }, { role: 'menuitem' })}
+          {item('refresh', 'refresh', L('刷新', 'Refresh'), () => {
+            onOpenChange(false)
+            void store.refresh()
+          }, { role: 'menuitem' })}
+        </div>
+      )}
+    </span>
   )
 }
 
@@ -1366,10 +1738,12 @@ function ViewSwitch({ mode, onSwitch }: { mode: BoardGrouping; onSwitch(mode: Bo
   return (
     // Two SEPARATE boxes, not one box with a rule inside it: a rule between two
     // segments of the same pill is indistinguishable from the segment borders,
-    // which is exactly how it read before. A real gap makes the grouping obvious.
+    // which is exactly how it read before. A real gap makes the grouping
+    // obvious — and both boxes wear the SAME shell (.tb-seg-group), so the
+    // three options still read as one view group.
     <div style={styles.viewSwitch} role="tablist" aria-label={L('看板视角', 'Board view')}>
       {groups.map((group) => (
-        <div key={group[0]!.value} style={styles.segGroup} role="group">
+        <div key={group[0]!.value} className="tb-seg-group" role="group">
           {group.map((option) => (
             <button
               key={option.value}
@@ -1377,7 +1751,6 @@ function ViewSwitch({ mode, onSwitch }: { mode: BoardGrouping; onSwitch(mode: Bo
               role="tab"
               aria-selected={mode === option.value}
               className={mode === option.value ? 'tb-seg active' : 'tb-seg'}
-              style={mode === option.value ? { ...styles.seg, ...styles.segActive } : styles.seg}
               title={option.title}
               onClick={() => onSwitch(option.value)}
             >
@@ -3092,22 +3465,68 @@ const styles: Record<string, CSSProperties> = {
   topbar: {
     display: 'flex',
     alignItems: 'center',
-    gap: 8,
-    padding: '10px 14px',
+    // 间距全部由各段的 marginLeft 显式给（TB_TOOLBAR）：身份段内部要 8px、操作组
+    // 内部要 4px，父级 gap 会一把套上去，分不开。
+    gap: 0,
+    padding: TB_TOOLBAR.padding,
     borderBottom: `1px solid ${BORDER}`,
     flexShrink: 0,
+    // 内容永远不许把这一行撑宽 —— 撑宽了 ResizeObserver 量到的就不是宿主的宽度，
+    // 降级档位会跟着内容自我循环。
+    minWidth: 0,
   },
-  topbarTitle: { fontSize: 14, fontWeight: 600 },
+  // 身份段（看板 · 路径 · N 个任务）。规格里它是「段」不是「组」：段内保持既有
+  // 8px，只有组内才是 4px。minWidth:0 让它成为这一行**唯一的软段**：宽度不够时
+  // 由它吸收（路径 ellipsis），后面的控件一个都不许被挤掉。
+  topbarIdentity: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexShrink: 1 },
+  topbarTitle: { fontSize: 14, fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' },
   topbarPath: {
     color: DIM,
     fontSize: 11,
     maxWidth: 260,
+    // 没有它，`min-width:auto` 会把 flex 项卡在文本最小宽度上，ellipsis 永远
+    // 不生效、超长路径直接把行撑破（规格里的边界情况之一）。
+    minWidth: 0,
+    flexShrink: 1,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
-  topbarCount: { color: DIM, fontSize: 11, flexShrink: 0 },
-  topbarSpacer: { flex: 1 },
+  topbarCount: { color: DIM, fontSize: 11, flexShrink: 0, whiteSpace: 'nowrap' },
+  topbarSpacer: { flex: 1, minWidth: 0 },
+  // 组与组之间 16px、主操作前 12px（TB_TOOLBAR）。工具栏的每一段都是 flexShrink:0
+  // 的不可压缩块，唯一能被压缩的是上面的身份段。
+  // 视图组：按进度 | 按负责人 一盒（同壳），统计 同壳 16px 分列 —— 两个盒子之间
+  // 用**组间**的 16px（旧版是 8px，盒内分割线分不清的教训）。整组与左边身份段之间
+  // 由 spacer 撑开，这里再给一个 16px 的**下限**：窄的时候也不许粘上去。
+  viewSwitch: { display: 'flex', alignItems: 'center', gap: TB_TOOLBAR.groupGap, marginLeft: TB_TOOLBAR.groupGap, flexShrink: 0 },
+  toolbarGroup: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: TB_TOOLBAR.itemGap,
+    marginLeft: TB_TOOLBAR.groupGap,
+    flexShrink: 0,
+  },
+  toolbarPrimary: { marginLeft: TB_TOOLBAR.primaryGap, flexShrink: 0 },
+  toolbarChip: { marginLeft: TB_TOOLBAR.groupGap, flexShrink: 0 },
+  toolbarMenuWrap: { position: 'relative', display: 'inline-flex', marginLeft: TB_TOOLBAR.groupGap, flexShrink: 0 },
+  // `⋯` 的下拉。z 27：高于选择器 (25) 与抽屉 (21)，低于指南 (31) 与关于 (41) ——
+  // 与 escapeTarget 的分层逐层对应，所以「一次 Esc 只关一层」在视觉上也对得上。
+  toolbarMenu: {
+    position: 'absolute',
+    top: `calc(100% + ${TB_TOOLBAR.itemGap}px)`,
+    right: 0,
+    zIndex: 27,
+    minWidth: 168,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+    padding: 4,
+    background: BG_RAISED,
+    border: `1px solid ${BORDER}`,
+    borderRadius: 8,
+    boxShadow: '0 10px 28px rgba(0,0,0,0.18)',
+  },
   noticeError: {
     display: 'flex',
     alignItems: 'center',
@@ -3149,41 +3568,8 @@ const styles: Record<string, CSSProperties> = {
     flexShrink: 0,
   },
   columnTitle: { fontSize: 12, fontWeight: 600 },
-  // The segmented view switch in the top bar (按进度 / 按负责人).
-  // The two groups sit side by side with a real gap; each carries its own
-  // border so "which group am I in" needs no rule to explain it.
-  viewSwitch: { display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 },
-  segGroup: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    border: `1px solid ${BORDER}`,
-    borderRadius: 7,
-    overflow: 'hidden',
-  },
-  seg: {
-    border: 'none',
-    background: 'transparent',
-    color: DIM,
-    fontFamily: 'inherit',
-    fontSize: 11.5,
-    padding: '3px 10px',
-    cursor: 'pointer',
-    whiteSpace: 'nowrap',
-  },
-  segActive: { background: HOVER_BG, color: FG, fontWeight: 600, boxShadow: `inset 0 0 0 1px ${BORDER}` },
   // A quiet-owner marker in an owner lane's header.
   quietDot: { width: 6, height: 6, borderRadius: 3, background: WARN, flexShrink: 0 },
-  // The「含已完成」checkbox shown only in the owner view.
-  doneToggle: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 4,
-    fontSize: 11.5,
-    color: DIM,
-    flexShrink: 0,
-    cursor: 'pointer',
-    whiteSpace: 'nowrap',
-  },
   laneHint: {
     fontSize: 10,
     color: WARN,

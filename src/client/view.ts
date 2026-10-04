@@ -221,16 +221,20 @@ function displayNameOf(board: Board, name: string): string {
 }
 
 /** The overlay stack of the board tab, topmost first. */
-export type BoardLayer = 'about' | 'guide' | 'picker' | 'drawer'
+export type BoardLayer = 'about' | 'guide' | 'toolbarMenu' | 'picker' | 'drawer'
 
 /**
  * Which layer an Escape keypress should close.
  *
  * One keypress closes exactly ONE layer, innermost/topmost first — never two
  * at once. The order below follows the panel's own z-index stack (about 41 >
- * guide 31 > picker 25 > drawer 21), so unwinding matches what the user sees
- * on screen. `about` (v0.7.3) is the ⓘ popover: it floats above everything,
- * so while it is up Escape closes it and touches nothing underneath.
+ * guide 31 > toolbarMenu 27 > picker 25 > drawer 21), so unwinding matches what
+ * the user sees on screen. `about` (v0.7.3) is the ⓘ popover: it floats above
+ * everything, so while it is up Escape closes it and touches nothing
+ * underneath. `toolbarMenu` (T-38, v0.7.4) is the narrow-toolbar `⋯` dropdown:
+ * it is a normal layer, NOT a second Escape semantics — while it is up it wins
+ * over the picker and the drawer and loses to the guide and the about popover,
+ * exactly as its z-index says.
  *
  * A focused input that already consumed the Escape (`defaultPrevented`) wins:
  * the control keeps the key and nothing closes. Returns `null` when there is
@@ -240,9 +244,95 @@ export function escapeTarget(layers: Record<BoardLayer, boolean>, event?: { defa
   if (event?.defaultPrevented) return null
   if (layers.about) return 'about'
   if (layers.guide) return 'guide'
+  if (layers.toolbarMenu) return 'toolbarMenu'
   if (layers.picker) return 'picker'
   if (layers.drawer) return 'drawer'
   return null
+}
+
+// ------------------------------------------------------ toolbar degradation
+// T-38（v0.7.4）：导航区（topbar）的三档降级。判定是纯函数、阈值就在这里，因为
+// 它必须能被单测钉住边界（719/720、519/520）——散在 JSX 里就只能靠肉眼。
+//
+// 量的是**工具栏容器自己的宽度**，不是视口宽度：这块面板可以被嵌在任意宽的宿主
+// 里（抽屉、分栏、mini 抽屉），视口宽而面板窄是常态，反过来也是。
+
+/** `full` 档的下界（含）：≥720 时身份段三段齐全。 */
+export const TOOLBAR_FULL_MIN = 720
+/** `compact` 档的下界（含）：520–719 逐段收窄；低于它就进 `menu`。 */
+export const TOOLBAR_COMPACT_MIN = 520
+/**
+ * 视图组的**硬底**：低于它，连「按进度 | 按负责人 | 统计」这一盒（实测 zh 187px、
+ * en 190px）加上 `⋯` 与主操作都塞不进一行了 —— 320px 下实测溢出 31px。
+ *
+ * 处置不是"把视图组删掉"（那是功能损失：窄面板上就换不了视角了），而是把它**搬进
+ * `⋯`** —— 卡片已经为窄档建立了这个机制，视图组只是换了个位置，仍然"在位"。
+ * 于是这一档的行里只剩「主操作 + ⋯」，与卡片的边界要求（极窄 <360，仅主操作 + ⋯）
+ * 一致，也不会有任何控件被裁掉。
+ */
+export const TOOLBAR_VIEWS_MIN = 360
+
+/** 导航区的三档降级：全部文字 / 收起身份段 / 收进 `⋯`。 */
+export type ToolbarMode = 'full' | 'compact' | 'menu'
+
+/**
+ * `width`（工具栏容器宽度，px）→ 降级档位。
+ *
+ * 非有限值（SSR、首帧还没量到）一律 `full`：猜窄会把宽面板画成窄的，猜宽只是让
+ * 首帧多几个字 —— 不对称，所以只往"宽"这边猜。宽度 0（还没布局）由调用方拦掉，
+ * 不进这个函数。
+ */
+export function toolbarModeFor(width: number): ToolbarMode {
+  if (!Number.isFinite(width)) return 'full'
+  if (width >= TOOLBAR_FULL_MIN) return 'full'
+  if (width >= TOOLBAR_COMPACT_MIN) return 'compact'
+  return 'menu'
+}
+
+/**
+ * 身份段（`看板 · 路径 · N 个任务`）的取舍顺序：**先舍路径，再舍计数，最后才舍
+ * 标题**。路径最长、信息量最低；计数是"这板有多大"的一句话；标题是这块面板的
+ * 身份，最不该丢。档位一次隐去前 N 段（N 见 {@link toolbarPlanFor}），所以这个
+ * 顺序就是将来要拆更细档位时的补法。
+ */
+export const TOOLBAR_IDENTITY_DROP_ORDER = ['path', 'count', 'title'] as const
+
+/** 身份段的一段。 */
+export type ToolbarIdentityPart = (typeof TOOLBAR_IDENTITY_DROP_ORDER)[number]
+
+/** 一个档位在屏幕上留什么（阶段一的 `toolbarModeFor` 只回答"哪一档"）。 */
+export interface ToolbarPlan {
+  /** 还渲染的身份段（DOM 顺序仍是 标题 → 路径 → 计数）。 */
+  identity: readonly ToolbarIdentityPart[]
+  /** 筛选 chip 是否带文字（false = 只留方框，文字进 tooltip）。 */
+  chipLabel: boolean
+  /** `? ⓘ ↻` 是否收进 `⋯`（true = 菜单档）。 */
+  toolsInMenu: boolean
+  /** 视图组是否也搬进 `⋯`（只有极窄档才为 true；false = 留在行里）。 */
+  viewsInMenu: boolean
+}
+
+/**
+ * 档位（+ 实测宽度）→ 具体隐去什么。
+ *
+ * `compact` 先把路径与计数收掉、只留标题（取舍顺序的前两段）；`menu` 三段全收，
+ * 因为 520px 以下连那点位置都没有了。视图组与主按钮在**三档**里都留在行里 ——
+ * 它们是导航区的骨架；唯一例外是 `menu` 档里再窄于 {@link TOOLBAR_VIEWS_MIN} 时：
+ * 视图组搬进 `⋯`（不是消失），行里只剩主操作 + `⋯`。实测依据见
+ * .probe-ui/preview5-toolbar.mjs 与 toolbar-*.png。
+ */
+export function toolbarPlanFor(mode: ToolbarMode, width?: number): ToolbarPlan {
+  const dropped = mode === 'full' ? 0 : mode === 'compact' ? 2 : 3
+  const drop = new Set<string>(TOOLBAR_IDENTITY_DROP_ORDER.slice(0, dropped))
+  // 宽度没量到（SSR / 首帧）时**不**把视图组搬走：留着最多挤一点，搬走会让宽面板
+  // 上的视图组突然出现在菜单里 —— 不对称，所以只往"留在行里"这边猜。
+  const tooNarrow = typeof width === 'number' && Number.isFinite(width) && width < TOOLBAR_VIEWS_MIN
+  return {
+    identity: (['title', 'path', 'count'] as const).filter((part) => !drop.has(part)),
+    chipLabel: mode === 'full',
+    toolsInMenu: mode === 'menu',
+    viewsInMenu: mode === 'menu' && tooNarrow,
+  }
 }
 
 // --------------------------------------------------------- keyboard navigation

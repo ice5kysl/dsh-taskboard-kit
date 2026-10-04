@@ -63,6 +63,30 @@ export const MASK = 'var(--dsw-alias-bg-mask-1, rgba(0,0,0,0.28))'
 
 export const PRIORITY_COLORS: Record<TaskPriority, string> = { high: DANGER, medium: WARN, low: FAINT }
 
+/**
+ * 导航区（topbar）的像素常量 —— T-38 的规格值，4px 基准的间距阶梯 + 28px 的控件
+ * 外壳。**单独导出**而不是散在 JSX 里，是因为「组内 4 / 组间 16 / 主操作前 12」
+ * 与「可点控件一律 28px、圆角 6」是规格本身：测试要能把常量和真正渲染出来的
+ * inline style / CSS 规则对起来（只会写死数字的人，改不动自己写死的数字）。
+ *
+ * 行内边距**保持既有 `10px 14px` 不动**：改它会牵动整块面板的节奏（泳道内边距、
+ * 卡间距都按这个密度定的），属于另一件事。
+ */
+export const TB_TOOLBAR = {
+  /** 组内相邻控件（`? ⓘ`、身份段两段之间）的间距。 */
+  itemGap: 4,
+  /** 组与组之间（身份 | 视图 | 筛选 | 操作）的间距。 */
+  groupGap: 16,
+  /** 操作组与主操作之间的间距：比组间紧一点，读作「这一组动作」。 */
+  primaryGap: 12,
+  /** 所有可点控件的外壳高度。 */
+  controlHeight: 28,
+  /** 控件外壳圆角，与既有 `.tb-iconbtn` 一致。 */
+  radius: 6,
+  /** 工具栏行的内边距（既有值，不动）。 */
+  padding: '10px 14px',
+} as const
+
 /** Interactive-state rules for the tb-* classes used across the surfaces. */
 export const TB_CSS = `
 .tb-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid ${BORDER_STRONG}; border-radius: 8px; background: transparent; color: inherit; padding: 5px 10px; font-size: 12px; font-family: inherit; line-height: 1.4; cursor: pointer; }
@@ -188,6 +212,49 @@ export const TB_CSS = `
 .tb-stats-row[data-flat="1"]:hover { background: transparent; }
 .tb-mstone-card { display: flex; width: 100%; box-sizing: border-box; align-items: center; gap: 6px; border: 1px solid ${BORDER}; border-radius: 6px; background: transparent; color: inherit; padding: 3px 7px; font-size: 10.5px; font-family: inherit; line-height: 1.5; cursor: pointer; text-align: left; }
 .tb-mstone-card:hover { background: ${HOVER_BG}; border-color: ${BORDER_STRONG}; }
+/* ---- 导航区（T-38, v0.7.4）---------------------------------------------------
+   工具栏的每一个可点控件都是同一只 ${TB_TOOLBAR.controlHeight}px 高、${TB_TOOLBAR.radius}px 圆角的外壳
+   （TB_TOOLBAR），间距由行内 style 给（组内 4 / 组间 16 / 主操作前 12）。这里
+   只放**状态**：hover / 按下 / 键盘 focus-visible —— 行内 style 表达不了伪类。
+   为什么另起一套 .tb-toolbtn 而不改 .tb-iconbtn：后者还挂在抽屉、选择器、mini
+   抽屉的关闭键上（那些是 ~22px 的文字按钮），把它改成 28px 方盒会顺手改掉三个
+   这次没在动的地方。
+   按下反馈只碰 background / color / transform（不动布局、不引动画库），过渡
+   50ms —— 「按下 50ms 内有反馈」是个可测的时长，不是感觉。 */
+.tb-toolbtn { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; width: ${TB_TOOLBAR.controlHeight}px; height: ${TB_TOOLBAR.controlHeight}px; padding: 0; border: 1px solid transparent; border-radius: ${TB_TOOLBAR.radius}px; background: transparent; color: ${DIM}; font-family: inherit; line-height: 1; cursor: pointer; transition: background-color 50ms ease, color 50ms ease; }
+.tb-toolbtn:hover { background: ${HOVER_BG}; color: ${FG}; }
+.tb-toolbtn:active { background: ${FOCUS_HALO}; color: ${FG}; transform: translateY(0.5px); }
+.tb-toolbtn:focus-visible { outline: 2px solid ${LINK}; outline-offset: -1px; }
+.tb-toolbtn-primary { box-sizing: border-box; height: ${TB_TOOLBAR.controlHeight}px; padding: 0 12px; border-radius: ${TB_TOOLBAR.radius}px; }
+.tb-toolbtn-primary:active { transform: translateY(0.5px); }
+/* 视图组的两个盒子：按进度|按负责人 一盒，统计 同壳、16px 分列（盒内分割线分不清，
+   所以仍分两盒 —— 但同壳，读起来还是一组）。盒子用 inset 阴影画边、不占布局高度：
+   这样里面的控件与外面的 28px 图标按钮同高、同一行基线。 */
+.tb-seg-group { display: inline-flex; align-items: center; height: ${TB_TOOLBAR.controlHeight}px; box-sizing: border-box; border-radius: ${TB_TOOLBAR.radius}px; box-shadow: inset 0 0 0 1px ${BORDER}; overflow: hidden; }
+.tb-seg { display: inline-flex; align-items: center; height: ${TB_TOOLBAR.controlHeight}px; border: none; border-radius: ${TB_TOOLBAR.radius}px; background: transparent; color: ${DIM}; font-family: inherit; font-size: 11.5px; padding: 0 10px; cursor: pointer; white-space: nowrap; transition: background-color 50ms ease, color 50ms ease; }
+.tb-seg:hover { background: ${HOVER_BG}; color: ${FG}; }
+.tb-seg:active { background: ${FOCUS_HALO}; color: ${FG}; transform: translateY(0.5px); }
+.tb-seg.active, .tb-seg.active:hover { background: ${HOVER_BG}; color: ${FG}; font-weight: 600; }
+.tb-seg:focus-visible { outline: 2px solid ${LINK}; outline-offset: -2px; }
+/* 筛选组：「含已关闭」是一只 toggle chip（不再用原生 checkbox —— 它跟着系统字体走、
+   跟 28px 外壳对不齐，勾选框的大小还随平台变）。选中态用宿主 accent 底色 + 勾记号：
+   accent = 外壳的 brand-primary（浅色主题近黑 / 深色主题近白），配对前景是
+   label-primary-foreground，两个主题都读得出来。方框 → 勾就是状态本身，窄档只留
+   它也不丢信息（文字进 tooltip）。 */
+.tb-chip-toggle { display: inline-flex; align-items: center; gap: 6px; box-sizing: border-box; height: ${TB_TOOLBAR.controlHeight}px; padding: 0 10px; border: 1px solid ${BORDER}; border-radius: ${TB_TOOLBAR.radius}px; background: transparent; color: ${DIM}; font-family: inherit; font-size: 11.5px; line-height: 1; white-space: nowrap; cursor: pointer; transition: background-color 50ms ease, color 50ms ease; }
+.tb-chip-toggle:hover { background: ${HOVER_BG}; color: ${FG}; border-color: ${BORDER_STRONG}; }
+.tb-chip-toggle:active { transform: translateY(0.5px); }
+.tb-chip-toggle:not([aria-checked="true"]):active { background: ${FOCUS_HALO}; color: ${FG}; }
+.tb-chip-toggle[aria-checked="true"] { background: ${ACCENT}; border-color: transparent; color: ${ON_PRIMARY}; font-weight: 500; }
+.tb-chip-toggle[aria-checked="true"]:hover { background: ${ACCENT}; color: ${ON_PRIMARY}; border-color: transparent; }
+.tb-chip-toggle:focus-visible { outline: 2px solid ${LINK}; outline-offset: -1px; }
+/*「⋯」的下拉：与其它浮层同一套语言（raised 底、1px 描边、8px 圆角、卡片阴影），
+   落在 z 27 —— 高于选择器 (25) 与抽屉 (21)，低于指南 (31) 与关于 (41)，与
+   escapeTarget 的分层逐层对应。 */
+.tb-menu-item { display: flex; width: 100%; box-sizing: border-box; align-items: center; gap: 8px; height: ${TB_TOOLBAR.controlHeight}px; border: none; border-radius: ${TB_TOOLBAR.radius}px; background: transparent; color: ${FG}; padding: 0 8px; font-family: inherit; font-size: 12px; line-height: 1; text-align: left; white-space: nowrap; cursor: pointer; transition: background-color 50ms ease, color 50ms ease; }
+.tb-menu-item:hover { background: ${HOVER_BG}; }
+.tb-menu-item:active { background: ${FOCUS_HALO}; color: ${FG}; transform: translateY(0.5px); }
+.tb-menu-item:focus-visible { outline: 2px solid ${LINK}; outline-offset: -2px; }
 `
 
 /**

@@ -68,7 +68,7 @@ export type { DrawerAction, ActionRow, DrawerProp, AssigneeChoice, AssigneeChoic
 export { MiniBoardButton, MiniBoardDrawer } from './MiniBoard.tsx'
 export { createBridgeClient } from './api.ts'
 export { createTaskboardStore, getTaskboardStore } from './store.ts'
-export { TB_CSS, CLIENT_PLUGIN_ID, CSS_TAG_ID, ensureTaskboardStyles } from './theme.ts'
+export { TB_CSS, TB_TOOLBAR, CLIENT_PLUGIN_ID, CSS_TAG_ID, ensureTaskboardStyles } from './theme.ts'
 export { columnOf, compareTasks, isTerminalStatus, needsSettling, TERMINAL_STATUS } from '../shared/types.ts'
 export { planDrop } from '../shared/dnd.ts'
 export type { DropOp } from '../shared/dnd.ts'
@@ -79,6 +79,10 @@ export { stalenessOf, ageInColumnMs, columnSince, DEFAULT_QUIET_MS } from '../sh
 export { conventionSnippet, dispatchSnippet, guideProjectDir, hookSnippetClaude, hookSnippetKimi } from './guide.ts'
 export { renderMarkdown } from './markdown.ts'
 export { openTaskCount, runPlanOps, groupByOwner, isFinal, escapeTarget, UNASSIGNED_KEY } from './view.ts'
+// T-38（v0.7.4）：导航区的降级判定是纯函数（阈值 / 身份段取舍顺序 / 每档留什么），
+// 导出以便 node 单测直接钉住三档边界与"哪一档在位的控件集合"。
+export { toolbarModeFor, toolbarPlanFor, TOOLBAR_FULL_MIN, TOOLBAR_COMPACT_MIN, TOOLBAR_VIEWS_MIN, TOOLBAR_IDENTITY_DROP_ORDER } from './view.ts'
+export type { ToolbarMode, ToolbarPlan, ToolbarIdentityPart } from './view.ts'
 // T-36（v0.7.4）：键盘导航的判定与走位全是纯函数（焦点守卫 / 视觉顺序 / 边界），
 // 导出以便 node 单测直接跑面板真正用的那条判定路径。
 export { boardKeyIntent, isTypingTarget, stepSelection, visualOrder, keyboardOrderFor } from './view.ts'

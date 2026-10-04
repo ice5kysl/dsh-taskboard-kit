@@ -1194,7 +1194,11 @@ await check('panel: the「按负责人」view renders owner lanes, the switch an
   // Default view is still the six status lanes — the owner view is opt-in.
   assert.ok(html.includes('In progress'), 'status lanes render by default')
   assert.ok(html.includes('By owner'), 'the view switch is offered')
-  assert.ok(!html.includes('Include closed'), 'the settled toggle is hidden in the status view')
+  // T-38 口径变更：`含已关闭` 从"只在按负责人视角渲染"改成**常驻**。旧断言
+  // （「the settled toggle is hidden in the status view」）钉的正是被修掉的那个缺陷
+  // ——切视角时这一行凭空多/少一个控件，是"显示不稳定"的真正来源。所以这里反过来
+  // 钉：默认（按进度）视角它必须在。变异：把渲染条件改回 groupBy==='owner' ⇒ 红。
+  assert.ok(html.includes('Include closed'), 'the settled toggle is ALWAYS there (status view too)')
 
   // Switch to the owner view and re-render through the same store.
   store.setGroupBy('owner')
@@ -1204,7 +1208,7 @@ await check('panel: the「按负责人」view renders owner lanes, the switch an
   // dsh-agent folds into dsh's lane: one lane, not two.
   assert.equal((ownerHtml.match(/data-lane="dsh"/g) ?? []).length, 1, 'aliases fold to ONE dsh lane')
   assert.ok(ownerHtml.includes('Waiting on human · kimi'), 'the blocked lane is labelled as such')
-  assert.ok(ownerHtml.includes('Include closed'), 'the settled toggle appears in the owner view')
+  assert.ok(ownerHtml.includes('Include closed'), 'the settled toggle is there in the owner view too')
   // The owner view is a projection, not a status board: cards are not draggable.
   assert.ok(ownerHtml.includes('draggable="false"'), 'owner-view cards are not drag sources')
 
@@ -2821,6 +2825,228 @@ await check('T-35 · mini drawer: one holder line per row (mark + name), not thr
   // The tooltip leads with the owed action (holderActionLabel) — the one place
   // those words survive, since the lane header already names the status.
   assert.ok(html.includes(`title="${client.holderActionLabel('work')} · `), 'the tooltip leads with the owed action (holderActionLabel)')
+})
+
+// ============================================ 导航区重构（T-38, 方案 B）
+// 卡上的三件必修：① 「含已关闭」常驻（切视角时不再凭空多/少一个控件）② 三个图标
+// 换成同一种度量的内联 SVG ③ 动作与信息分开（刷新不再夹在指南和关于中间）。
+//
+// 这里钉住的是**纯函数与 SSR 能钉住的**部分：三档边界、每一档在位的控件集合、
+// 图标是 SVG 而不是文本字形、组内/组间与外壳常量、`⋯` 接进既有 Esc 分层。
+// 伪类（hover / focus-visible / 按下 50ms 反馈）与"宽度真的驱动降级"（ResizeObserver
+// 量容器）只能在真浏览器里验：.probe-ui/preview5-toolbar.mjs + toolbar-*.png。
+
+/** 渲染一块板的面板，并把工具栏那段（<header>…</header>）切出来。 */
+async function toolbarHeaderOf(board, props = {}) {
+  const store = client.createTaskboardStore({ bridge: { board: async () => ({ ok: true, board }) }, pollMs: 10 ** 9 })
+  store.setCwd(board.workspace)
+  await store.refresh()
+  const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store, ...props }))
+  const at = html.indexOf('<header')
+  const end = html.indexOf('</header>')
+  return { store, html, header: at < 0 || end < 0 ? '' : html.slice(at, end + '</header>'.length) }
+}
+
+await check('T-38 · toolbarModeFor: 三档边界是纯函数，阈值就是常量', () => {
+  assert.deepEqual([client.TOOLBAR_FULL_MIN, client.TOOLBAR_COMPACT_MIN], [720, 520])
+  assert.equal(client.toolbarModeFor(1600), 'full')
+  assert.equal(client.toolbarModeFor(720), 'full', '720 是 full 的下界（含）')
+  assert.equal(client.toolbarModeFor(719.9), 'compact', '差一点就降一档')
+  assert.equal(client.toolbarModeFor(520), 'compact', '520 是 compact 的下界（含）')
+  assert.equal(client.toolbarModeFor(519.9), 'menu', '<520 进 menu')
+  assert.equal(client.toolbarModeFor(360), 'menu', '极窄仍是 menu，掉不出三档')
+  assert.equal(client.toolbarModeFor(0), 'menu', '0（还没布局）算最窄 —— 调用方另行拦掉它')
+  // 量不到宽度不猜窄：猜窄会把宽面板画成窄的（收走可点的东西），猜宽只是多几个字。
+  for (const bad of [NaN, Infinity, -Infinity, undefined, null]) {
+    assert.equal(client.toolbarModeFor(bad), 'full', `${String(bad)} → full`)
+  }
+})
+
+await check('T-38 · toolbarPlanFor: 身份段按「路径 → 计数 → 标题」的优先级收，chip 文字只活到 compact', () => {
+  assert.deepEqual([...client.TOOLBAR_IDENTITY_DROP_ORDER], ['path', 'count', 'title'])
+  const full = client.toolbarPlanFor('full')
+  assert.deepEqual([...full.identity], ['title', 'path', 'count'], 'full 三段齐全，DOM 序仍是 标题→路径→计数')
+  assert.equal(full.chipLabel, true)
+  assert.equal(full.toolsInMenu, false)
+  const compact = client.toolbarPlanFor('compact')
+  assert.deepEqual([...compact.identity], ['title'], 'compact 先舍路径、再舍计数，只留标题')
+  assert.equal(compact.chipLabel, false, 'compact 起 chip 只留方框（文字进 tooltip）')
+  assert.equal(compact.toolsInMenu, false, 'compact 还没到进 ⋯ 的地步')
+  const menu = client.toolbarPlanFor('menu')
+  assert.deepEqual([...menu.identity], [], 'menu 连标题都收')
+  assert.equal(menu.toolsInMenu, true)
+  assert.equal(menu.viewsInMenu, false, '量不到宽度时不搬视图组（只往"留在行里"这边猜）')
+
+  // 极窄档（<360）：视图组**搬进 ⋯**（不是删掉）—— 行里只剩主操作 + ⋯，与卡片的
+  // 边界要求一致，同时窄面板上仍然换得了视角。
+  assert.equal(client.TOOLBAR_VIEWS_MIN, 360)
+  for (const [width, expected] of [[320, true], [359.9, true], [360, false], [400, false], [520, false]]) {
+    assert.equal(client.toolbarPlanFor('menu', width).viewsInMenu, expected, `menu @${width}px → viewsInMenu=${expected}`)
+  }
+  // 只有 menu 档才可能搬：宽档位永远把视图组放在行里。
+  for (const width of [320, 100, 0]) {
+    assert.equal(client.toolbarPlanFor('full', width).viewsInMenu, false, `full @${width}px 不搬'`)
+    assert.equal(client.toolbarPlanFor('compact', width).viewsInMenu, false, `compact @${width}px 不搬'`)
+  }
+  // 没量到宽度（NaN / undefined）同样不搬。
+  assert.equal(client.toolbarPlanFor('menu', NaN).viewsInMenu, false)
+})
+
+await check('T-38 · ★「含已关闭」在两个视角都渲染（旧行为 = 只在按负责人视角）', async () => {
+  const board = collabBoard([
+    { id: 'T-1', title: 'pool work', status: 'open', assignee: null },
+    { id: 'T-2', title: 'kimi building it', status: 'in_progress', assignee: 'kimi' },
+  ])
+
+  const status = await toolbarHeaderOf(board)
+  assert.ok(status.header.includes('tb-chip-toggle'), '按进度视角有这只 chip')
+  assert.ok(status.header.includes('>Include closed<'), '按进度视角 chip 带文字')
+  // tooltip 分视角两版：这一版管的是"已结清列"（showClosed）。
+  assert.ok(status.header.includes('Show the settled column'), '按进度视角的 tooltip 说的是「已结清列」')
+
+  status.store.setGroupBy('owner')
+  const owner = renderToStaticMarkup(React.createElement(client.BoardPanel, { store: status.store }))
+  const ownerHeader = owner.slice(owner.indexOf('<header'), owner.indexOf('</header>'))
+  assert.ok(ownerHeader.includes('tb-chip-toggle'), '按负责人视角也有同一只 chip')
+  assert.ok(ownerHeader.includes('>Include closed<'), '按负责人视角 chip 同样带文字')
+  assert.ok(ownerHeader.includes('Include settled tasks'), '按负责人视角的 tooltip 说的是「包含已结清」')
+
+  // ★ 变异哨兵：这一条断言正是"改回 groupBy==='owner' 条件 ⇒ 必须红"的落点 ——
+  // 两边的 chip 都由同一段 JSX 渲染，任何按视角把它藏起来的写法都会让上面某一条崩。
+  assert.equal((status.header.match(/tb-chip-toggle/g) ?? []).length, 1, '整条工具栏只有一只 chip（不会一视角一只）')
+})
+
+await check('T-38 · ★ 三个工具按钮渲染的是内联 <svg>，不是文本字形', async () => {
+  const board = collabBoard([{ id: 'T-1', title: 'x', status: 'open', assignee: null }])
+  const { header } = await toolbarHeaderOf(board)
+
+  const buttons = header.match(/<button[^>]*class="tb-toolbtn"[^>]*>.*?<\/button>/g) ?? []
+  assert.equal(buttons.length, 3, '信息组两枚（指南 / 关于）+ 动作组一枚（刷新）')
+  for (const button of buttons) {
+    assert.ok(button.includes('<svg'), '每个工具按钮里是 SVG')
+    assert.ok(button.includes('viewBox="0 0 16 16"'), 'SVG 是 16×16 视口')
+    assert.ok(button.includes('stroke-width="1.5"'), '1.5px 描边')
+    assert.ok(button.includes('stroke="currentColor"'), '跟随宿主文字色（currentColor）')
+    assert.ok(!/>[^<]*[?ⓘ↻][^<]*<\/button>/.test(button), '按钮正文里没有文本字形')
+  }
+  // 旧版的三个字符（一个 ASCII、两个符号字形）一个都不许留在工具栏的**文本**里：
+  // 去掉标签再找 —— 属性值（title / aria-label）里的字不算字形，SVG 路径也不是。
+  const toolbarText = header.replace(/<[^>]*>/g, '|')
+  for (const glyph of ['?', '↻', 'ⓘ']) {
+    assert.ok(!toolbarText.includes(glyph), `工具栏文本里没有「${glyph}」这个字形`)
+  }
+  // chip 的方框/勾也是同一个 SVG 组件，不是 unicode 复选框。
+  assert.ok(header.includes('tb-chip-toggle'), 'chip 在')
+  assert.ok(/<button[^>]*class="tb-chip-toggle"[^>]*>\s*<svg/.test(header), 'chip 的方框是 SVG')
+})
+
+await check('T-38 · 每一档在位的控件集合：视图组与「+ 新建任务」永远在位', async () => {
+  const board = collabBoard([{ id: 'T-1', title: 'x', status: 'open', assignee: null }])
+  const headers = {}
+  for (const mode of ['full', 'compact', 'menu']) {
+    headers[mode] = (await toolbarHeaderOf(board, { initialToolbarMode: mode })).header
+  }
+
+  for (const mode of ['full', 'compact', 'menu']) {
+    const header = headers[mode]
+    for (const label of ['>By status<', '>By owner<', '>Stats<']) {
+      assert.ok(header.includes(label), `${mode} 档：视图组「${label}」在位`)
+    }
+    assert.ok(header.includes('+ New task'), `${mode} 档：主操作永远在位`)
+  }
+
+  // 身份段：full 三段 / compact 只留标题（路径、计数都收）/ menu 一段不留。
+  assert.ok(headers.full.includes('>Board<') && headers.full.includes('>work/a<') && headers.full.includes('>1 tasks<'), 'full：标题 + 路径 + 计数')
+  assert.ok(headers.compact.includes('>Board<'), 'compact：标题还在')
+  assert.ok(!headers.compact.includes('>work/a<') && !headers.compact.includes('>1 tasks<'), 'compact：路径与计数已收')
+  assert.ok(!headers.menu.includes('>Board<'), 'menu：身份段整段收掉')
+
+  // 筛选 chip：full 带文字 / compact 只留方框（文字进 tooltip）/ menu 收进 ⋯。
+  assert.ok(headers.full.includes('>Include closed<'), 'full：chip 带文字')
+  assert.ok(!headers.compact.includes('>Include closed<'), 'compact：chip 的文字收了')
+  assert.ok(headers.compact.includes('tb-chip-toggle'), 'compact：方框还在')
+  assert.ok(headers.compact.includes('aria-label="Include closed"'), 'compact：文字进了 aria-label / tooltip')
+  assert.ok(!headers.menu.includes('tb-chip-toggle'), 'menu：chip 不在行里')
+  assert.equal((headers.menu.match(/class="tb-toolbtn"/g) ?? []).length, 1, 'menu：行里只剩 ⋯ 这一枚图标按钮（? ⓘ ↻ 都进了菜单）')
+  assert.ok(/aria-haspopup="menu"/.test(headers.menu), 'menu：换成 ⋯ 这个菜单按钮')
+  assert.ok(headers.menu.includes('<svg'), 'menu：⋯ 也是 SVG（三个点，不是 U+22EF 字形）')
+})
+
+await check('T-38 · ⋯ 菜单：四项收得进来，open 时它们是 menuitem / menuitemcheckbox', async () => {
+  const board = collabBoard([{ id: 'T-1', title: 'x', status: 'open', assignee: null }])
+  const shut = (await toolbarHeaderOf(board, { initialToolbarMode: 'menu' })).header
+  assert.ok(!shut.includes('role="menu"'), '关着的时候不渲染菜单本体（Tab 走位里没有隐形项）')
+
+  const open = (await toolbarHeaderOf(board, { initialToolbarMode: 'menu', initialToolbarMenuOpen: true })).header
+  assert.ok(open.includes('role="menu"'), '开着时菜单本体在')
+  const items = open.match(/<button[^>]*class="tb-menu-item"[^>]*>/g) ?? []
+  assert.equal(items.length, 4, '含已关闭 + 指南 + 关于 + 刷新')
+  assert.ok(items[0].includes('role="menuitemcheckbox"') && items[0].includes('aria-checked="false"'), '含已关闭是 menuitemcheckbox（带状态）')
+  for (const item of items.slice(1)) assert.ok(item.includes('role="menuitem"'), '其余是普通 menuitem')
+  for (const text of ['Include closed', 'Guide', 'About', 'Refresh']) {
+    assert.ok(open.includes(`<span>${text}</span>`), `菜单里有「${text}」`)
+  }
+  // 菜单项都是真 <button>：Tab 走位不需要自己实现（原生顺序即可）。
+  assert.equal((open.match(/<div[^>]*role="menuitem/g) ?? []).length, 0, '菜单项是真 <button>，不是 div 假按钮（Tab 走位靠原生顺序）')
+})
+
+await check('T-38 · ★「⋯」接进既有 escapeTarget 分层：一次 Esc 只关一层', () => {
+  const layers = (over) => ({ about: false, guide: false, toolbarMenu: false, picker: false, drawer: false, ...over })
+  const all = layers({ about: true, guide: true, toolbarMenu: true, picker: true, drawer: true })
+  assert.equal(client.escapeTarget(all), 'about', '关于 (41) 最高')
+  assert.equal(client.escapeTarget({ ...all, about: false }), 'guide', '指南 (31) 次之')
+  assert.equal(client.escapeTarget({ ...all, about: false, guide: false }), 'toolbarMenu', '⋯ (27) 在指南之下、选择器之上')
+  assert.equal(client.escapeTarget({ ...all, about: false, guide: false, toolbarMenu: false }), 'picker', '选择器 (25)')
+  assert.equal(client.escapeTarget({ ...all, about: false, guide: false, toolbarMenu: false, picker: false }), 'drawer', '抽屉 (21)')
+  assert.equal(client.escapeTarget(layers({})), null, '什么都没开 → Esc 交还给页面')
+  // 一个键绝不关两层：菜单开着时选择器与抽屉都不许动。
+  assert.notEqual(client.escapeTarget(layers({ toolbarMenu: true, picker: true, drawer: true })), 'picker')
+  assert.notEqual(client.escapeTarget(layers({ toolbarMenu: true, picker: true, drawer: true })), 'drawer')
+  // 被聚焦控件吃掉的 Esc 谁也不关（与既有四层同一规则）。
+  assert.equal(client.escapeTarget(layers({ toolbarMenu: true }), { defaultPrevented: true }), null)
+  // 老调用方（mini 抽屉 / 别的插件）的层对象没有 toolbarMenu 这个键：行为不变。
+  assert.equal(client.escapeTarget({ guide: false, picker: true, drawer: true }), 'picker', '缺 toolbarMenu 键 = 没开')
+})
+
+await check('T-38 · 组内/组间与外壳常量：TB_TOOLBAR 与渲染出来的间距、CSS 外壳一一对上', async () => {
+  assert.deepEqual({ ...client.TB_TOOLBAR }, { itemGap: 4, groupGap: 16, primaryGap: 12, controlHeight: 28, radius: 6, padding: '10px 14px' })
+
+  const css = client.TB_CSS
+  // 可点控件一律 28px 高 / 6px 圆角。
+  for (const selector of ['.tb-toolbtn', '.tb-seg', '.tb-chip-toggle', '.tb-menu-item']) {
+    const rule = cssRule(css, selector)
+    assert.ok(rule.includes('height:28px'), `${selector} 是 28px 高`)
+    assert.ok(rule.includes('border-radius:6px'), `${selector} 是 6px 圆角`)
+  }
+  assert.ok(cssRule(css, '.tb-toolbtn').includes('width:28px'), '图标按钮是 28×28 的居中盒')
+  assert.ok(cssRule(css, '.tb-toolbtn-primary').includes('height:28px'), '主按钮同高')
+  assert.ok(cssRule(css, '.tb-toolbtn-primary').includes('border-radius:6px'), '主按钮同圆角')
+  // 按下反馈只碰 background / color / transform，过渡 50ms（不许动布局、不引动画库）。
+  for (const selector of ['.tb-toolbtn', '.tb-seg', '.tb-chip-toggle', '.tb-menu-item']) {
+    const pressed = cssRule(css, `${selector}:active`)
+    assert.ok(pressed, `${selector}:active 有按下反馈`)
+    assert.ok(/background:|color:|transform:/.test(pressed), `${selector}:active 只反馈 background/color/transform`)
+    assert.ok(cssRule(css, selector).includes('transition:background-color50ms'), `${selector} 的过渡是 50ms 的 background-color`)
+    assert.ok(!/transition:[^;]*\b(width|height|margin|padding|all)\b/.test(cssRule(css, selector)), `${selector} 的过渡不碰布局属性`)
+  }
+  // 键盘可见焦点用宿主 token 描边。
+  for (const selector of ['.tb-toolbtn', '.tb-seg', '.tb-chip-toggle', '.tb-menu-item']) {
+    assert.ok(cssRule(css, `${selector}:focus-visible`).includes('outline:2pxsolidvar(--dsw-alias'), `${selector} 的 focus-visible 用宿主 token`)
+  }
+  // chip 选中态：宿主 accent 打底 + 配对前景（两个主题都读得出来）。
+  const on = cssRule(css, '.tb-chip-toggle[aria-checked="true"]')
+  assert.ok(on.includes('background:var(--dsw-alias-brand-primary'), '选中态 = 宿主 accent')
+  assert.ok(on.includes('color:var(--dsw-alias-label-primary-foreground'), '前景 = 外壳配对 token')
+  assert.ok(client.TB_CSS.includes('.tb-chip-toggle[aria-checked="true"]'), 'chip 的选中态由 aria-checked 驱动（不是 :checked）')
+
+  // 渲染出来的间距：组内 4px、组间 16px、主操作前 12px、行内边距不动。
+  const board = collabBoard([{ id: 'T-1', title: 'x', status: 'open', assignee: null }])
+  const { header } = await toolbarHeaderOf(board)
+  assert.ok(header.includes('gap:4px'), '组内 4px（信息组 ? ⓘ）')
+  assert.ok(header.includes('margin-left:16px'), '组间 16px')
+  assert.ok(header.includes('margin-left:12px'), '主操作前 12px')
+  assert.ok(header.includes('padding:10px 14px'), '行内边距保持既有 10px 14px 不动')
+  assert.ok(header.includes('gap:0'), '行本身不再用父级 gap（那会把身份段的 8px 也套成 16）')
 })
 
 // ------------------------------------------------------------------ done
