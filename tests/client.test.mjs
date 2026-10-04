@@ -1483,6 +1483,85 @@ await check('T-36 · 帮助浮层（?）里写明快捷键：j / k 走位 + Ente
   assert.ok(html.includes('a text box has focus'), '指南写明输入框里不生效')
 })
 
+// ------------------------------------------ reveal in viewport (T-37, v0.7.4)
+// 键盘走位的高亮必须看得见；但「已经可见时不滚」才是这条体验的关键 —— 每按一次 j
+// 都重新对齐比不滚更烦。判定（isVisibleIn）与调用（revealIntoView）都是纯函数，
+// node 直接跑面板真正用的那条路径；"真的滚了 / 真的没动"只能由真浏览器证明
+// （.probe-ui/preview4-keys.mjs 的长板 + 反向断言 + scrollIntoView 探针）。
+
+const box = (top, bottom, left = 0, right = 100) => ({ top, bottom, left, right })
+
+await check('T-37 · isVisibleIn：整张卡要完整落在容器可见区内（四边都算，带容差）', () => {
+  const view = box(100, 300)
+  assert.equal(client.isVisibleIn(box(120, 200), view), true, '整张卡在可见区内 ⇒ 可见')
+  assert.equal(client.isVisibleIn(box(100, 300), view), true, '正好贴边 ⇒ 可见')
+  assert.equal(client.isVisibleIn(box(98, 200), view), false, '上边被裁 ⇒ 不可见')
+  assert.equal(client.isVisibleIn(box(120, 302), view), false, '下边被裁 ⇒ 不可见')
+  assert.equal(client.isVisibleIn(box(120, 200, -30, 100), view), false, '左边被横向裁掉 ⇒ 不可见')
+  assert.equal(client.isVisibleIn(box(120, 200, 0, 130), view), false, '右边被横向裁掉 ⇒ 不可见')
+  // 容差：亚像素 / 贴边不该触发"跳一下"。
+  assert.equal(client.isVisibleIn(box(99.5, 300.5), view, client.REVEAL_MARGIN), true, '1px 容差内算可见')
+  assert.equal(client.isVisibleIn(box(99.5, 300.5), view, 0), false, '不给容差时就是不可见')
+})
+
+await check('T-37 · ★ revealIntoView：可见时一个滚动容器都不碰；被祖先裁掉才滚，且只用 nearest', () => {
+  const calls = []
+  const card = (rect) => ({ getBoundingClientRect: () => rect, scrollIntoView: (options) => calls.push(options ?? null) })
+  const viewports = [box(100, 300), box(0, 900, 0, 1280)]
+
+  assert.equal(client.revealIntoView(card(box(120, 200)), viewports), false, '可见 ⇒ 不用滚')
+  assert.equal(calls.length, 0, '可见 ⇒ scrollIntoView 一次都没调（nearest 之外还有一道闸门）')
+
+  assert.equal(client.revealIntoView(card(box(320, 400)), viewports), true, '掉在下面 ⇒ 要滚')
+  assert.equal(calls.length, 1, '一次 scrollIntoView 就够（浏览器自己滚需要的那几个祖先）')
+  assert.deepEqual(calls[0], { block: 'nearest', inline: 'nearest' }, 'nearest 语义')
+  assert.equal(calls[0].behavior, undefined, '绝不带 behavior:smooth（连按会排队卡顿）')
+
+  // 最近祖先里"可见"、却被**横向**泳道容器裁掉（列在屏幕外）⇒ 一样要滚。
+  calls.length = 0
+  assert.equal(client.revealIntoView(card(box(120, 200, 1300, 1450)), [box(100, 300, 0, 1280)]), true, '横向被裁 ⇒ 要滚')
+
+  // 没有可判的容器 / 没有目标 / 目标没有 scrollIntoView：都不许炸。
+  calls.length = 0
+  assert.equal(client.revealIntoView(card(box(1, 2)), []), false, '没有可判的容器 ⇒ 不滚')
+  assert.equal(client.revealIntoView(null, viewports), false, '没有目标 ⇒ 不报错')
+  assert.equal(client.revealIntoView({ getBoundingClientRect: () => box(320, 400) }, viewports), true, '目标没有 scrollIntoView 也不炸')
+  assert.equal(calls.length, 0)
+})
+
+await check('T-37 · scrollAncestorBoxes：从卡往上收集每个可滚动祖先（最近在前），无祖先退回窗口', () => {
+  const el = (name) => ({ name, parentElement: null })
+  const card = el('card')
+  const laneBody = el('laneBody') // overflowY:auto —— 泳道自己的纵向滚动
+  const plain = el('plain')       // 不滚，必须被跳过
+  const laneRow = el('laneRow')   // overflowX:auto —— 横向泳道
+  const host = el('host')         // overflowY:scroll —— 宿主外框
+  card.parentElement = laneBody
+  laneBody.parentElement = plain
+  plain.parentElement = laneRow
+  laneRow.parentElement = host
+  const styles = { laneBody: { overflowY: 'auto' }, laneRow: { overflowX: 'auto' }, host: { overflowY: 'scroll' }, plain: {} }
+  const rects = { card: box(500, 560), laneBody: box(100, 300), laneRow: box(0, 400), host: box(0, 900, 0, 1280) }
+  const computed = (node) => styles[node.name] ?? {}
+  const rect = (node) => rects[node.name]
+  const windowView = box(0, 900, 0, 1280)
+
+  assert.deepEqual(
+    client.scrollAncestorBoxes(card, computed, rect, windowView),
+    [rects.laneBody, rects.laneRow, rects.host],
+    '最近的在前、不滚的祖先被跳过（横向泳道也算，列在屏幕外就看不见）',
+  )
+  // 一个可滚动祖先都没有 ⇒ 退回窗口视口；窗口也不知道 ⇒ 空（不碰任何东西）。
+  assert.deepEqual(client.scrollAncestorBoxes(card, () => ({}), rect, windowView), [windowView])
+  assert.deepEqual(client.scrollAncestorBoxes(card, () => ({}), rect, null), [])
+  // 面板那条路径的组合（收集 → 判定）：卡在最近的泳道里被裁 ⇒ 要滚且只滚一次。
+  const calls = []
+  const real = { parentElement: laneBody, getBoundingClientRect: () => rects.card, scrollIntoView: (options) => calls.push(options) }
+  const found = client.scrollAncestorBoxes(real, computed, rect, windowView)
+  assert.equal(client.revealIntoView(real, found), true, '被最近祖先裁掉 ⇒ 滚')
+  assert.deepEqual(calls, [{ block: 'nearest', inline: 'nearest' }])
+})
+
 await check('panel: the「统计」view renders KPIs, charts and tables from the same board', async () => {
   const board = collabBoard([
     { id: 'T-1', title: 'wip', status: 'in_progress', assignee: 'kimi', value: 3 },

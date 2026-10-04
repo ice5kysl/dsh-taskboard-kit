@@ -395,6 +395,96 @@ export function stepSelection(order: readonly string[], currentId: string | null
   return order[next]!
 }
 
+// ------------------------------------------------------------ reveal in view
+// v0.7.4 (T-37): 键盘走位的体验补完。把高亮移到一张眼睛看不见的卡上，就是走位失明
+// ——所以每一步都要把选中的卡 REVEAL 出来：
+//   `scrollIntoView({ block: 'nearest', inline: 'nearest' })`。
+//
+// Two properties matter more than the scroll itself, and both are decided here
+// rather than left to the browser:
+//   • ALREADY VISIBLE ⇒ DO NOTHING. `nearest` alone is "minimum movement", but
+//     asking at all still lets a container re-align (and hands the host's own
+//     scrollers a say) on every single keypress; a board that jumps under the
+//     hand while you walk it is worse than one that never scrolls. The pure
+//     predicate below is the gate, so "no wasted scroll" is a unit test, not a
+//     hope;
+//   • NO `behavior: 'smooth'` — the animation queues while a key is held and
+//     the board keeps gliding after the hand stops.
+//
+// The DOM call itself (BoardPanel: `revealActiveCard`) only collects the boxes
+// and hands them over; everything decidable without a browser lives here.
+
+/** A rectangle in viewport coordinates — exactly what `getBoundingClientRect` returns. */
+export interface RevealBox {
+  top: number
+  bottom: number
+  left: number
+  right: number
+}
+
+/** Tolerance of the visibility test (px): a card flush against an edge — or a
+ *  sub-pixel off it — counts as visible. Layout rounding must not cause a jump. */
+export const REVEAL_MARGIN = 1
+
+/**
+ * The options every reveal passes to `scrollIntoView`.
+ *
+ * `block` / `inline: 'nearest'` scroll the minimum: the axis that already fits
+ * is left alone, and a fully visible card makes the call a no-op. The drawer is
+ * never involved — `scrollIntoView` only walks ANCESTORS, and the drawer is a
+ * sibling (`position: absolute`), so its own scroll position is untouched.
+ */
+export const REVEAL_SCROLL_OPTIONS = { block: 'nearest', inline: 'nearest' } as const
+
+/**
+ * Is `rect` fully inside `viewport` (both in viewport coordinates), with
+ * `margin` px of slack on every edge?
+ *
+ * This one comparison is the whole "do we need to scroll at all" question, so
+ * a node test can drive the exact code path the panel uses. Flipping any
+ * comparison here makes a visible card look clipped — the mutation the test
+ * suite pins down.
+ */
+export function isVisibleIn(rect: RevealBox, viewport: RevealBox, margin: number = REVEAL_MARGIN): boolean {
+  return rect.top >= viewport.top - margin
+    && rect.bottom <= viewport.bottom + margin
+    && rect.left >= viewport.left - margin
+    && rect.right <= viewport.right + margin
+}
+
+/** The slice of an element one reveal needs (node tests pass a plain fake).
+ *  `scrollIntoView` uses the DOM's own option type so a real `HTMLElement`
+ *  satisfies this interface unchanged (a hand-written `{block?: string}` shape
+ *  would widen the parameter and fail the strict-function-types check). */
+export interface RevealTargetLike {
+  getBoundingClientRect(): RevealBox
+  scrollIntoView?(options?: ScrollIntoViewOptions): void
+}
+
+/**
+ * Reveal `target` if any of `viewports` clips it; returns whether a scroll was
+ * asked for (so both branches are observable).
+ *
+ * `viewports` are the visible boxes of the target's scrollable ANCESTORS, the
+ * nearest first: the lane's own vertical scroller, the sideways lane row, the
+ * host's outer scroll box. All of them clip, so "visible in the nearest one" is
+ * not the same as "on screen"; an empty list means nothing known clips the card
+ * and nothing is touched.
+ *
+ * ONE `scrollIntoView` serves them all: the browser moves exactly the ancestor
+ * boxes that need it, each minimally (`nearest`), and no sibling.
+ */
+export function revealIntoView(target: RevealTargetLike, viewports: readonly RevealBox[], margin: number = REVEAL_MARGIN): boolean {
+  if (!target || typeof target.getBoundingClientRect !== 'function') return false
+  const rect = target.getBoundingClientRect()
+  for (const viewport of viewports) {
+    if (!viewport || isVisibleIn(rect, viewport, margin)) continue
+    if (typeof target.scrollIntoView === 'function') target.scrollIntoView(REVEAL_SCROLL_OPTIONS)
+    return true
+  }
+  return false
+}
+
 /**
  * Execute one shared `planDrop` op sequence in order through the store
  * (claim → store.claim, update → store.update with the patch). An empty plan

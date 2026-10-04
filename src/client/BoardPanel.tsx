@@ -106,7 +106,7 @@ import {
   WARN,
   ensureTaskboardStyles,
 } from './theme.ts'
-import { boardKeyIntent, columnLabel, escapeTarget, groupByOwner, keyboardOrderFor, priorityLabel, runPlanOps, stepSelection, taskRef, useSessionCwd, valueText, type OwnerGroup, type SessionListLike } from './view.ts'
+import { boardKeyIntent, columnLabel, escapeTarget, groupByOwner, keyboardOrderFor, priorityLabel, revealIntoView, runPlanOps, stepSelection, taskRef, useSessionCwd, valueText, type OwnerGroup, type RevealBox, type SessionListLike } from './view.ts'
 
 // taskRef moved to view.ts (shared with the mini board); keep the export path.
 export { taskRef } from './view.ts'
@@ -153,6 +153,45 @@ export function findScrollParent(
     if (overflowY === 'auto' || overflowY === 'scroll') return parent
   }
   return null
+}
+
+/** 卡往上所有「auto/scroll」祖先的可见矩形（最近的在最前）；一个都没有就退回窗口视口。
+ *  可注入（computed / rect / 视口），测试用纯对象链驱动 —— 与 findScrollParent 同款。
+ *
+ *  为什么是复数而不是"最近的那一个"：泳道行是**横向**滚动容器，列在屏幕外时
+ *  卡在纵向容器里"可见"、却看不见 —— 只判最近祖先会漏掉这一整类。 */
+export function scrollAncestorBoxes(
+  node: { parentElement: Element | null },
+  computed: (el: Element) => { overflowX?: string; overflowY?: string },
+  rect: (el: Element) => RevealBox,
+  windowView: RevealBox | null = null,
+): RevealBox[] {
+  const scrolls = (value?: string): boolean => value === 'auto' || value === 'scroll'
+  const boxes: RevealBox[] = []
+  for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+    const style = computed(parent) ?? {}
+    if (scrolls(style.overflowY) || scrolls(style.overflowX)) boxes.push(rect(parent))
+  }
+  if (boxes.length === 0 && windowView) boxes.push(windowView)
+  return boxes
+}
+
+/** 把当前选中的卡滚进视口（T-37）—— 键盘走位后"高亮看不见"就是走位失明。
+ *  只在确实被某个祖先裁掉时才调 scrollIntoView（判定在 view.ts 的纯函数里：
+ *  已经可见 ⇒ 一个滚动容器都不碰，连横向泳道容器也不会被"顺便"问一次）。
+ *  抽屉是绝对定位的兄弟节点、不是卡的祖先 ⇒ 它自己的滚动不受影响。 */
+function revealActiveCard(root: HTMLElement | null): void {
+  const card = root?.querySelector<HTMLElement>('.tb-card.active')
+  if (!card) return
+  revealIntoView(
+    card,
+    scrollAncestorBoxes(
+      card,
+      (el) => getComputedStyle(el),
+      (el) => el.getBoundingClientRect(),
+      { top: 0, left: 0, bottom: window.innerHeight, right: window.innerWidth },
+    ),
+  )
 }
 
 /** dsh web 把面板包在一个 overflow-y:auto 的滚动容器里——root 的 height:100%
@@ -840,6 +879,13 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState)
   const cwd = useSessionCwd(props)
   const rootHeightRef = useRootHeightSync()
+  // 面板根节点（T-37）：把选中卡滚进视口时只在**本面板内**找 `.tb-card.active`
+  // —— mini 抽屉与看板共用同一个 store，不能靠全局 querySelector 去认领别人的卡。
+  const revealRef = useRef<HTMLDivElement | null>(null)
+  const rootRef = useCallback((node: HTMLDivElement | null) => {
+    revealRef.current = node
+    rootHeightRef(node)
+  }, [rootHeightRef])
   const [createOpen, setCreateOpen] = useState(false)
   // HTML5 drag-and-drop: the dragged card's id + the lane under the pointer.
   const [dragId, setDragId] = useState<string | null>(null)
@@ -1019,6 +1065,25 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
     return () => window.removeEventListener('keydown', onKey)
   }, [keyOrder, selectedId, store, aboutOpen, guideOpen, assignPickerId, createOpen])
 
+  // T-37: after a step lands, the selected card must be on screen — a highlight
+  // you cannot see is a keyboard walk gone blind. This runs for EVERY selection
+  // change, so the mouse click path gets it for free (a click lands on the card
+  // already, hence a natural no-op).
+  //
+  // The measurement happens after the commit: the drawer that opens together
+  // with the selection is already laid out, and only the card's scrollable
+  // ANCESTORS are considered — the drawer is an absolute-positioned sibling, so
+  // its own scroll (and its own content) stays exactly where it was.
+  //
+  // "Do we need to scroll at all" is the pure `revealIntoView` / `isVisibleIn`
+  // pair in view.ts (node-tested): an already visible card touches no scroll
+  // container at all, which is what keeps `j` from making the board jump on
+  // every keypress. `nearest` alone would be a promise; this gate is a fact.
+  useEffect(() => {
+    if (!selectedId) return
+    revealActiveCard(revealRef.current)
+  }, [selectedId])
+
   /**
    * Execute one shared `planDrop` op sequence in order through the store
    * (claim → store.claim, update → store.update with the patch). An empty
@@ -1064,7 +1129,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   // because a null cwd never refreshes and never leaves status 'loading'.
   if (!state.cwd) {
     return (
-      <div style={styles.root} ref={rootHeightRef}>
+      <div style={styles.root} ref={rootRef}>
         <div style={styles.center}>
           <p style={styles.centerText}>{L('进入一个会话后，这里显示该工作区的看板。', 'Open a session to see its workspace board here.')}</p>
         </div>
@@ -1074,7 +1139,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
 
   if (state.status === 'loading' && !board) {
     return (
-      <div style={styles.root} ref={rootHeightRef}>
+      <div style={styles.root} ref={rootRef}>
         <div style={styles.center}>
           <p style={styles.centerText}>{L('正在加载看板…', 'Loading the board…')}</p>
         </div>
@@ -1084,7 +1149,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
 
   if (state.status === 'error' && !board) {
     return (
-      <div style={styles.root} ref={rootHeightRef}>
+      <div style={styles.root} ref={rootRef}>
         <div style={styles.center}>
           <p style={styles.errorText}>{L('无法读取看板：{error}', 'Cannot read the board: {error}', { error: state.error ?? '?' })}</p>
           <button type="button" className="tb-btn tb-btn-primary" onClick={() => void store.refresh()}>
@@ -1096,7 +1161,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
   }
 
   return (
-    <div style={styles.root} ref={rootHeightRef}>
+    <div style={styles.root} ref={rootRef}>
       <TopBar state={state} store={store} total={tasks.length} onCreate={() => setCreateOpen(true)} onGuide={() => setGuideOpen(true)} onAbout={() => setAboutOpen(true)} />
       {state.error && (
         <div style={styles.noticeError}>

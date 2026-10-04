@@ -47,6 +47,9 @@ export const MINI_OVERLAY_ID = 'taskboard-mini'
 // shared board math.
 export { BoardPanel, DetailDrawer } from './BoardPanel.tsx'
 export { taskRef, displayTitle, currentHolder, holderActionLabel } from './BoardPanel.tsx'
+// T-37（v0.7.4）：滚入视口的"要不要滚"判定 + 可滚动祖先的可见矩形（可注入，
+// 纯对象链即可 node 单测）。
+export { scrollAncestorBoxes } from './BoardPanel.tsx'
 // 0.7.3：持球记号 + 持球行 tooltip 只此一处 —— mini 抽屉与卡面/抽屉共用同一套语言。
 export { HOLDER_MARKS, holderTitle } from './BoardPanel.tsx'
 // 0.7.3：「关于」浮层的纯内容（版本回落 / 四个外链 / 本地透明度事实），可 node 单测。
@@ -80,6 +83,9 @@ export { openTaskCount, runPlanOps, groupByOwner, isFinal, escapeTarget, UNASSIG
 // 导出以便 node 单测直接跑面板真正用的那条判定路径。
 export { boardKeyIntent, isTypingTarget, stepSelection, visualOrder, keyboardOrderFor } from './view.ts'
 export type { BoardKeyIntent, BoardKeyLayers, KeyEventLike, KeyboardOrderInput } from './view.ts'
+// T-37（v0.7.4）：选中卡滚入视口的可见性判定 + 滚动选项（纯函数，可 node 单测）。
+export { isVisibleIn, revealIntoView, REVEAL_MARGIN, REVEAL_SCROLL_OPTIONS } from './view.ts'
+export type { RevealBox, RevealTargetLike } from './view.ts'
 export { StatsView } from './StatsView.tsx'
 export {
   headline, byStatus, byPriority, byOwner, flow, dwellByColumn, actionsByActor,
