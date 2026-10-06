@@ -118,7 +118,7 @@ Each task still carries **value points** (Fibonacci scale ½ / 1 / 2 / 3 / 5 / 8
 ## Install
 
 ```bash
-dsh plugin --profile web add dsh-taskboard-kit@0.7.3
+dsh plugin --profile web add dsh-taskboard-kit@0.7.4
 # restart dsh web, open any session, and the「看板」tab is there
 ```
 
@@ -126,15 +126,32 @@ dsh plugin --profile web add dsh-taskboard-kit@0.7.3
 supply-chain `minimumReleaseAge` gate: a version published minutes ago is held
 back, and a bare `add dsh-taskboard-kit` then silently installs an older one —
 you would get a board whose `done` is still treated as terminal without any hint.
-Naming `@0.7.3` opts that release out of the gate and installs what you asked for.
+Naming `@0.7.4` opts that release out of the gate and installs what you asked for.
 Once a release is more than a day old, a bare `add` finds it too.
 
 <a id="release-notes"></a>
+## v0.7.4 — the keyboard works, walking never loses sight, and the toolbar stops being "unstable"
+
+**Client-side only: refresh the page.** Three things:
+
+1. **Keyboard navigation `j` / `k`** — move the selection in **visual order** (top to bottom, left to right) within the current view; the drawer follows along; `Enter` opens the first card. The order is **derived from the same lanes the board renders**, so "keyboard order === screen order" is structural, and a collapsed "settled" lane is not in the order at all (nothing rendered should be reachable). **While focus is in an input, the comment box, or a contenteditable, every key goes to native behaviour** (⌘/Ctrl/Alt, IME composition, and the guide/about/picker/new-task overlays are left alone too); **`Esc` still has exactly one layering** — no second meaning was added.
+2. **Walking brings the card back into view** — on a long board or a narrow window, `j`/`k` scroll the selected card into sight. It uses `block:'nearest'` and **does not scroll at all when the card is already visible** (otherwise every keystroke jumps, which is worse than not scrolling), and it never drags the drawer along.
+3. **Toolbar restructure (three groups + always present)** — this release answers "the layout and display are unstable":
+   - the row now has **three groups**: views (`By status|By owner|Stats`) · filters (`Include closed`) · actions (info `?` `ⓘ` · action `↻` · primary button), with **4px inside a group and 16px between groups**;
+   - **`Include closed` is always present** (it used to render only in the owner view ⇒ switching views made a control appear or vanish, which *is* the instability);
+   - **the three tool icons are inline SVG now** (`?` was ASCII while `↻`/`ⓘ` were symbol glyphs — identical CSS could never align them);
+   - **"Refresh" is no longer wedged between "Guide" and "About"**;
+   - **every clickable control is 28px tall with the same radius, hover and keyboard focus ring**;
+   - **it steps between layouts instead of squeezing**: `≥720` full labels → `520–720` drops `path → count → title` in that order and the filter keeps only its box → `<520` moves the filter and the three tools into **`⋯`** (the views and the primary button **never leave**; at 320px the views join the menu too). `⋯` is wired into the existing Esc layering — one keypress closes one layer.
+   - fixed along the way: deleting the styles table also deleted a key, which at 720px in English dropped the view group out of flex onto a second row.
+
+**Verified**: `npm test` **230 checks green** + clean typecheck; every change carries a **mutation check** (keyboard guard / ordering / reveal gate / icon form / group gap / menu layering …), and a **real browser** measured the geometry: 16×16 icons, 28×28 buttons, **0.00px spread between the vertical centres of all clickable controls**, one non-overflowing row at every breakpoint, `⋯` open/close and Esc, visible focus, a truncated long path, an empty board and the longest English labels.
+
 ## v0.7.3 — the ⓘ About card, one holder line everywhere, two cleanups
 
 **Client-side only: refresh the page — no `dsh web` restart needed.** The「关于」links are the only thing here that ever leaves your machine, and only when you click one.
 
-1. **The「关于」card (ⓘ, next to `?` and `↻`).** Name + version (the version is **injected at build time** from `package.json` via esbuild's `define`; a build that forgets it falls back to `dev` rather than printing nothing), one sentence on what this is, and then the block that is actually worth reading — **local transparency**: the board file's absolute path, how many cards and how many roster entries it holds, the data-format version (`board.version`), the plugin id, and the plain statement that **all of it lives in that one JSON file: no server, no accounts, no cloud**. Below that, four GitHub entries — repository · report an issue · the collaboration spec (`docs/COLLABORATION.md`) · these release notes — every one `target="_blank" rel="noreferrer"`, plus MIT and the author. Esc closes it (it is the topmost layer: the key never falls through to a drawer or the guide underneath).
+1. **The「关于」card (ⓘ; since 0.7.4 it sits next to `?` in the info group, while `↻` moved to the action side).** Name + version (the version is **injected at build time** from `package.json` via esbuild's `define`; a build that forgets it falls back to `dev` rather than printing nothing), one sentence on what this is, and then the block that is actually worth reading — **local transparency**: the board file's absolute path, how many cards and how many roster entries it holds, the data-format version (`board.version`), the plugin id, and the plain statement that **all of it lives in that one JSON file: no server, no accounts, no cloud**. Below that, four GitHub entries — repository · report an issue · the collaboration spec (`docs/COLLABORATION.md`) · these release notes — every one `target="_blank" rel="noreferrer"`, plus MIT and the author. Esc closes it (it is the topmost layer: the key never falls through to a drawer or the guide underneath).
 2. **The holder line is now the panel's one answer to「球在谁手上」— on every surface.** The card, the drawer and the status-bar mini drawer all render `mark + name` from the same derivation (`currentHolder`), strictly one line: `➤` to submit · `○` to claim (pool) · `◷` to answer / to reply (parked on a human / an agent) · `⚑` to decide (review) · `⌂` to settle (done). `closed` has no holder. It is derived from the state machine, not from `assignee`: in `review` the assignee is frozen (the reviewer holds the ball) and in `done` the reviewer is cleared (the creator owes the settle), so reading「当前处理人」literally points at the **wrong person** in exactly those stages. The mini drawer used to stack three per-field badges that said the same thing twice; it now shows this single line.
 3. **Title prefixes are stripped for DISPLAY only.** A leading `【owner】 T-93 ·` that merely repeats what the card already shows is dropped from the rendered title — the untouched original stays in the tooltip. Nothing is rewritten in the board file.
 4. **Long names truncate instead of spilling.** `.tb-badge-outline` (and every sibling 10px pill) now carries `max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap`: a long actor name used to overflow its dashed border and get clipped mid-glyph by the lane, which read as broken layout rather than「the name is long」.
