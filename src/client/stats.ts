@@ -588,6 +588,15 @@ function firstOf(task: Task, events: readonly TaskEvent[]): number | null {
  *
  * `waiting_on` 只存**当前**那次等待，所以往回看只能用 `since`：它比 `at` 晚，
  * 说明那一刻还没在等；`since` 之后又出现过 `unblocked`，说明那次等待已解除。
+ *
+ * **已知取舍（T-28 ③ → T-50 第 3 条）：只反映"当前这一次"等待，历史等待会漏。**
+ * 一张卡「挂起 → 解除 → 后来又挂起」时，`waiting_on.since` 只指向**后来**那一次，
+ * 于是"第一次挂起期间"问 `blockedAt()` 会答 false —— 图上表现为「被卡住」偏低。
+ * 这里刻意**不**补，理由：补它要给统计面加一层「等待区间重建」（`blocked` /
+ * `unblocked` 在 `log` 里其实可以配对），那是另一张卡的活 —— 会动 KPI 口径、
+ * 要处理没有 `blocked` 事件的旧板，而收益只落在统计页这一条趋势上，
+ * 不影响任何协作动作。**要看历史等待就读 `log`**：`blocked`(ts1) … `unblocked`(ts2)
+ * 就是一段 `[ts1, ts2)` 的等待区间，`taskboard get <id>` 的时间线里逐条可见。
  */
 function blockedAt(task: Task, at: number): boolean {
   const waiting = task.waiting_on

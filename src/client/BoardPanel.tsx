@@ -600,8 +600,21 @@ export function humanWaiting(board: Board | null, now: number = Date.now()): Hea
 // action is greyed, who is actually around to be assigned, and which tags are
 // milestones. The JSX below only renders these answers; it never re-derives.
 
-/** The nine lifecycle actions the drawer knows about (claim / unblock land
- *  outside the status machine — see ACTION_FROM). */
+/**
+ * The nine lifecycle actions the drawer knows about (claim / unblock land
+ * outside the status machine — see ACTION_FROM).
+ *
+ * `stop` 与 `block` **故意不在里面**（T-29 ② 的取舍，非回归）：抽屉只放
+ * "把卡往前推"的动作；`stop`（让出但保留 assignee）与 `block`（挂起等人）
+ * 都是"把卡按住"的动作，走 **CLI 补位** —— 见 docs/COLLABORATION.md §4 与 §9：
+ *
+ *   taskboard update <id> --action stop
+ *   taskboard update <id> --action block --on human --question "…"
+ *
+ * 代价是面板上按不了"挂起"；收益是这九个按钮每个都只有一个方向、一个结果列，
+ * 不会出现"按下去状态根本没变"的动作（`block` / `unblock` 都不改列）。
+ * 要改这个取舍先问主人，别顺手加按钮。
+ */
 export type DrawerAction = 'claim' | 'unblock' | 'start' | 'submit' | 'approve' | 'reject' | 'done' | 'close' | 'reopen'
 
 export interface ActionRow {
@@ -671,6 +684,17 @@ function outcomeOf(task: Task, action: DrawerAction): string {
       return L('进入「{c}」· 负责人=认领者', 'into “{c}” · owner = the claimer', { c })
     case 'unblock':
       return L('解除等待 · 仍是「{c}」', 'release the wait · still “{c}”', { c })
+    case 'start':
+      // host 的 `start` **不清** `waiting_on`（只有 submit / approve / reject /
+      // done / close / reopen / unblock 清它，见 src/host/store.ts）⇒ 一张正在
+      // 等人的卡可以被 start，而那次等待照样在。结果列必须说出来 —— 否则面板
+      // 会让人以为"开始"顺手把等待解掉了（T-29 ③ 的遗留，T-50 第 5 条）。
+      return task.waiting_on
+        ? L('进入「{c}」· 等待仍在（{who}）', 'into “{c}” · the wait is still on ({who})', {
+            c,
+            who: task.waiting_on.who ?? waitKindLabel(task.waiting_on.kind),
+          })
+        : L('进入「{c}」', 'into “{c}”', { c })
     case 'submit':
       return L('进入「{c}」· 裁决人 {who}', 'into “{c}” · reviewer {who}', { c, who: task.reviewer ?? creator })
     case 'approve':
@@ -3721,8 +3745,14 @@ const styles: Record<string, CSSProperties> = {
   // One line ⇒ the chip truncates instead of wrapping — which is why its text
   // is the compact 「◷ who · 1h12m」 (full sentence + question live in the
   // tooltip): the AGE is the half that says "this is stuck" and must survive.
-  // Never squeezed: the people cluster yields only as a last resort, so the
-  // waiting chip keeps谁 + 时长 whole; the TAGS are the ones that clip.
+  //
+  // 版式优先级（T-25 ④ 的裁定原话，写在这里免得下一版又猜错）：
+  //   **时长绝不让位；标签与人同让，标签基数小先消失。**
+  //   · 「不让位」= `flexShrink: 0`：只有等待胶囊（本样式）与列龄（cardAge）。
+  //     时长是"这张卡卡住了"的那一半证据，任何挤压都不许把它拿走。
+  //   · 「同让」= cardWho 与 cardTags 的 `flex-shrink` **都是 1**，所以人也会被
+  //     按比例缩（旧注释写的"人只在最后才让"是错的，T-25 已更正）。
+  //   · 「标签基数小先消失」= 同样的收缩系数下，先被 `overflow: hidden` 剪光的是标签。
   cardWait: { whiteSpace: 'nowrap', overflow: 'hidden', minWidth: 0, flexShrink: 0 },
   cardWaitWho: { overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 },
   cardHoldMark: { flexShrink: 0, color: DIM, marginRight: 3 },

@@ -6,7 +6,8 @@
  * note / comment 里，而 note **不改变列** ⇒ 没有载体、没有提醒、没有清单。
  * `shared/tails.ts` 是那个载体，本文件钉住它的三件事：
  *
- *   1. **判据逐类命中**（11 类，每类一个样本）与**逐类收窄**（什么样的句子
+ *   1. **判据逐类命中**（11 类逐句判据 + 1 类只在小节标题上放行，每类一个样本）
+ *      与**逐类收窄**（什么样的句子
  *      *不*该被列出来 —— 误报同样是缺陷，只是方向不同）；
  *   2. **范围与归属**：只扫 closed/done、只把"复核意见"与"作者的承诺"算数、
  *      别名（dsh ≡ dsh-agent）要认得出、收口之后不再列；
@@ -179,6 +180,89 @@ ok('切句：；与裸 ? 不切断一句话（成串的待办保持在一起）'
   assert.ok(snippets.some((text) => text.includes('补一条断言')), '复核人（非作者）的留言整条扫')
 }
 ok('作者交付说明不进清单；作者的承诺与复核人的留言进清单')
+
+{
+  // ---------------------------------------------------- 「明确没做」小节（T-50）
+  // T-40 的教训是「**说没做、然后没人跟**」：作者的交付说明里常有一节
+  // 「### 明确没做」/「### 没做的部分与原因」，标题下的条目正是"这件事我知道
+  // 我没做"的**结构性自陈** —— 它既不是"推迟"也不是"别掉"，所以过去**一条都不成
+  // 尾巴**（实证：T-8#c:1:29 的标题被列出、标题下 4 条一条都没；T-23 的
+  // 「没做的部分与原因」整节 0 条）。
+  //
+  // 夹具是 **T-23 的真实交接留言**：逐字节取自工作区板 `.dsh/taskboard.json`
+  // （`tasks['T-23'].comments[0].text`），落在 `tests/fixtures/t23-comment.md`。
+  // 它是**作者自己写的** —— 所以这条同时钉住"要穿过 `PROMISE_RULES` 那道门"。
+  const id = await closedCard('没做小节夹具（T-23 真实留言）', { verdict: '复核通过。' })
+  const t23 = await readFile(
+    join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 't23-comment.md'),
+    'utf8',
+  )
+  await addComment(ws, id, t23.trimEnd(), 'dsh') // 作者 = dsh = assignee ⇒ ownerAuthored
+
+  const tails = (await openTails()).filter((tail) => tail.task_id === id)
+  const section = tails.filter((tail) => tail.rules.includes('not-done'))
+
+  assert.ok(section.length > 0, '「### 没做的部分与原因」这一节必须被扫出来')
+  assert.ok(
+    section.some((tail) => tail.snippet.includes('没做的部分与原因')),
+    '小节标题本身要被列出 —— 它是"这里有一摊没做的事"的指针',
+  )
+  // T-48 点名要看的 3 条实体条目：逐条都得在。
+  for (const must of ['onlyUnprocessed', 'T-13 二期', 'daemon 的 WS 帧不带未读']) {
+    assert.ok(section.some((tail) => tail.snippet.includes(must)), `「没做」小节下的条目必须被列出：${must}`)
+  }
+  assert.equal(
+    section.filter((tail) => /^\d+\./.test(tail.snippet)).length,
+    5,
+    '标题下的 5 个编号条目**逐条**都要列出来（不是只列标题）',
+  )
+  // 小节边界：下一个标题之后的内容不许继承 not-done。
+  assert.ok(
+    !tails.some((tail) => tail.snippet.includes('两个必须知情的环境事实')),
+    '下一个标题不该被算进"没做"小节',
+  )
+  assert.ok(
+    !tails.some((tail) => tail.snippet.includes('会整体替换')),
+    '「没做」小节在下一个标题处结束，后面的正文不许被牵连',
+  )
+
+  // **只在小节标题层面放行**：正文里说"没做 / 不在本卡范围"**不算** ——
+  // 否则交付说明的正文（满地都是这类话）会一夜之间变成墙纸。
+  const noise = await closedCard('正文里的"没做"', { verdict: '复核通过。' })
+  await addComment(ws, noise, '交付说明：这件事我明确没做，也不在本卡范围，请审核人知悉。', 'dsh')
+  assert.equal(
+    (await openTails()).filter((tail) => tail.task_id === noise && tail.rules.includes('not-done')).length,
+    0,
+    '没有「没做」小节标题时，正文里的"没做 / 不在本卡范围"不进清单（控噪声）',
+  )
+
+  // T-8 的措辞（「### 明确没做（留给下一轮，理由在手）」）同样要带出条目；
+  // 标题自己仍可同时命中 `deferral`（判据并存，不是二选一）。
+  const t8 = await closedCard('明确没做小节', { verdict: '复核通过。' })
+  await addComment(ws, t8, [
+    '### 明确没做（留给下一轮，理由在手）',
+    '1. **客户端那几个 minor**：都在 `src/client/*`，是别人正在动的文件，我没碰。',
+    '2. **m8 的一半**：只做了 tmp 清理，没加 fsync。',
+    '',
+    '### 请审核人看三点',
+    '1. 这件事我明确没做。',
+  ].join('\n'), 'dsh')
+  const t8Tails = (await openTails()).filter((tail) => tail.task_id === t8)
+  const t8Section = t8Tails.filter((tail) => tail.rules.includes('not-done'))
+  const t8Head = t8Section.find((tail) => tail.snippet.includes('明确没做'))
+  assert.ok(t8Head, '「明确没做」标题要列出来')
+  assert.ok(t8Head.rules.includes('deferral'), '标题上原有的判据（留给下一轮）不许被顶掉')
+  assert.equal(
+    t8Section.filter((tail) => /^\d+\./.test(tail.snippet)).length,
+    2,
+    '标题下的 2 条逐条列出来',
+  )
+  assert.ok(
+    !t8Tails.some((tail) => tail.snippet.includes('这件事我明确没做')),
+    '「请审核人看三点」那一节的正文不许被牵连',
+  )
+}
+ok('「明确没做 / 没做的部分与原因」：标题与标题下的条目逐条列出（正文里的"没做"不算）')
 
 {
   // 别名：dsh ≡ dsh-agent。少了名册判断，dsh-agent 写的交付说明会被当成"别人

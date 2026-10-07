@@ -2699,6 +2699,37 @@ await check('T-29 · drawerActions: 已收口的卡只剩重开可用，且「�
   assert.equal(settle.disabledReason, null)
 })
 
+await check('T-50 · 等待中的卡被 start：结果列必须说明「等待仍在」', () => {
+  const board = drawerFixture()
+  const base = board.tasks['T-1']
+  // 一张「已指派 + 正在等某人」的卡：host 的 `start` **不清** `waiting_on`
+  // （src/host/store.ts 只让 submit/approve/reject/done/close/reopen/unblock 清），
+  // 所以它照常落到 in_progress，而那次等待照样在 —— 面板必须把这件事说出来，
+  // 否则读的人会以为"开始"顺手把等待解掉了（T-29 ③ 的遗留）。
+  const waiting = {
+    ...base,
+    status: 'open',
+    assignee: 'cc',
+    reviewer: null,
+    waiting_on: { kind: 'agent', who: 'kimi', question: 'T-3 审计结论能给我吗？', since: new Date().toISOString() },
+  }
+  const startOf = (task) => client.drawerActions(task, board).find((row) => row.action === 'start')
+
+  const row = startOf(waiting)
+  assert.equal(row.disabledReason, null, '等待不拦「开始」：start 仍可用（host 语义就是如此）')
+  assert.ok(row.outcome.includes('In progress'), `仍要说清落到哪一列：${row.outcome}`)
+  assert.match(row.outcome, /the wait is still on \(kimi\)/, `结果列要点明等待仍在：${row.outcome}`)
+
+  // 无名等待（who === null）退化成 kind 措辞，而不是把 null 渲染进文案。
+  const anon = startOf({ ...waiting, waiting_on: { kind: 'human', who: null, question: '发不发？', since: new Date().toISOString() } })
+  assert.match(anon.outcome, /the wait is still on \(a human\)/, `无名等待也要能读：${anon.outcome}`)
+  assert.ok(!anon.outcome.includes('null'), '不许把 null 渲染进文案')
+
+  // 没有等待的卡：措辞保持原样（不许给每张卡都挂一句"等待仍在"）。
+  const plain = startOf({ ...waiting, waiting_on: null })
+  assert.ok(!plain.outcome.includes('wait'), `没有等待时结果列不许提等待：${plain.outcome}`)
+})
+
 await check('T-29 · 指派列表：默认只含在场者，久未活动者要显式展开才出现', async () => {
   const now = Date.now()
   const board = drawerFixture()

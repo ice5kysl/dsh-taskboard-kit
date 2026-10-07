@@ -47,6 +47,11 @@ export type TailRuleId =
   | 'still-there'
   /** 「口径不齐 / 不一致 / 相悖 / 两套尺度」 */
   | 'inconsistency'
+  /**
+   * 「明确没做 / 没做的部分与原因」**小节标题**（+ 标题下的条目）。
+   * 这一类**只在小节标题上放行** —— 见 `SECTION_RULES`。
+   */
+  | 'not-done'
 
 export interface TailRule {
   id: TailRuleId
@@ -102,15 +107,83 @@ export const TAIL_RULES: readonly TailRule[] = [
     pattern: /(?<!零)(?<!无)残留(?!\s*(为|＝|=)\s*0)|仍有|仍会|仍用|仍被|仍以|仍是|还有一处|还是旧|未改|没改|漏改/,
   },
   { id: 'inconsistency', hint: '口径不齐 / 不一致 / 不统一 / 相悖 / 矛盾 / 两套尺度', pattern: /口径不齐|不一致|不统一|相悖|矛盾|两套尺度|两套标准/ },
+  {
+    id: 'not-done',
+    hint: '**小节标题**「明确没做 / 没做的部分与原因 / 不在本卡范围」—— 该标题**本身**与它下面的**条目**都会被列出（这类判据只在小节标题上放行，正文里说"没做"不算）',
+    pattern: /明确(?:还)?没(?:有)?做|(?:还|仍)?没(?:有)?做的(?:部分|内容|事情|事|地方|清单)|未做的|仍未做|不做(?:的)?(?:部分|内容|清单)|不在(?:本卡|本轮|这一轮)范围|本轮不做|这一轮之外/,
+  },
 ]
+
+/**
+ * **只在小节标题层面放行的判据。**
+ *
+ * 为什么单开一类：T-40 的教训是「**说没做、然后没人跟**」。作者的交付说明里常有一节
+ * 「### 明确没做（留给下一轮，理由在手）」/「### 没做的部分与原因」—— 标题下的条目
+ * 正是"我知道这件事我没做"的**结构性自陈**。它不属于「推迟 / 随某批一起 / 别掉」任何
+ * 一类，所以过去**一条都没成尾巴**：
+ *
+ *   · 实证 1：`T-8#c:1:29` 的标题因为"留给下一轮"命中 `deferral` 被列出，
+ *     而标题下的 5 条里 **4 条一条都没列出**（第 5 条只是碰巧含"留给人类"）；
+ *   · 实证 2：T-23 的「### 没做的部分与原因」整节 **0 条**成尾巴。
+ *
+ * 但**不能**把这类词放进逐句判据：交付说明的正文里"没做 / 不在范围"满地都是
+ * （T-3 那种审计报告一个人就能刷出 29 条），放开即成墙纸。所以：
+ *
+ *   1. `matchRules()` **跳过**这里的 id（正文里的"没做"永远不算）；
+ *   2. `matchSectionRules()` 只接受**小节标题**片段（`### …`）；
+ *   3. 标题命中后，它下面**到下一个同级/更高级标题之前**的每个片段都带上这条判据
+ *      （标题自己也算一条）—— 这就是"标题下的条目"被列出来的机制。
+ */
+export const SECTION_RULES: ReadonlySet<TailRuleId> = new Set<TailRuleId>(['not-done'])
 
 /** 一句话命中了哪些判据（没命中 = 空数组 ⇒ 它不是尾巴）。 */
 export function matchRules(text: string): TailRuleId[] {
   const hits: TailRuleId[] = []
   for (const rule of TAIL_RULES) {
+    // 只在小节标题上放行的判据不参与逐句匹配（见 SECTION_RULES）。
+    if (SECTION_RULES.has(rule.id)) continue
     if (rule.pattern.test(text)) hits.push(rule.id)
   }
   return hits
+}
+
+/** 小节标题片段：`### 明确没做（留给下一轮，理由在手）`。`splitSegments` 保留前导 `#`。 */
+const HEADING = /^(#{1,6})\s+/
+
+/** 只把 `SECTION_RULES` 里的判据喂给**小节标题**（非标题一律空数组）。 */
+export function matchSectionRules(text: string): TailRuleId[] {
+  if (!HEADING.test(text)) return []
+  const hits: TailRuleId[] = []
+  for (const rule of TAIL_RULES) {
+    if (!SECTION_RULES.has(rule.id)) continue
+    if (rule.pattern.test(text)) hits.push(rule.id)
+  }
+  return hits
+}
+
+/**
+ * 逐片段算「它落在哪个"没做"小节里」—— 命中标题的片段自己也在里面。
+ *
+ * 小节的边界是**下一个同级或更高级的标题**（markdown 语义）：`#### 子标题`
+ * 不会把 `### 明确没做` 的小节截断。返回与 `pieces` 等长的数组，元素是该片段
+ * 从所属小节继承来的判据（没有就空数组）。
+ */
+export function sectionScopes(pieces: readonly TextSegment[]): TailRuleId[][] {
+  const out: TailRuleId[][] = []
+  let open: { level: number; rules: TailRuleId[] } | null = null
+  for (const piece of pieces) {
+    const heading = HEADING.exec(piece.text)
+    if (heading) {
+      const level = heading[1]!.length
+      if (open && level <= open.level) open = null
+      const rules = matchSectionRules(piece.text)
+      if (rules.length > 0) open = { level, rules }
+      out.push(rules)
+      continue
+    }
+    out.push(open ? open.rules : [])
+  }
+  return out
 }
 
 /** 判据 id → 它找什么（给 CLI / 报告用）。 */
@@ -204,8 +277,13 @@ const DECISION_EVENTS: ReadonlySet<TaskEvent> = new Set<TaskEvent>([
  * 但作者的**承诺**恰恰是最容易掉地的一类（"这条随下一笔一起改"就是这么丢的），
  * 所以只放这一类进来 —— 而不是"建议 / 请"，并且**按句过滤**（不是整条评论放行：
  * 一条长评论里只要出现一个"遗留"，整篇的建议项都会被拉进来）。
+ *
+ * `not-done` 也在这道门里（T-50）：作者自己写的「## 明确没做」小节**同样是他的自陈**，
+ * 而且是最贵的那一类 —— 他明确说了"这件事我没做"，正是 T-40 审计里"没人跟"的源头。
+ * 这条判据已经由 `SECTION_RULES` 限制成"只在小节标题上放行 + 只带出该节的条目"，
+ * 所以放进这道门不会把交付说明的正文一起放进来。
  */
-const PROMISE_RULES: ReadonlySet<TailRuleId> = new Set<TailRuleId>(['deferral', 'deferred-ship', 'dont-drop'])
+const PROMISE_RULES: ReadonlySet<TailRuleId> = new Set<TailRuleId>(['deferral', 'deferred-ship', 'dont-drop', 'not-done'])
 
 export interface TailSourceRef {
   kind: 'log' | 'comment'
@@ -308,8 +386,13 @@ export function scanTails(board: Board, options: TailScanOptions = {}): TailsRep
       sources += 1
       const pieces = splitSegments(ref.text)
       segments += pieces.length
+      // 「没做」类判据的载体是小节标题 + 它下面的条目（见 SECTION_RULES）：
+      // 逐句判据走 matchRules，标题继承走 sectionScopes，两者取并集。
+      const scopes = sectionScopes(pieces)
       pieces.forEach((segment, index) => {
-        const hits = matchRules(segment.text)
+        // `matchRules` 已按 TAIL_RULES 顺序给出逐句判据，接上小节继承的
+        // `not-done`（它在表里排最后，所以顺序仍然与判据表一致）；Set 去重。
+        const hits = [...new Set([...matchRules(segment.text), ...scopes[index]!])]
         // 作者自己写的留言：只认"承诺"类判据（见 PROMISE_RULES）。
         const rules = ref.ownerAuthored ? hits.filter((id) => PROMISE_RULES.has(id)) : hits
         if (rules.length === 0) return
