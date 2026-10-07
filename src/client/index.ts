@@ -46,12 +46,16 @@ export const MINI_OVERLAY_ID = 'taskboard-mini'
 // by another client plugin): the store, the components, the bridge, and the
 // shared board math.
 export { BoardPanel, DetailDrawer } from './BoardPanel.tsx'
-export { taskRef, displayTitle, currentHolder, holderActionLabel } from './BoardPanel.tsx'
+export { taskRef, taskRefTitle, displayTitle, currentHolder, holderActionLabel } from './BoardPanel.tsx'
 // T-37（v0.7.4）：滚入视口的"要不要滚"判定 + 可滚动祖先的可见矩形（可注入，
 // 纯对象链即可 node 单测）。
 export { scrollAncestorBoxes } from './BoardPanel.tsx'
 // 0.7.3：持球记号 + 持球行 tooltip 只此一处 —— mini 抽屉与卡面/抽屉共用同一套语言。
 export { HOLDER_MARKS, holderTitle } from './BoardPanel.tsx'
+// T-42 第 5 条：卡面记号图例（`?` 指南里的对照表）—— 纯函数，node 单测直接钉住
+// 「每个真正会渲染的记号都在图例里」。
+export { markLegend } from './BoardPanel.tsx'
+export type { MarkLegendRow } from './BoardPanel.tsx'
 // 0.7.3：「关于」浮层的纯内容（版本回落 / 四个外链 / 本地透明度事实），可 node 单测。
 export {
   ABOUT_VERSION_RAW, TB_VERSION, aboutVersion, aboutVersionLabel, aboutFacts,

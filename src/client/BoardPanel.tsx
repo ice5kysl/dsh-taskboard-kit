@@ -107,10 +107,11 @@ import {
   WARN,
   ensureTaskboardStyles,
 } from './theme.ts'
-import { boardKeyIntent, columnLabel, escapeTarget, groupByOwner, keyboardOrderFor, priorityLabel, revealIntoView, runPlanOps, stepSelection, taskRef, toolbarModeFor, toolbarPlanFor, useSessionCwd, valueText, type OwnerGroup, type RevealBox, type SessionListLike, type ToolbarIdentityPart, type ToolbarMode } from './view.ts'
+import { boardKeyIntent, columnLabel, escapeTarget, groupByOwner, keyboardOrderFor, priorityLabel, revealIntoView, runPlanOps, stepSelection, taskRef, taskRefTitle, toolbarModeFor, toolbarPlanFor, useSessionCwd, valueText, type OwnerGroup, type RevealBox, type SessionListLike, type ToolbarIdentityPart, type ToolbarMode } from './view.ts'
 
 // taskRef moved to view.ts (shared with the mini board); keep the export path.
-export { taskRef } from './view.ts'
+// T-42 第 6 条：taskRefTitle 同它一起住在那儿（卡面 / 抽屉 / mini 一处置措辞）。
+export { taskRef, taskRefTitle } from './view.ts'
 
 /** Props handed to the view: injected store + the standard slot shares. */
 export interface BoardPanelProps {
@@ -301,12 +302,16 @@ export function displayTitle(task: Task, board?: Board | null): string {
     // boundary, id=T-93 turned 「T-930 的回归」 into 「0 的回归」 and id=T-9 turned
     // 「T-93 别人的卡」 into 「3 别人的卡」 — it ate a real title, the worst possible
     // direction (the "stripped to nothing" fallback cannot catch it, the result
-    // is non-empty). So: not followed by a word char, not followed by -<digit>
-    // (that is a sub-id like T-93-2), and only then consume the separator run.
-    // Capture (and re-emit) any non-redundant boxed prefix, so this replacement
-    // drops ONLY the id — 「【kimi】 T-93 · X」 → 「【kimi】 X」.
+    // is non-empty). So: not followed by a word char, and not followed by
+    // `-`/`.` plus another word char — `T-93-2` (sub-id), `T-93-hotfix` (branch
+    // tag) and `T-93.5` (sub-version) are all DIFFERENT identifiers, not "this
+    // card's number + a separator" (T-42 第 7 条：kimi 在 T-25 复审里点名的两条
+    // 同族残余 —— 上一版只挡 `(?!-\d)`，`T-93-hotfix`/`T-93.5` 仍被咬掉)。
+    // Only then consume the separator run. Capture (and re-emit) any
+    // non-redundant boxed prefix, so this replacement drops ONLY the id —
+    // 「【kimi】 T-93 · X」 → 「【kimi】 X」.
     const ref = new RegExp(
-      `^(\\s*(?:[【\\[][^】\\]]{1,32}[】\\]]\\s*[·:：\\-–—,]?\\s*)?)(?:T-?|#)${n}(?![\\d\\w])(?!-\\d)[\\s·:：,.、]*`,
+      `^(\\s*(?:[【\\[][^】\\]]{1,32}[】\\]]\\s*[·:：\\-–—,]?\\s*)?)(?:T-?|#)${n}(?![\\d\\w])(?![-.][\\d\\w])[\\s·:：,.、]*`,
       'i',
     )
     // A separator run can survive the id (「T-93 · - X」 → 「- X」): tidy it away,
@@ -378,6 +383,42 @@ const HOLDER_ACTIONS: Record<HolderAction, [string, string]> = {
 export function holderActionLabel(action: HolderAction): string {
   const pair = HOLDER_ACTIONS[action]
   return L(pair[0], pair[1])
+}
+
+/** 图例的一行：卡面上真正渲染的那个记号 + 它是什么意思。 */
+export interface MarkLegendRow {
+  mark: string
+  label: string
+}
+
+/**
+ * 卡面记号图例（T-42 第 5 条 / kimi 在 T-27 复审里的建议 a）。
+ *
+ * 为什么要有：这套记号的信息**全在 tooltip 里**（「图标省的是重复的标签，不是
+ * 信息」），于是新手不进 `?` 指南就没有任何**面板内**的自查入口 —— 只能一个个
+ * hover 去猜。图例把「怎么读这张卡」一次讲清。
+ *
+ * 数据源必须是卡面**真正用的那几个常量**（`MARK` / `HOLDER_MARKS` /
+ * `HOLDER_ACTIONS` / `taskRef()`），不许另抄一份字形：抄一份就会漂。纯函数
+ * （无 JSX），node 单测直接断言「每个真正会渲染的记号都在图例里」。
+ */
+export function markLegend(): MarkLegendRow[] {
+  return [
+    // 卡面第 1 行的属性记号。
+    { mark: '●', label: L('优先级（三色圆点：高/中/低）', 'Priority (coloured dot: high/medium/low)') },
+    { mark: taskRef('T-93'), label: L('任务编号（tooltip 里给完整 id）', 'Task ref (the tooltip carries the full id)') },
+    { mark: `◆${valueText(3)}`, label: L('价值度（点数；未评估则不画）', 'Value points (omitted when unestimated)') },
+    { mark: MARK.owner, label: L('负责人', 'Owner') },
+    { mark: MARK.creator, label: L('创建者', 'Creator') },
+    // 第 3 行的持球记号：六个动作 → 六个记号（由 HOLDER_MARKS 派生，不手抄）。
+    { mark: HOLDER_MARKS.work, label: holderActionLabel('work') },
+    { mark: HOLDER_MARKS.answer, label: holderActionLabel('answer') },
+    { mark: HOLDER_MARKS.decide, label: holderActionLabel('decide') },
+    { mark: HOLDER_MARKS.settle, label: holderActionLabel('settle') },
+    { mark: HOLDER_MARKS.claim, label: holderActionLabel('claim') },
+    // 右端的列龄：数字 + h/d 单位，例如 9d。
+    { mark: '9d', label: L('在当前列停留多久（h/d）', 'Time in this column (h/d)') },
+  ]
 }
 
 /**
@@ -578,8 +619,13 @@ export interface ActionRow {
 /**
  * Mirrors `TRANSITIONS` in src/host/store.ts. The browser bundle cannot import
  * the host module (node built-ins), so the state machine is restated here — and
- * a test pins this table against the host's, action by action, so the two can
+ * `tests/action-parity.test.mjs` pins it against the host's, action by action
+ * and status by status (it DRIVES the host: one `updateTask` per cell, then
+ * compares with the `disabledReason` the drawer really renders), so the two can
  * never drift apart silently.
+ *
+ * 这句话曾经是**假的**：注释声称有这条护栏，而 tests/ 里没有（T-29 ① 的遗留，
+ * T-42 第 1 条补上）。写注释时点到具体文件，别只说「有测试」。
  */
 const ACTION_FROM: Record<Exclude<DrawerAction, 'claim' | 'unblock'>, TaskStatus[]> = {
   start: ['open'],
@@ -2235,6 +2281,9 @@ function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; bo
     <button
       type="button"
       className={selected ? 'tb-card active' : 'tb-card'}
+      // 稳定、与语言无关的卡身份钩子（T-42：卡面 ref 的 tooltip 改成「任务编号
+      // {id}」之后，测试再拿 title 认卡就会跟着措辞漂 —— 认卡应该认 id 本身）。
+      data-task={task.id}
       style={{ opacity: dragging ? 0.5 : 1 }}
       // No `dnd` ⇒ the card is not a drag source. The「按负责人」view is a
       // projection of ownership, not a status board (see OwnerLanes). And a
@@ -2261,7 +2310,7 @@ function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; bo
           style={{ ...styles.dot, background: PRIORITY_COLORS[task.priority] ?? FAINT }}
           title={L('优先级：{p}', 'Priority: {p}', { p: priorityLabel(task.priority) })}
         />
-        <span style={styles.cardRef} title={task.id}>{taskRef(task.id)}</span>
+        <span style={styles.cardRef} title={taskRefTitle(task.id)}>{taskRef(task.id)}</span>
         {task.value != null && (
           <span style={styles.valueBadge} title={L('价值度 {v}', 'Value {v}', { v: valueText(task.value) })}>
             ◆{valueText(task.value)}
@@ -2579,7 +2628,7 @@ export function DetailDrawer({
           content peeks through the strip above the bar. */}
       <div style={styles.drawerHeadWrap}>
         <div style={styles.drawerHead}>
-          <span style={styles.drawerRef} title={task.id}>
+          <span style={styles.drawerRef} title={taskRefTitle(task.id)}>
             {taskRef(task.id)}
           </span>
           <span style={styles.drawerTitle} title={task.title}>
@@ -3289,6 +3338,23 @@ function GuideOverlay({ cli, cwd, boardFile, onClose }: { cli: string | null; cw
             </ul>
           </section>
 
+          {/* T-42 第 5 条：卡面记号图例 —— 记号的含义本来只在 tooltip 里，不进
+              指南就没有面板内的自查入口。行由 markLegend() 供（同一批常量）。 */}
+          <section style={styles.guideSection}>
+            <div style={styles.guideH}>{L('卡面上的记号', 'Marks on a card')}</div>
+            <p style={styles.guideP}>
+              {L('卡面省掉的是重复的标签词，数据（编号 / 名字 / 数字）一个不少 —— 每个记号 hover 都有整句说明，这里给一份不 hover 也能看的对照表。', 'The card drops repeated LABEL words, never the data (ids, names, numbers) — every mark carries a full sentence on hover, and this is the same table without hovering.')}
+            </p>
+            <ul style={styles.markLegend}>
+              {markLegend().map((row) => (
+                <li key={`${row.mark}${row.label}`} style={styles.markLegendRow}>
+                  <span style={styles.markLegendMark}>{row.mark}</span>
+                  <span style={styles.markLegendLabel}>{row.label}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+
           <section style={styles.guideSection}>
             <div style={styles.guideH}>{L('状态栏的看板入口', 'The board entry in the status bar')}</div>
             <p style={styles.guideP}>
@@ -3959,6 +4025,12 @@ const styles: Record<string, CSSProperties> = {
   guideP: { margin: 0, overflowWrap: 'anywhere' },
   guideList: { margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 6 },
   snippet: { position: 'relative', display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 },
+  // 卡面记号图例（T-42 第 5 条）：自适应网格（宽档多列 / 窄档退成单列），
+  // 记号列定宽，读起来是一张上下对齐的对照表。
+  markLegend: { margin: 0, padding: 0, listStyle: 'none', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '4px 12px' },
+  markLegendRow: { display: 'flex', alignItems: 'baseline', gap: 7, minWidth: 0 },
+  markLegendMark: { flexShrink: 0, minWidth: 22, fontVariantNumeric: 'tabular-nums', fontWeight: 600, textAlign: 'center' },
+  markLegendLabel: { color: DIM, overflowWrap: 'anywhere' },
   snippetLabel: { fontSize: 11, fontWeight: 600, color: DIM },
   snippetPre: {
     margin: 0,

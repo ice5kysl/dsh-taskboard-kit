@@ -210,7 +210,7 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
         if (res.ok) {
           if (!isBoardShape(res.board)) {
             reportPollError(L(
-              'bridge 返回了残缺的看板数据,已保留上一份。',
+              'bridge 返回了残缺的看板数据，已保留上一份。',
               'The bridge returned a malformed board; kept the last good one.',
             ))
             return
@@ -251,7 +251,7 @@ export function createTaskboardStore(options: StoreOptions = {}): TaskboardStore
     if (state.busy) {
       // m12: a change swallowed by the busy gate used to fail SILENTLY (a drop
       // that did nothing, with no hint why) — say so instead.
-      set({ error: L('上一个操作还没完成,请稍候再试。', 'The previous change is still in flight — try again in a moment.') })
+      set({ error: L('上一个操作还没完成，请稍候再试。', 'The previous change is still in flight — try again in a moment.') })
       return false
     }
     set({ busy: true, error: null })

@@ -48,6 +48,15 @@ export const BORDER = 'var(--dsw-alias-border-l1, rgba(28,35,51,0.12))'
 export const BORDER_STRONG = 'var(--dsw-alias-border-l2, rgba(28,35,51,0.20))'
 export const ACCENT = 'var(--dsw-alias-brand-primary, #2d66f7)'
 export const DANGER = 'var(--dsw-alias-state-error-primary, #dc2626)'
+/**
+ * 「完成 / 已交付」的语义色（T-42 第 3 条，kimi 在 T-28 复审里的遗留 nit ①）。
+ *
+ * 宿主在两个主题里都是同一个绿（`--dsw-static-green-500` = #22c55e），所以它能当
+ * **数据色**用 —— 而 `ACCENT`（brand-primary）在 light ≈ 近黑 / dark ≈ 近白，拿它画
+ * 图表只靠明度区分、深色下几乎读不出来。它只做**填充**（图例色块 / 环形切片 /
+ * 进度条），不做正文色：绿在浅色底上小字号正文的对比度不够。
+ */
+export const SUCCESS = 'var(--dsw-alias-state-success-primary, #22c55e)'
 export const HOVER_BG = 'var(--dsw-alias-interactive-bg-hover, rgba(28,35,51,0.06))'
 /** The shell's blue primary action (composer send key, measured): link fill. */
 export const PRIMARY_FILL = 'var(--dsw-alias-link, #2d66f7)'

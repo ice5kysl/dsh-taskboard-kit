@@ -16,7 +16,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 
 // Pin the browser locale to English before the bundle's locale module reads
@@ -1017,7 +1017,14 @@ await check('currentHolder: 任何阶段有且只有一个持球人（closed 除
   const statuses = ['open', 'in_progress', 'review', 'done', 'closed']
   // 4 档等待（含 who 为空 —— kimi 打回的遗漏档：store 拒绝认领等待中的卡，
   // 渲染成「池子里」会给出一个点了必然失败的入口）
-  const waits = [null, { kind: 'human', who: 'iceskyls' }, { kind: 'agent', who: 'kimi' }, { kind: 'human', who: null }]
+  const waits = [null, { kind: 'human', who: 'iceskysl' }, { kind: 'agent', who: 'kimi' }, { kind: 'human', who: null }]
+  // T-42 第 2 条：fixture 里的人名必须是**名册里真有的**名字（与 collabBoard 的
+  // roster 同一批）。`iceskyls` 这个错拼就是这么混进来的 —— 断言只比
+  // `h.who === waiting_on.who`，错拼照样全绿，所以得单独钉一下。
+  const rosterNames = new Set(['dsh', 'kimi', 'iceskysl'])
+  for (const wait of waits) {
+    if (wait?.who) assert.ok(rosterNames.has(wait.who), `fixture 里的人名 ${wait.who} 不在名册里（错拼？正确是 iceskysl）`)
+  }
   let cases = 0
   for (const status of statuses) {
     for (const assignee of [null, 'dsh']) {
@@ -1084,11 +1091,16 @@ await check('displayTitle: 只剥「与本卡重复」的前缀（【owner】/T-
   )
   // ④c reviewer 的前缀也算重复（卡上已经有「审核 cc」徽章）
   assert.equal(client.displayTitle(t({ assignee: 'dsh', reviewer: 'cc', title: '【cc】整理回填' })), '整理回填')
-  assert.equal(client.displayTitle(t({ title: 'T-93' })), 'T-93', '剥空了就退回原文')
   // ④d kimi 打回的反例（过度剥离 = 篡改真实标题，最坏方向）：编号必须是一个**完整 token**
   assert.equal(client.displayTitle(t({ title: 'T-930 的回归' })), 'T-930 的回归', 'T-930 不是 T-93')
   assert.equal(client.displayTitle(t({ title: 'T-93X 贴连' })), 'T-93X 贴连', 'T-93X 不是 T-93')
   assert.equal(client.displayTitle(t({ title: 'T-93-2 子任务' })), 'T-93-2 子任务', 'T-93-2 是子编号')
+  // ④d′ T-42 第 7 条（kimi 在 T-25 复审里点名的两条同族残余）：编号后跟 `-字母` 或
+  // `.数字` 都不是"本卡编号 + 分隔符"，而是**另一个标识符**（hotfix 分支 / 子版本）。
+  // 上一版只挡 `(?!-\d)`，于是 `T-93-hotfix` 被剥成 `-hotfix`、`T-93.5` 被小数点
+  // 分隔符吃掉变成 `5 回归` —— 仍是打回的那个形状：咬掉真实标题。
+  assert.equal(client.displayTitle(t({ title: 'T-93-hotfix 分支' })), 'T-93-hotfix 分支', 'T-93-hotfix 是另一个标识符')
+  assert.equal(client.displayTitle(t({ title: 'T-93.5 回归' })), 'T-93.5 回归', 'T-93.5 是子版本号')
   assert.equal(client.displayTitle(t({ id: 'T-9', title: 'T-93 别人的卡' })), 'T-93 别人的卡', 'T-9 不得吃掉 T-93 的前缀')
   assert.equal(client.displayTitle(t({ id: 'T-9', title: 'T-90 的回归' })), 'T-90 的回归', 'T-9 不得吃掉 T-90')
   // 但本卡自己的编号仍然要剥（各种分隔符）
@@ -1107,6 +1119,19 @@ await check('displayTitle: 只剥「与本卡重复」的前缀（【owner】/T-
   const src = t({ title: '【kimi】 T-93 · 标题' })
   client.displayTitle(src)
   assert.equal(src.title, '【kimi】 T-93 · 标题', 'displayTitle 不得改动 task')
+})
+
+// T-42 第 6 条（kimi 的 T-27 建议 b）：`#93` 这个记号不自解释，tooltip 里点名
+// 「任务编号」。卡面 / 详情抽屉 / mini 抽屉共用同一处措辞（taskRefTitle）。
+await check('T-42 · 编号的 tooltip 说清它是什么（「任务编号」），不再只念一遍裸 id', async () => {
+  assert.equal(client.taskRefTitle('T-93'), 'Task id T-93', '措辞只有一处（zh 孪生在同一个 L() 调用里）')
+  const board = collabBoard([{ id: 'T-93', title: 'ref title', status: 'in_progress', assignee: 'dsh' }])
+  const { store, html } = await renderBoard(board)
+  assert.ok(html.includes('title="Task id T-93"'), '卡面的 #93 带着「任务编号」tooltip')
+  // 详情抽屉里那一个 ref 也是同一句（同一函数，一处置措辞）。
+  store.select('T-93')
+  const drawer = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+  assert.ok(drawer.includes('title="Task id T-93"'), '抽屉里的 ref 同措辞')
 })
 
 await check('stale + reviewer: column age, a quiet dot, and who owes the verdict', async () => {
@@ -1365,11 +1390,12 @@ await check('T-36 · ★ j / k 按视觉顺序走位：两块泳道 × 每道两
   ])
   const { store, html } = await renderBoard(board)
   // The order the browser paints, read straight out of the markup: lane by
-  // lane, card by card (each card's first T-id title is its ref span).
+  // lane, card by card. T-42：认卡改用 `data-task`（稳定钩子），不再拿 ref 的
+  // tooltip 文案认 —— 那支文案现在是「任务编号 {id}」，会随措辞漂。
   const rendered = html
     .split('class="tb-card')
     .slice(1)
-    .map((chunk) => chunk.match(/title="(T-\d+)"/)?.[1])
+    .map((chunk) => chunk.match(/data-task="(T-\d+)"/)?.[1])
     .filter(Boolean)
   assert.deepEqual(rendered, ['T-9', 'T-2', 'T-5', 'T-1'], '画出来的次序是 列序 × 列内序，不是 id 序')
 
@@ -1403,7 +1429,7 @@ await check('T-36 · ★ j / k 按视觉顺序走位：两块泳道 × 每道两
   const after = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
   const activeChunks = after.split('class="tb-card active').slice(1)
   assert.equal(activeChunks.length, 1, '同一时刻只有一张卡带 active（用现有的 tb-card active 样式）')
-  assert.equal(activeChunks[0].match(/title="(T-\d+)"/)?.[1], 'T-9', 'active 高亮落在被选中的那张卡上')
+  assert.equal(activeChunks[0].match(/data-task="(T-\d+)"/)?.[1], 'T-9', 'active 高亮落在被选中的那张卡上')
 })
 
 await check('T-36 · 边界不越界；空板 / 统计视图 / 收起的已关闭列都"无处可去"且不报错', () => {
@@ -1485,6 +1511,31 @@ await check('T-36 · 帮助浮层（?）里写明快捷键：j / k 走位 + Ente
   assert.ok(html.includes('Enter opens the first card'), '指南写明 Enter')
   assert.ok(html.includes('Escape closes exactly one layer'), '指南写明 Esc 只关最上面一层')
   assert.ok(html.includes('a text box has focus'), '指南写明输入框里不生效')
+})
+
+// -------------------------------------------------------- 卡面记号图例（T-42 第 5 条）
+// kimi 的 T-27 建议 a：记号的含义全在 tooltip 里 ⇒ 不 hover 的人在面板内没有自查
+// 入口。图例补上，而且必须由**卡面真正用的那几个常量**派生 —— 所以这条断言按
+// 「真正会渲染的记号」逐一去撞渲染出来的 HTML（少一行就红）。
+await check('T-42 · 指南里有卡面记号图例：每个真正会渲染的记号都在里面', async () => {
+  const board = collabBoard([{ id: 'T-1', title: 'one', status: 'open' }])
+  const store = client.createTaskboardStore({ bridge: { board: async () => ({ ok: true, board }) }, pollMs: 10 ** 9 })
+  store.setCwd(board.workspace)
+  await store.refresh()
+  const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store, initialGuideOpen: true }))
+  assert.ok(html.includes('Marks on a card'), '图例这一节在指南里')
+  // 六个持球记号：直接拿 HOLDER_MARKS（卡面渲染用的就是它）逐个撞。
+  for (const [action, mark] of Object.entries(client.HOLDER_MARKS)) {
+    assert.ok(html.includes(`>${mark}<`), `持球记号 ${mark}（${action}）在图例里`)
+  }
+  // 属性行记号 + 编号简写 + 价值点 + 列龄，也同样逐一撞（编号取自 taskRef() 本身）。
+  for (const mark of ['@', '✎', client.taskRef('T-93'), '◆3', '9d']) {
+    assert.ok(html.includes(`>${mark}<`), `记号 ${mark} 在图例里`)
+  }
+  // 图例源就是 markLegend()：它的每一行都必须在渲染结果里出现（同一份数据）。
+  const marks = client.markLegend().map((row) => row.mark)
+  assert.ok(marks.length >= 10, `图例至少覆盖 10 个记号，实际 ${marks.length}`)
+  for (const mark of marks) assert.ok(html.includes(`>${mark}<`), `markLegend() 的 ${mark} 渲染出来了`)
 })
 
 // ------------------------------------------ reveal in viewport (T-37, v0.7.4)
@@ -2226,6 +2277,11 @@ await check('stats/milestones: 只有 v1.42.0 这种 tag 算里程碑，其它 t
   assert.equal(client.isMilestoneTag('v1.42'), false, '少一段不是版本号')
   assert.equal(client.isMilestoneTag('v1.42.0.1'), false)
   assert.equal(client.isMilestoneTag('ios'), false)
+  // T-42 第 4 条：前缀大小写的口径必须与 semverParts()（`replace(/^v/i, '')`）一致 ——
+  // 闸门收的前缀，解析器一定认；否则 `V1.42.0` 能解析却永远进不了这块统计。
+  assert.equal(client.isMilestoneTag('V1.42.0'), true, 'semverParts 容忍的大写前缀，闸门也得认')
+  assert.equal(client.isMilestoneTag('  V1.42.0  '), true, 'trim 之后同一口径')
+  assert.equal(client.isMilestoneTag('V1.42'), false, '大小写不敏感不等于放宽段数')
   const rows = client.milestones(board)
   assert.deepEqual(rows.map((row) => row.tag), ['v1.43.0', 'v1.42.0'], '版本号大的在前')
   const m = rows[1]
@@ -2362,6 +2418,29 @@ await check('panel: 没有里程碑 tag 时，里程碑块整块不渲染', asyn
   assert.ok(!html.includes('v1.42.0'), '也不该有编出来的里程碑')
   // 但其它块照常。
   assert.ok(html.includes('At a glance') && html.includes('Daily flow'))
+})
+
+// T-42 第 3 条（kimi 的 T-28 遗留 nit ①）：统计页的**数据色**不许再用 brand-primary。
+// 那一支在两个主题里都**不是彩色**（light ≈ 近黑 / dark ≈ 近白），拿它画状态色 / 进度条
+// / sparkline 只靠明度区分（深色下几乎读不出来），而且会与 in_progress 的 LINK 蓝撞在一起。
+// 换完之后统计页干脆**一处都没有** brand-primary（它只该留在边框 / 焦点 / 选中态那类
+// 单色强调里），所以这条断言可以下得很硬：整个 StatsView 的渲染结果里不该出现它。
+await check('T-42 · 统计页数据色：完成用宿主 success 绿，且整页不再出现 brand-primary', async () => {
+  const board = collabBoard([
+    { id: 'T-1', title: 'done one', status: 'done', assignee: 'dsh', value: 3, tags: ['v1.42.0'], created_at: ago({ d: 3 }) },
+    { id: 'T-2', title: 'closed one', status: 'closed', assignee: 'dsh', value: 1, tags: ['v1.42.0'], created_at: ago({ d: 6 }) },
+    { id: 'T-3', title: 'busy one', status: 'in_progress', assignee: 'kimi', value: 2, created_at: ago({ d: 2 }) },
+    { id: 'T-4', title: 'review one', status: 'review', assignee: 'kimi', reviewer: 'dsh', created_at: ago({ d: 1 }) },
+  ])
+  const solo = renderToStaticMarkup(React.createElement(client.StatsView, { board }))
+  // 完成 = 宿主 success 绿（两个主题同一个绿）—— 环形图的切片描边走它。
+  assert.ok(/stroke:\s*var\(--dsw-alias-state-success-primary/.test(solo), '环形图的「完成」切片是宿主 success 绿')
+  assert.ok(solo.includes('--dsw-alias-state-success-primary'), 'success token 真的上了页（状态色盘 / 里程碑条）')
+  // 里程碑进度条的两态都是彩色：整版结清 = success 绿，还没结清 = link 蓝。
+  assert.ok(/background:\s*var\(--dsw-alias-link/.test(solo), '未结清的里程碑条 / 负载条用 link 蓝')
+  assert.ok(/background:\s*var\(--dsw-alias-state-success-primary/.test(solo), '整版结清的里程碑条用 success 绿')
+  // 硬断言：数据页里不再有单色强调当数据色。
+  assert.ok(!solo.includes('--dsw-alias-brand-primary'), 'StatsView 的渲染结果里不该再出现 brand-primary')
 })
 
 // ------------------------------------------- T-10: client-side audit minors
@@ -3142,6 +3221,31 @@ await check('T-38 · 组内/组间与外壳常量：TB_TOOLBAR 与渲染出来�
   assert.ok(header.includes('margin-left:12px'), '主操作前 12px')
   assert.ok(header.includes('padding:10px 14px'), '行内边距保持既有 10px 14px 不动')
   assert.ok(header.includes('gap:0'), '行本身不再用父级 gap（那会把身份段的 8px 也套成 16）')
+})
+
+// ------------------------------------------------- 文案排版：中文里的半角逗号（T-42 第 8 条）
+// `store.ts` 里两处「中文串用半角逗号」是 T-10 审计留下的尾巴（`:213` / `:254`：
+// `'bridge 返回了残缺的看板数据,已保留上一份。'` —— 同一句里句号是全角、逗号是半角）。
+// 这种修复最容易再烂：它没有行为后果，测试也不会红。所以这里给它一条**可咬**的规则 ——
+// **夹在两个汉字之间的逗号必须全角**（`据,已` 这种），扫 `src/**` 全部源码。
+// 只匹配「汉字 + 半角逗号 + 汉字」：中英混排里 `列内序, 按负责人`（逗号后有空格）这类
+// 是正常写法，不误报。
+await check('T-42 · 源码里不存在「汉字,汉字」：中文串里的逗号一律全角', () => {
+  const root = new URL('../src/', import.meta.url)
+  const halfWidth = /[\u4e00-\u9fff],[\u4e00-\u9fff]/
+  const offenders = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const child = new URL(entry.name + (entry.isDirectory() ? '/' : ''), dir)
+      if (entry.isDirectory()) { walk(child); continue }
+      if (!/\.(ts|tsx)$/.test(entry.name)) continue
+      readFileSync(child, 'utf8').split('\n').forEach((line, index) => {
+        if (halfWidth.test(line)) offenders.push(`${entry.name}:${index + 1} ${line.trim()}`)
+      })
+    }
+  }
+  walk(root)
+  assert.deepEqual(offenders, [], `这些行是半角逗号：\n${offenders.join('\n')}`)
 })
 
 // ------------------------------------------------------------------ done

@@ -86,6 +86,15 @@ export function taskRef(id: string): string {
 }
 
 /**
+ * The ref's tooltip (T-42 第 6 条 / kimi 的 T-27 建议 b）：`#93` 这个记号本身
+ * 不自解释，裸 id（`T-93`）也没说明它是什么 —— 所以 tooltip 点名「任务编号」，
+ * 而不是把裸 id 再念一遍。卡面 / 详情抽屉 / mini 抽屉共用这一处措辞。
+ */
+export function taskRefTitle(id: string): string {
+  return L('任务编号 {id}', 'Task id {id}', { id })
+}
+
+/**
  * The entry button's badge: everything still on somebody's plate.
  *
  * `done` COUNTS as open work (v0.6): approved-but-unsettled cards still need a

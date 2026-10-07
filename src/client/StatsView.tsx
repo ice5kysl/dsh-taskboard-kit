@@ -62,7 +62,6 @@ import {
   type WindowDays,
 } from './stats.ts'
 import {
-  ACCENT,
   BG_RAISED,
   BG_SUNK,
   BORDER,
@@ -72,17 +71,26 @@ import {
   FAINT,
   FG,
   LINK,
+  SUCCESS,
   TERTIARY,
   WARN,
 } from './theme.ts'
 
-/** 每列一个记号，与看板列头同一套语义（见下方 SERIES_* 关于 ACCENT 的说明）。 */
+/**
+ * 每列一个记号，与看板列头同一套语义（见下方 SERIES_* 关于 ACCENT 的说明）。
+ *
+ * T-42 第 3 条（kimi 在 T-28 复审里的遗留 nit ①）：`done` 从 `ACCENT` 换成
+ * `SUCCESS`。这一格是**数据色**（环形图切片 / 停留条 / 异常清单的严重度点），而
+ * `ACCENT` = brand-primary 是浅色近黑 / 深色近白的**单色**强调 —— 拿它当状态色，
+ * 深色主题下几乎读不出来；更要命的是它与 `in_progress` 的 `LINK` 只差明度，
+ * 蓝色那格一多就分不清。换成宿主两个主题里都是同一个绿的 success token。
+ */
 const STATUS_COLORS: Record<BoardColumn, string> = {
   pool: FAINT,
   assigned: TERTIARY,
   in_progress: LINK,
   review: WARN,
-  done: ACCENT,
+  done: SUCCESS,
   closed: DIM,
 }
 
@@ -101,6 +109,11 @@ const FLOW_DAY_PX = 16 // x 轴日期行
  * ≈ #0f1115 近黑，dark = bluish-50 近白），拿它画两条柱子等于只靠明度区分，
  * 在深色主题下几乎读不出来。`--dsw-alias-link` 两个主题都是同一个蓝，
  * 才是图表系列该用的强调色。
+ *
+ * T-42 第 3 条把统计页里剩下三处「拿 brand-primary 当数据色」也一并搬走
+ * （里程碑进度条 / 负责人负载条 / 状态色盘），口径与这里一致：**彩色 token 才做
+ * 数据色**（`LINK` 蓝 / `WARN` 琥珀 / `SUCCESS` 绿），`ACCENT` 只留作边框、焦点、
+ * 选中底色这类「单色强调」。
  */
 const SERIES_CREATED = LINK
 const SERIES_SETTLED = TERTIARY
@@ -302,7 +315,11 @@ interface KpiSpec {
 }
 
 const ACTION_KPIS: KpiSpec[] = [
-  { key: 'open', label: L('未结清', 'Open'), hint: L('全部还没收口的卡（含 done）', 'every card not settled yet (done included)'), goodWhen: 'down', tone: ACCENT },
+  // T-42 第 3 条：`open` / `value` 两格的 tone 从 ACCENT 改成 FG —— tone 是**数据色**
+  // （KPI 数字色 + sparkline 描边），而 brand-primary 在两主题里都不是彩色。
+  // FG 就是正文色，两个主题下都读得出来，观感与原来几乎一致；`cycle` / `settleLag`
+  // 两格早就用 FG 表示「中性数字」，现在口径统一。
+  { key: 'open', label: L('未结清', 'Open'), hint: L('全部还没收口的卡（含 done）', 'every card not settled yet (done included)'), goodWhen: 'down', tone: FG },
   { key: 'unsettled', label: L('待收口', 'To settle'), hint: L('done 了但没人 close', 'done, waiting on a close'), goodWhen: 'down', tone: LINK },
   { key: 'blocked', label: L('被卡住', 'Blocked'), hint: L('在等某人回复', 'waiting on someone'), goodWhen: 'down', tone: DANGER },
   { key: 'rejectRate', label: L('打回率', 'Reject rate'), hint: L('进了审核的卡里被打回过的比例', 'of the cards that reached review'), goodWhen: 'down', tone: WARN },
@@ -313,7 +330,7 @@ const BACKGROUND_KPIS: KpiSpec[] = [
   { key: 'cycle', label: L('中位周期', 'Median cycle'), hint: L('窗口内干完的卡：建卡 → 干完（done/approved）', 'cards finished in the window: created → done'), goodWhen: 'down', tone: FG },
   { key: 'settleLag', label: L('收口延迟', 'Settle lag'), hint: L('窗口内收口的卡：干完 → 收口（done → closed）', 'cards closed in the window: done → closed'), goodWhen: 'down', tone: FG },
   { key: 'wip', label: L('进行中', 'WIP'), hint: L('进行中 + 待审核', 'in progress + in review'), goodWhen: 'down', tone: WARN },
-  { key: 'value', label: L('价值合计', 'Total value'), hint: L('板上已评估卡片的点数之和（含历史）', 'sum of estimated points on the board'), goodWhen: 'up', tone: ACCENT },
+  { key: 'value', label: L('价值合计', 'Total value'), hint: L('板上已评估卡片的点数之和（含历史）', 'sum of estimated points on the board'), goodWhen: 'up', tone: FG },
 ]
 
 function KpiGroup({ title, hint, specs, metrics, days, extra }: {
@@ -902,7 +919,10 @@ function MilestoneList({ rows, tasks, openTag, onToggle, onOpenTask }: {
             <button type="button" className="tb-stats-row" onClick={() => onToggle(row.tag)} title={L('点开看这一版还剩哪些卡', 'Open to see which cards are left')}>
               <span style={styles.milestoneTag}>{open ? '▾' : '▸'} {row.tag}</span>
               <span style={styles.track}>
-                <span style={{ ...styles.fill, width: `${share * 100}%`, background: share === 1 ? LINK : ACCENT }} />
+                {/* 两条状态：整版结清 = SUCCESS 绿（已交付）；还没结清 = LINK 蓝。
+                    两者都是彩色 token（T-42 第 3 条）—— 原来「没结清」用 ACCENT，
+                    在深色主题下是一根近白的条，与「结清」的蓝只差明度。 */}
+                <span style={{ ...styles.fill, width: `${share * 100}%`, background: share === 1 ? SUCCESS : LINK }} />
               </span>
               <span style={styles.milestoneNum}>{row.settled}/{row.total}</span>
               <span style={styles.milestoneValue}>{L('◆{a}/{b}', '◆{a}/{b}', { a: row.valueDelivered, b: row.valueTotal })}</span>
@@ -958,9 +978,11 @@ function OwnerTable({ owners }: { owners: OwnerStat[] }): JSX.Element {
           <tr key={row.owner || '(none)'}>
             <td style={styles.td}>
               <span style={styles.ownerName}>{row.owner || L('（待认领）', '(pool)')}</span>
-              {/* A little inline bar makes the load column scannable. */}
+              {/* A little inline bar makes the load column scannable.
+                  负载条用 LINK 蓝（= 图表系列的强调色，两主题同一个蓝）而不是
+                  ACCENT —— 后者在浅色主题是近黑、深色是近白（T-42 第 3 条）。 */}
               <span style={styles.loadBar}>
-                <span style={{ ...styles.fill, width: `${(row.open / maxOpen) * 100}%`, background: ACCENT }} />
+                <span style={{ ...styles.fill, width: `${(row.open / maxOpen) * 100}%`, background: LINK }} />
               </span>
             </td>
             <td style={styles.tdNum}>{row.open}</td>
@@ -1121,7 +1143,8 @@ const styles: Record<string, React.CSSProperties> = {
   milestone: { display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 },
   milestoneTag: { fontSize: 11.5, fontWeight: 600, fontVariantNumeric: 'tabular-nums', flexShrink: 0, minWidth: 74 },
   milestoneNum: { fontSize: 11, fontVariantNumeric: 'tabular-nums', flexShrink: 0, minWidth: 40, textAlign: 'right' },
-  milestoneValue: { fontSize: 11, color: ACCENT, fontVariantNumeric: 'tabular-nums', flexShrink: 0, minWidth: 44, textAlign: 'right' },
+  // T-42 第 3 条：`◆a/b` 是数据文字（不是强调）—— 用正文色 FG，不再借 brand-primary。
+  milestoneValue: { fontSize: 11, color: FG, fontVariantNumeric: 'tabular-nums', flexShrink: 0, minWidth: 44, textAlign: 'right' },
   milestoneLeft: { fontSize: 10.5, color: DIM, flexShrink: 0, minWidth: 46, textAlign: 'right' },
   milestoneCards: { display: 'flex', flexDirection: 'column', gap: 3, paddingLeft: 10, minWidth: 0 },
 

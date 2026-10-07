@@ -62,7 +62,7 @@ import {
 import type { TaskboardState, TaskboardStore } from './store.ts'
 import { getTaskboardStore } from './store.ts'
 import { BG, BG_RAISED, BORDER, BORDER_STRONG, DIM, FAINT, FG, LINK, ON_PRIMARY, PRIORITY_COLORS, WARN, ensureTaskboardStyles } from './theme.ts'
-import { columnLabel, openTaskCount, priorityLabel, runPlanOps, taskRef, useSessionCwd, valueText, type SessionListLike } from './view.ts'
+import { columnLabel, openTaskCount, priorityLabel, runPlanOps, taskRef, taskRefTitle, useSessionCwd, valueText, type SessionListLike } from './view.ts'
 
 /** Props handed by the slot: the injected store + the standard session share.
  *  store falls back to the singleton so a slot that ignores inject() still
@@ -462,7 +462,7 @@ function MiniRow({ task, board, dragging, dnd, busy, onOpen }: { task: Task; boa
       onClick={onOpen}
       title={waiting ? `${task.title} — ${waitLabel(waiting)}: ${waiting.question}` : task.title}
     >
-      <span style={styles.miniRef}>{taskRef(task.id)}</span>
+      <span style={styles.miniRef} title={taskRefTitle(task.id)}>{taskRef(task.id)}</span>
       {staleness.stale && (
         <span
           className="tb-stale"

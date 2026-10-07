@@ -1014,15 +1014,23 @@ export interface Milestone {
   ids: string[]
 }
 
-/** 里程碑 = 形如 `v1.42.0` 的 tag（唯一识别规则；**不读**壳的 goal）。 */
-export const MILESTONE_TAG = /^v\d+\.\d+\.\d+$/
+/**
+ * 里程碑 = 形如 `v1.42.0` 的 tag（唯一识别规则；**不读**壳的 goal）。
+ *
+ * T-42 第 4 条：前缀大小写不敏感 —— `semverParts()` 一直用 `/^v/i` 剥前缀，
+ * 闸门却是大小写敏感的，于是 `V1.42.0` 能解析、却永远进不了这块统计（口径不齐，
+ * kimi 在 T-28 复审里点名）。两条规则现在同口径：闸门收的前缀，解析器一定认。
+ * 注意 tag 的**分组键仍是原文**（`v1.42.0` 与 `V1.42.0` 是两个 tag，与
+ * `tasksWithTag()` 的精确匹配口径一致）。
+ */
+export const MILESTONE_TAG = /^v\d+\.\d+\.\d+$/i
 
 export function isMilestoneTag(tag: string): boolean {
   return MILESTONE_TAG.test(tag.trim())
 }
 
 function semverParts(tag: string): number[] {
-  return tag.replace(/^v/i, '').split('.').map((part) => Number(part) || 0)
+  return tag.trim().replace(/^v/i, '').split('.').map((part) => Number(part) || 0)
 }
 
 /**
