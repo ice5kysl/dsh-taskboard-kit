@@ -191,6 +191,10 @@ function inboxKindLabel(item: InboxItem): string {
       return L('在等人类（去叫人）', 'waiting on the human (go ping them)')
     case 'settle_mine':
       return L('你的卡已 done 但没收口', 'your task is done but unsettled')
+    case 'review_tail':
+      // 紧跟收口：复核留言里的待办，不消化就永远沉下去（§7.5.1）。没有这一支时
+      // 这里会直接印出英文枚举名 `review_tail`，混在一段全中文的点名里。
+      return L('你经手的卡还有没消化的复核尾巴', 'unconsumed review tail on a card you touched')
     case 'pool_pick':
       return L('池子里值得拿', 'worth claiming from the pool')
     default:
