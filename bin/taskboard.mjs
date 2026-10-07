@@ -20,6 +20,10 @@
  *                         [--who A] [--question Q] [--title T] [--detail D] [--priority P]
  *                         [--value V|none] [--tags a,b] [--note N]
  *   taskboard comment <id> --text TEXT
+ *   taskboard tails [--all] [--status ...]
+ *   taskboard tails --file <tailId> --card T-42
+ *   taskboard tails --waive <tailId> --reason "…"
+ *   taskboard tails --reset <tailId>
  *   taskboard path
  *
  * The rules the board enforces (long form: docs/COLLABORATION.md):
@@ -61,7 +65,9 @@ const {
   marksOf,
   notifyHuman,
   roster,
+  saveBoard,
   updateTask,
+  withBoardLock,
 } = lib
 
 const EXIT = { ok: 0, error: 1, invalid: 2, conflict: 3 }
@@ -75,11 +81,11 @@ function parseValueFlag(raw) {
 
 /** Flags that take a value; a bare `--flag` for one of these is a usage error. */
 const VALUE_FLAGS = new Set([
-  'action', 'assignee', 'by', 'cwd', 'days', 'detail', 'limit', 'note', 'on', 'pool', 'priority', 'question',
-  'reviewer', 'status', 'tags', 'text', 'title', 'value', 'waiting', 'who',
+  'action', 'assignee', 'by', 'card', 'cwd', 'days', 'detail', 'file', 'limit', 'note', 'on', 'pool', 'priority',
+  'question', 'reason', 'reset', 'reviewer', 'status', 'tags', 'text', 'title', 'value', 'waiting', 'waive', 'who',
 ])
 /** Switches; every other `--name` must be given a value. */
-const BOOLEAN_FLAGS = new Set(['json'])
+const BOOLEAN_FLAGS = new Set(['all', 'json'])
 
 function parseArgs(argv) {
   const flags = {}
@@ -159,7 +165,7 @@ function fail(error) {
 const USAGE = `commands:
   inbox [--by NAME] [--limit N] [--pool N] [--no-human]     现在该你处理的事（按急迫度，带该敲的命令）
   list  [--status S] [--assignee NAME|none] [--waiting K]   全板（含 reviewer / 等谁 / 陈旧标记）
-  stale [--days N]                                          协作健康：在等人类 / 审核没人认领 / 交接断了 / 列陈旧
+  stale [--days N] [--limit N]                              协作健康：在等人类 / 审核没人认领 / 交接断了 / 列陈旧 / 复核尾巴
   roster                                                    名册：谁还在场（别名 dsh ≡ dsh-agent）
   get <id>                                                  单卡全文（时间线 + 留言 + SLA）
   create --title T [--detail D] [--assignee A] [--priority P] [--value V] [--tags a,b]
@@ -169,6 +175,10 @@ const USAGE = `commands:
               [--who A] [--question Q] [--title T] [--detail D] [--priority P]
               [--value V|none] [--tags a,b] [--note N]
   comment <id> --text TEXT                                  留言（不改状态）
+  tails [--all] [--status S]                                复核尾巴：已结清的卡上，复核留言里还没消化的待办
+  tails --file <tailId> --card T-42                         把一条尾巴落成卡（收口）
+  tails --waive <tailId> --reason "…"                       显式作废一条尾巴（必须给理由）
+  tails --reset <tailId>                                    撤掉收口记录（它又回到未收口清单）
   path                                                      板文件路径
 global: --cwd DIR · --by NAME · --json`
 
@@ -184,6 +194,105 @@ function warnMissingBoard(cwd) {
   process.stderr.write(
     'taskboard: an empty board and a mistyped --cwd look identical here — check the path, or create the first card\n',
   )
+}
+
+/**
+ * 复核尾巴的一行人类可读输出（`stale` 与 `tails` 共用一份，避免两处措辞漂移）。
+ * 每条都带**卡号 + 位置 + 命中的判据 + 原文片段** —— 没有原文就没法判真假。
+ * 判据说明在这里截短（全量在 `--json` 的 `reasons` 里）：它是"为什么被列出来"
+ * 的提示，不是要背下来的文本。
+ */
+function tailLine(tail, indent = '  ') {
+  const where = tail.source.kind === 'log'
+    ? `log:${tail.source.index} ${tail.source.event}`
+    : `comment:${tail.source.index}`
+  const mark = tail.settlement
+    ? (tail.settlement.status === 'filed' ? `✅ 已落卡 ${tail.settlement.card}` : `🚫 已作废：${tail.settlement.reason}`)
+    : '⚠ 未收口'
+  const reasons = tail.reasons.map((why) => (why.length > 56 ? `${why.slice(0, 55)}…` : why)).join('｜')
+  return [
+    `${indent}${tail.id} · ${tail.task_id} · ${tail.source.by} @ ${tail.source.at} · ${where} · ${mark}`,
+    `${indent}  判据：${reasons}`,
+    `${indent}  原文：${tail.snippet}`,
+  ]
+}
+
+function tailCommand(tail) {
+  return `taskboard tails --file ${tail.id} --card T-新卡号   （或 --waive ${tail.id} --reason "…"）`
+}
+
+/** `tails` 命令的收口动作：--file / --waive / --reset 三者其一。 */
+async function settleTail(cwd, by, flags) {
+  const modes = [
+    typeof flags.file === 'string' ? 'filed' : null,
+    typeof flags.waive === 'string' ? 'waived' : null,
+    typeof flags.reset === 'string' ? 'reset' : null,
+  ].filter(Boolean)
+  if (modes.length !== 1) {
+    console.error('tails: pass exactly one of --file <id> [--card T-n] / --waive <id> --reason "…" / --reset <id>')
+    return EXIT.invalid
+  }
+  const mode = modes[0]
+  const id = (mode === 'filed' ? flags.file : mode === 'waived' ? flags.waive : flags.reset).trim()
+  if (id === '') {
+    console.error('tails: the tail id is empty')
+    return EXIT.invalid
+  }
+  const card = typeof flags.card === 'string' ? flags.card.trim() : ''
+  const reason = typeof flags.reason === 'string' ? flags.reason.trim() : ''
+  if (mode === 'filed' && !/^T-\d+$/.test(card)) {
+    console.error('tails: --file needs --card T-<n> — 落卡必须给出承接它的卡号（否则只是把尾巴换个地方丢）')
+    return EXIT.invalid
+  }
+  if (mode === 'waived' && reason === '') {
+    console.error('tails: --waive needs --reason "…" — 作废必须给理由，否则没人分得清"做完了"和"放弃了"')
+    return EXIT.invalid
+  }
+
+  const report = await health(cwd, {})
+  const known = report.reviewTails.some((tail) => tail.id === id)
+  const boardBefore = await loadBoard(cwd)
+  const existing = (boardBefore.tails ?? {})[id]
+  if (!known && !existing) {
+    console.error(`tails: no review tail with id "${id}" — 复制清单里的 id 原样用（判据或原文变过的话，用 --reset 清掉旧的收口记录）`)
+    return EXIT.invalid
+  }
+  if (mode === 'filed' && !Object.hasOwn(boardBefore.tasks, card)) {
+    console.error(`tails: no such card: ${card} — 落卡必须落到真实存在的卡上`)
+    return EXIT.invalid
+  }
+
+  const saved = await withBoardLock(cwd, async () => {
+    const board = await loadBoard(cwd)
+    const tails = (board.tails ??= {})
+    if (mode === 'reset') {
+      delete tails[id]
+    } else {
+      tails[id] = {
+        status: mode,
+        card: mode === 'filed' ? card : null,
+        reason: mode === 'waived' ? reason : null,
+        by,
+        at: new Date().toISOString(),
+      }
+    }
+    await saveBoard(cwd, board)
+    return tails[id] ?? null
+  })
+
+  if (flags.json === true) {
+    print({ id, settlement: saved }, true)
+    return EXIT.ok
+  }
+  if (mode === 'reset') {
+    console.log(`↩ ${id} 的收口记录已清除 —— 它重新回到未收口清单`)
+  } else if (mode === 'filed') {
+    const target = boardBefore.tasks[card]
+    console.log(`✅ ${id} → 已落卡 ${card}（${target.status}）· ${target.title}`)
+  } else {
+    console.log(`🚫 ${id} → 已作废：${reason}`)
+  }
+  return EXIT.ok
 }
 
 async function main() {
@@ -249,18 +358,36 @@ async function main() {
           waitSla: { human: override, agent: override },
         }
       const result = await health(cwd, options)
+      const openTails = result.reviewTails.filter((tail) => !tail.settlement)
       if (asJson) {
-        print(Object.fromEntries(Object.entries(result).map(([kind, issues]) => [
-          kind,
-          issues.map((issue) => ({
-            id: issue.task.id,
-            title: issue.task.title,
-            status: issue.task.status,
-            actor: issue.actor,
-            age_ms: issue.ageMs,
-            detail: issue.detail,
-          })),
-        ])), true)
+        const json = Object.fromEntries(Object.entries(result)
+          .filter(([kind]) => kind !== 'reviewTails' && kind !== 'reviewTailOrphans')
+          .map(([kind, issues]) => [
+            kind,
+            issues.map((issue) => ({
+              id: issue.task.id,
+              title: issue.task.title,
+              status: issue.task.status,
+              actor: issue.actor,
+              age_ms: issue.ageMs,
+              detail: issue.detail,
+            })),
+          ]))
+        json.review_tails = openTails.map((tail) => ({
+          id: tail.id,
+          task: tail.task_id,
+          status: tail.task_status,
+          by: tail.source.by,
+          at: tail.source.at,
+          where: tail.source.kind === 'log' ? `log:${tail.source.index}` : `comment:${tail.source.index}`,
+          event: tail.source.event,
+          rules: tail.rules,
+          reasons: tail.reasons,
+          snippet: tail.snippet,
+          offset: tail.offset,
+          responsibles: tail.responsibles,
+        }))
+        print(json, true)
         return EXIT.ok
       }
       const sections = [
@@ -283,7 +410,82 @@ async function main() {
           }
         }
       }
+      // 复核尾巴单独一节：它查的是**已经结清的卡**，别的自检一律不看那里。
+      // 默认只列最老的 10 条 —— 全量在 `taskboard tails`（那才是报告，这里是点名）。
+      if (openTails.length > 0) {
+        printed += 1
+        const limitRaw = typeof flags.limit === 'string' ? Number(flags.limit) : 10
+        const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 10
+        const oldest = [...openTails].sort((a, b) => (Date.parse(a.source.at) || 0) - (Date.parse(b.source.at) || 0))
+        console.log(`🔻 复核尾巴（${openTails.length} 条）——已结清的卡上，复核留言里的待办还没落卡/作废`)
+        for (const tail of oldest.slice(0, limit)) {
+          console.log(...tailLine(tail))
+          console.log(`      → ${tailCommand(tail)}`)
+        }
+        if (oldest.length > limit) {
+          console.log(`  …另有 ${oldest.length - limit} 条（这里只列最老的 ${limit} 条，--limit N 可调）：taskboard tails`)
+        }
+      }
       if (printed === 0) console.log('(no health issues — board is clean)')
+      return EXIT.ok
+    }
+    case 'tails': {
+      warnMissingBoard(cwd)
+      if (flags.file !== undefined || flags.waive !== undefined || flags.reset !== undefined) {
+        return settleTail(cwd, by, flags)
+      }
+      const result = await health(cwd, {})
+      const openTails = result.reviewTails.filter((tail) => !tail.settlement)
+      const settled = result.reviewTails.filter((tail) => tail.settlement)
+      const shown = flags.all === true ? result.reviewTails : openTails
+      const status = typeof flags.status === 'string' ? flags.status : null
+      const listed = status ? shown.filter((tail) => tail.task_status === status) : shown
+      if (asJson) {
+        print({
+          stats: {
+            cards: new Set(result.reviewTails.map((tail) => tail.task_id)).size,
+            tails: result.reviewTails.length,
+            open: openTails.length,
+            filed: settled.filter((tail) => tail.settlement.status === 'filed').length,
+            waived: settled.filter((tail) => tail.settlement.status === 'waived').length,
+          },
+          orphans: result.reviewTailOrphans,
+          tails: listed.map((tail) => ({
+            id: tail.id,
+            task: tail.task_id,
+            status: tail.task_status,
+            by: tail.source.by,
+            at: tail.source.at,
+            where: tail.source.kind === 'log' ? `log:${tail.source.index}` : `comment:${tail.source.index}`,
+            event: tail.source.event,
+            rules: tail.rules,
+            reasons: tail.reasons,
+            snippet: tail.snippet,
+            offset: tail.offset,
+            responsibles: tail.responsibles,
+            settlement: tail.settlement,
+          })),
+        }, true)
+        return EXIT.ok
+      }
+      const filed = settled.filter((tail) => tail.settlement.status === 'filed').length
+      const waived = settled.length - filed
+      console.log(`复核尾巴：${openTails.length} 条未收口 · ${filed} 条已落卡 · ${waived} 条已作废（扫了 ${new Set(result.reviewTails.map((t) => t.task_id)).size} 张有尾巴的 closed/done 卡）`)
+      if (result.reviewTailOrphans.length > 0) {
+        console.log(`⚠ ${result.reviewTailOrphans.length} 条收口记录已对不上任何尾巴（判据/原文变过）：${result.reviewTailOrphans.join(', ')}`)
+        console.log('  清掉用：taskboard tails --reset <tailId>')
+      }
+      if (listed.length === 0) {
+        console.log(flags.all === true
+          ? '(没有复核尾巴)'
+          : '(没有未收口的复核尾巴 —— 用 --all 看已收口的)')
+        return EXIT.ok
+      }
+      for (const tail of listed) {
+        console.log(...tailLine(tail, ''))
+        if (!tail.settlement) console.log(`  → ${tailCommand(tail)}`)
+        console.log('')
+      }
       return EXIT.ok
     }
     case 'get': {

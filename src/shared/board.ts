@@ -32,6 +32,7 @@ import {
   type TaskEvent,
   type WaitOn,
 } from './types.ts'
+import { openTails, scanTails, type ReviewTail, type TailScanOptions } from './tails.ts'
 
 // ------------------------------------------------------------------ identity
 
@@ -281,12 +282,41 @@ export interface BoardHealth {
   needsSettling: HealthIssue[]
   /** 其他列陈旧（不含上面几类）。 */
   stale: HealthIssue[]
+  /**
+   * 复核尾巴（v0.7.5）：closed / done 卡的裁决 note 与复核类 comment 里
+   * "看起来是待办"的句子。**含已收口的**（看 `tail.settlement` 区分；`stale`
+   * 只列未收口的，否则就又变成"列了没人看"）。
+   *
+   * 这是看板自检里**唯一**查"已经结清的卡"的一类 —— 正因为如此它必须存在：
+   * 别的自检都只看未结清的工作，而"复核意见没消化"恰恰发生在卡结清之后。
+   */
+  reviewTails: ReviewTail[]
+  /**
+   * 收口记录里再也对不上任何尾巴的 id（判据或切句改过、原文被编辑过）。
+   * 一并露出来，是为了让"收口记录变成孤儿"这件事**有人看得见** —— 否则它会
+   * 以"明明标了已落卡却又被列出来"的形式表现为一个说不清的重影。
+   */
+  reviewTailOrphans: string[]
 }
 
 export interface HealthOptions extends StalenessOptions {
   /** 多久没动手算"不在场"。 */
   quietMs?: number
   now?: number
+  /** 复核尾巴扫到什么程度（默认只扫 closed + done 的复核类文本）。 */
+  tails?: TailScanOptions
+}
+
+/**
+ * 复核尾巴的扫描选项：**总是**注入名册版的"同一 Actor"判断。
+ *
+ * `dsh ≡ dsh-agent`（还有 TASKBOARD_ACTOR_ALIASES / WATCH_NAMES 配的那些）是名册
+ * 的知识，而名册解析在本模块；tails.ts 不能反向 import（循环）。少了这一步，
+ * `dsh-agent` 写的交付说明会被当成"别人给的复核意见"（真实数据：T-3 一篇审计
+ * 报告一个人刷出 29 条）。
+ */
+function tailScanOptions(board: Board, options?: HealthOptions): TailScanOptions {
+  return { ...options?.tails, sameActor: (a, b) => sameActor(board, a, b) }
 }
 
 /**
@@ -296,7 +326,19 @@ export interface HealthOptions extends StalenessOptions {
 export function boardHealth(board: Board, options?: HealthOptions): BoardHealth {
   const now = options?.now ?? Date.now()
   const quietMs = options?.quietMs ?? DEFAULT_QUIET_MS
-  const health: BoardHealth = { orphaned: [], unownedReview: [], waitingHuman: [], waitingOther: [], needsSettling: [], stale: [] }
+  // 已经结清的卡也在这里被查一次：复核意见的"待办"是最容易掉地的东西，
+  // 而它掉的那一刻，卡恰好离开了所有别的自检视野。
+  const tails = scanTails(board, tailScanOptions(board, options))
+  const health: BoardHealth = {
+    orphaned: [],
+    unownedReview: [],
+    waitingHuman: [],
+    waitingOther: [],
+    needsSettling: [],
+    stale: [],
+    reviewTails: tails.all,
+    reviewTailOrphans: tails.orphans,
+  }
 
   for (const task of Object.values(board.tasks)) {
     // `closed` is the only status that leaves the board entirely.
@@ -309,12 +351,11 @@ export function boardHealth(board: Board, options?: HealthOptions): BoardHealth 
       continue
     }
     if (task.waiting_on) {
-      const ageMs = Math.max(0, now - (Date.parse(task.waiting_on.since) || now))
       const issue: HealthIssue = {
         task,
         kind: task.waiting_on.kind === 'human' ? 'waiting_human' : 'stale',
         actor: task.waiting_on.who ?? undefined,
-        ageMs,
+        ageMs: waitAgeMs(task.waiting_on, now),
         detail: task.waiting_on.question,
       }
       // Only genuine human waits belong in the human's list: a card parked on
@@ -370,6 +411,7 @@ export type InboxKind =
   | 'pool_pick'        // 待认领池里值得拿的
   | 'settle_mine'      // 我的卡已 done 但没收口：该写结清说明并 close（v0.6）
   | 'human_blocked'    // 在等人类：需要去叫人（或人类自己来看）
+  | 'review_tail'      // 我经手过的卡，复核留言里还有没消化的待办（v0.7.5）
 
 export interface InboxItem {
   kind: InboxKind
@@ -389,6 +431,10 @@ export interface InboxOptions extends HealthOptions {
   poolLimit?: number
   /** 是否把「在等人类」也列进来（默认 true —— Agent 有责任去叫人）。 */
   includeHumanBlocked?: boolean
+  /** 是否把「复核尾巴」也列进来（默认 true —— 它默认静默，正需要这一推）。 */
+  includeReviewTails?: boolean
+  /** 复核尾巴最多推几条（默认 3；0 = 不推，剩下的由 `taskboard tails` 兜）。 */
+  tailLimit?: number
 }
 
 const RANK: Record<InboxKind, number> = {
@@ -399,6 +445,9 @@ const RANK: Record<InboxKind, number> = {
   // Settling comes after live work but before picking up something new: an
   // unfinished close is cheap to finish and blocks the card from ever leaving.
   settle_mine: 42,
+  // 复核尾巴紧跟收口：同样便宜、同样"不做就永远沉下去"，而且它比别的项更
+  // 难自己浮上来（那些至少还挂在一张未结清的卡上）。
+  review_tail: 44,
   orphaned_mine: 45,
   start_assigned: 50,
   human_blocked: 60,
@@ -416,6 +465,8 @@ export function inboxFor(board: Board, actor: string, options?: InboxOptions): I
   const now = options?.now ?? Date.now()
   const poolLimit = options?.poolLimit ?? 3
   const includeHumanBlocked = options?.includeHumanBlocked ?? true
+  const includeReviewTails = options?.includeReviewTails ?? true
+  const tailLimit = options?.tailLimit ?? 3
   const items: InboxItem[] = []
   const isMe = (name: string | null | undefined) => sameActor(board, name, actor)
 
@@ -530,6 +581,39 @@ export function inboxFor(board: Board, actor: string, options?: InboxOptions): I
     }
   }
 
+  // 复核尾巴：写在 closed / done 卡上的待办。它们不在上面那个循环里（那张卡
+  // 已经结清了）—— 这正是它们能一直静默的原因，所以单独走一遍，只推给
+  // **经手过这张卡的人**（卡主 / 创建者 / 写这条复核的人）。
+  //
+  // 上限是刻意的：真实老板上这类句子能有近百条（T-3 一篇审计报告就够呛），
+  // 一次全塞进 inbox 等于把 inbox 变成墙纸 —— 而那正是这个特性要治的病。
+  // 只推**最老的几条**（最可能已经烂掉），其余的用一条尾巴指引去看全量。
+  if (includeReviewTails && tailLimit > 0) {
+    const mine = openTails(board, tailScanOptions(board, options))
+      .filter((tail) => tail.responsibles.some((name) => isMe(name)))
+      .sort((a, b) => (Date.parse(a.source.at) || 0) - (Date.parse(b.source.at) || 0))
+    const shown = mine.slice(0, tailLimit)
+    for (const tail of shown) {
+      const task = board.tasks[tail.task_id]
+      if (!task) continue
+      items.push({
+        kind: 'review_tail',
+        task,
+        ageMs: Math.max(0, now - (Date.parse(tail.source.at) || now)),
+        rank: RANK.review_tail,
+        suggest: `taskboard tails --file ${tail.id} --card T-新卡号（或 --waive ${tail.id} --reason "…"）`,
+        actor: tail.source.by,
+      })
+    }
+    const rest = mine.length - shown.length
+    if (rest > 0 && items.length > 0) {
+      const last = items[items.length - 1]!
+      if (last.kind === 'review_tail') {
+        last.suggest += `\n      ↳ 同类还有 ${rest} 条：taskboard tails（全量清单）`
+      }
+    }
+  }
+
   if (poolLimit > 0) {
     const pool = Object.values(board.tasks)
       .filter((task) => task.status === 'open' && !task.assignee && !task.waiting_on)
@@ -565,7 +649,34 @@ export function compareByValue(a: Task, b: Task): number {
   return a.created_at.localeCompare(b.created_at)
 }
 
-/** 人类视角的清单：所有在等人类的卡（面板顶部那条 strip 的数据源）。 */
+/**
+ * 人类视角的清单：所有在等人类的卡（面板顶部那条 strip 的数据源）。
+ *
+ * 刻意**不走 `boardHealth`**：浏览器面只用这一条，而 `boardHealth` 现在带着
+ * 复核尾巴扫描器（要读全板文本）—— 走它会把整个扫描器拖进客户端 bundle
+ * （实测 +2 KB minified），而客户端一行都用不到扫描器。这里与 boardHealth
+ * 的 waitingHuman 是**同一条派生写了两遍**，所以 tests/tails.test.mjs 里有一条
+ * 等价断言钉住两者（题目一旦漂开就红）—— 拿一点点重复换掉用不到的代码。
+ */
 export function waitingOnHuman(board: Board, now: number = Date.now()): HealthIssue[] {
-  return boardHealth(board, { now }).waitingHuman
+  const out: HealthIssue[] = []
+  for (const task of Object.values(board.tasks)) {
+    // 与 boardHealth 同一口径：closed 离开看板；done 归"待收口"那一类。
+    if (task.status === 'closed' || task.status === 'done') continue
+    const wait = task.waiting_on
+    if (!wait || wait.kind !== 'human') continue
+    out.push({
+      task,
+      kind: 'waiting_human',
+      actor: wait.who ?? undefined,
+      ageMs: waitAgeMs(wait, now),
+      detail: wait.question,
+    })
+  }
+  return out.sort((a, b) => b.ageMs - a.ageMs || a.task.id.localeCompare(b.task.id))
+}
+
+/** 「已经等了多久」—— human 等待这一条派生的计时，boardHealth 与 waitingOnHuman 共用。 */
+function waitAgeMs(wait: WaitOn, now: number): number {
+  return Math.max(0, now - (Date.parse(wait.since) || now))
 }

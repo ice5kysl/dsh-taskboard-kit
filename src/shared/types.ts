@@ -149,6 +149,26 @@ export interface Task {
   comments: TaskComment[]
 }
 
+/**
+ * 一条**复核尾巴**的收口记录（v0.7.5）。
+ *
+ * 复核意见写在 note / comment 里，而 note 不改变列 ⇒ 没有载体、没有提醒、
+ * 天生静默（T-40 审计：38 张 closed 卡里至少 10 条复核遗留掉了地）。
+ * 这条记录就是那个载体：每条尾巴要么 **已落卡**（给卡号），要么 **显式作废**
+ * （给理由）。收口后 `taskboard tails` 不再列它 —— 否则下次又列一遍，人就
+ * 开始无视它。
+ */
+export interface TailSettlement {
+  /** `filed` = 已落卡（`card` 指向承接它的卡）；`waived` = 已作废（`reason` 必填）。 */
+  status: 'filed' | 'waived'
+  /** filed：承接它的卡号，必须真实存在（否则只是把尾巴换个地方丢）。 */
+  card: string | null
+  /** waived：为什么不做 —— 收口记录里唯一能区分"做完了"和"放弃了"的东西。 */
+  reason: string | null
+  by: string
+  at: string
+}
+
 export interface Board {
   version: 1
   /** Absolute path of the workspace this board belongs to. */
@@ -157,6 +177,15 @@ export interface Board {
   tasks: Record<string, Task>
   /** Actor 名册：别名解析 + 活性证据 + 人类是谁（v0.5.4 起）。 */
   actors: Record<string, ActorEntry>
+  /**
+   * 复核尾巴的收口记录（v0.7.5 起）：key 是尾巴 id（`T-25#log:6:2`，见
+   * shared/tails.ts），value 是它怎么被消化掉的。
+   *
+   * **刻意是可选的**：v0.7.5 之前的板没有这个字段，而读取端一律走
+   * `board.tails ?? {}`。这样新字段不需要 host 侧的 schema 迁移就能读旧板，
+   * 第一次收口时由写入方顺手落地 —— 向后兼容是"读端容忍缺失"，不是"写端补齐"。
+   */
+  tails?: Record<string, TailSettlement>
 }
 
 /**
@@ -179,7 +208,7 @@ export function columnOf(task: Pick<Task, 'status' | 'assignee'>): BoardColumn {
 }
 
 export function emptyBoard(workspace: string): Board {
-  return { version: 1, workspace, next_seq: 1, tasks: {}, actors: {} }
+  return { version: 1, workspace, next_seq: 1, tasks: {}, actors: {}, tails: {} }
 }
 
 /** Column ordering inside one column: priority first, then oldest first. */
