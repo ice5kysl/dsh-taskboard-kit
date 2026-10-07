@@ -435,6 +435,18 @@ export function holderTitle(task: Task, holder: Holder, reviewerQuiet: boolean):
     // Full sentence when a who is known (the tooltip has room), kind-only when not.
     parts.push(task.waiting_on.who ? waitLabel(task.waiting_on) : waitKindLabel(task.waiting_on.kind))
     if (task.waiting_on.question) parts.push(task.waiting_on.question)
+    // A verdict that got stuck mid-review: the wait does NOT take the verdict
+    // away. `block` is open on a review card, and the block may be on a third
+    // party while the reviewer could have decided already — the store clears
+    // `waiting_on` on approve/reject, so the reviewer decides and releases the
+    // wait in the same gesture. Without this sentence a blocked review card
+    // reads as 「谁都不能动」 (kimi's T-26 catch, landed in T-40).
+    // Gated on a NAMED reviewer: with `reviewer === null` there is no 裁决人 to
+    // promise anything to (the props row already reads 「没人欠这次裁决」), so the
+    // sentence is skipped rather than inventing a created_by fallback here.
+    if (task.status === 'review' && task.reviewer) {
+      parts.push(L('裁决人 {reviewer} 仍可裁决', 'reviewer {reviewer} can still decide', { reviewer: task.reviewer }))
+    }
   } else if (holder.who === null) parts.push(L('还没有人认领这张卡', 'nobody has claimed this card yet'))
   else if (holder.action === 'decide') {
     parts.push(reviewerQuiet

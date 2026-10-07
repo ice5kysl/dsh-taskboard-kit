@@ -2086,6 +2086,101 @@ await check('panel: 无名等待不被统计页渲染成「可认领的池子」
   assert.ok(html.includes('>unnamed<'), '异常行的"谁"一列是「未指名」而不是"池子"')
 })
 
+// ------------------------------------------------- 卡面层：无名等待（T-40 ①）
+// 「无名等待不是池子」这条不变量有三层：派生层（holderGroups，上方已护）、统计页
+// （上方已护）、以及**卡面**——最该有护栏的一层，偏偏此前没有：把 TaskCard 的等待
+// 分支顺序改回旧顺序（先判 holder.who === null），整套 client 测试仍全绿。这条补上。
+//
+// 措辞注意：一张 open + 无负责人的卡**列推导确实落在 Pool 列**，所以第 1 行的状态
+// 标签照旧读作 "Pool"——那是列推导，不是谎言。会骗人的是**持球行**说「池子里」：
+// store 明确拒绝认领等待中的卡，那句话等于给一个点了必然失败的入口。断言因此按
+// **卡面切片**做，而不是拿整页 html 去撞 "Pool"。
+await check('panel 卡面：无名等待（who === null）说「等的是哪一类」，绝不说「池子里」', async () => {
+  const waitingAt = new Date(Date.now() - 3 * 3600_000).toISOString()
+  const board = collabBoard([
+    // 无名等待 ×3：三种 kind 各一，who 都为 null。
+    { id: 'T-8', title: 'waitHuman', status: 'open', assignee: null, waiting_on: { kind: 'human', who: null, question: '叫谁来答？', since: waitingAt } },
+    { id: 'T-9', title: 'waitAgent', status: 'open', assignee: null, waiting_on: { kind: 'agent', who: null, question: 'q', since: waitingAt } },
+    { id: 'T-10', title: 'waitExternal', status: 'open', assignee: null, waiting_on: { kind: 'external', who: null, question: 'q', since: waitingAt } },
+    // 指了名的等待：名字照旧上卡面（这条断言不能把"报名字"一起改坏）。
+    { id: 'T-11', title: 'waitNamed', status: 'open', assignee: null, waiting_on: { kind: 'agent', who: 'kimi', question: 'q', since: waitingAt } },
+    // 正对照：真·池子卡。没有它，「不含池子文案」可以靠"干脆永不渲染池子文案"通过。
+    { id: 'T-1', title: 'genuinePool', status: 'open', assignee: null },
+  ])
+  const { html } = await renderBoard(board)
+  // 按卡切片：每张卡是一个 <button class="tb-card">，用它自己的标题认领自己那块。
+  const chunks = html.split('<button type="button" class="tb-card').slice(1)
+  const cardOf = (title) => {
+    const chunk = chunks.find((row) => row.includes(`>${title}<`))
+    assert.ok(chunk, `卡面里有「${title}」`)
+    return chunk
+  }
+  const textOf = (chunk) => chunk.replace(/<[^>]*>/g, '')
+  const POOL_COPY = 'in the pool' // 池子文案（en-US 被钉在测试进程里；zh 孪生在同一处 L() 调用里）
+
+  for (const [title, kind] of [['waitHuman', 'a human'], ['waitAgent', 'an agent'], ['waitExternal', 'an external party']]) {
+    const card = cardOf(title)
+    const text = textOf(card)
+    assert.ok(!text.includes(POOL_COPY), `${title}：无名等待不是池子（卡面读作「${POOL_COPY}」= 一个点了必然失败的认领入口）`)
+    assert.ok(text.includes(kind), `${title}：说出等的是哪一类（期望「${kind}」，实际「${text}」）`)
+    assert.ok(card.includes('class="tb-badge-wait"'), `${title}：戴等待徽章（琥珀），不是池子徽章`)
+  }
+
+  // 正对照：真·池子卡必须**仍然**读作池子。
+  const pool = cardOf('genuinePool')
+  assert.ok(textOf(pool).includes(POOL_COPY), '真·池子卡照旧说「in the pool」——上面的断言不是靠"永不渲染池子文案"通过的')
+  assert.ok(pool.includes('class="tb-badge-outline"'), '真·池子用池子徽章（○）')
+
+  // 指了名的等待不受影响。
+  assert.ok(/◷\s*kimi/.test(textOf(cardOf('waitNamed'))), '指了名的等待仍报名字')
+  assert.ok(html.includes('waiting on agent kimi'), '整句照旧在 tooltip 里')
+})
+
+// ------------------------------------------------- 裁决人仍可裁决（T-40 ②）
+// review 卡被 block 时"遮蔽"真实存在：block 在第三方（等人类答一个前提问题），而裁决人
+// 本可先行裁决 —— host 的 approve/reject 会一并清掉 waiting_on（src/host/store.ts），
+// 所以不是 blocker。既然不是 blocker，持球 tooltip 就必须把这句话说出来，否则读者以为
+// 「谁都不能动」（kimi 在 T-26 的复核里指出，T-40 落地）。
+await check('panel 持球 tooltip：被 block 的待审核卡点名「裁决人 {reviewer} 仍可裁决」', async () => {
+  const since = new Date(Date.now() - 3600_000).toISOString()
+  const blockedReview = (reviewer) => ({
+    id: 'T-4', title: 'blockedReview', status: 'review', assignee: 'dsh', reviewer,
+    waiting_on: { kind: 'human', who: 'iceskysl', question: '这个前提还成立吗？', since },
+  })
+  const { store, html } = await renderBoard(collabBoard([blockedReview('cc')]))
+  // 持球 chip 的 title 属性就是这句 tooltip —— SSR 里找不到就等于没写。
+  assert.ok(html.includes('waiting on human iceskysl'), '等待本身照旧先说（谁被等着）')
+  assert.ok(html.includes('reviewer cc can still decide'), '补的那句在卡面 tooltip 里，且点名的是裁决人 cc')
+  assert.ok(html.includes('这个前提还成立吗？'), '被等的问题也还在')
+
+  // 抽屉里同样可见：持球行与卡面共用 holderTitle，一处措辞两处生效。
+  store.select('T-4')
+  const opened = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+  const drawer = opened.slice(opened.indexOf('<aside'))
+  assert.ok(drawer.length > 0, '抽屉渲染出来了')
+  assert.ok(drawer.includes('reviewer cc can still decide'), '抽屉的持球行 tooltip 也带这句（这是"抽屉里可见"的那一层）')
+  store.select(null)
+
+  // 换个裁决人，名字跟着换（{reviewer} 是变量，不是写死的 cc）。
+  const other = await renderBoard(collabBoard([blockedReview('kimi')]))
+  assert.ok(other.html.includes('reviewer kimi can still decide'), '{reviewer} 取的是这张卡的裁决人')
+
+  // 没有 review 就没有"裁决人"：这句话不许乱窜到别的等待卡上。
+  const work = await renderBoard(collabBoard([
+    { id: 'T-5', title: 'blockedWork', status: 'in_progress', assignee: 'dsh', reviewer: null, waiting_on: { kind: 'human', who: 'iceskysl', question: 'q', since } },
+  ]))
+  assert.ok(!work.html.includes('can still decide'), '进行中的等待卡没有裁决人，不该出现这句话')
+
+  // 没被 block 的 review 卡：也不该出现（它的 tooltip 已经说了「裁决人：kimi」）。
+  // 裁决人用 kimi —— 它在 collabBoard 的名册里且刚活动过，才走「裁决人：X」那一支；
+  // 名册里查无此人的裁决人走的是"欠审核但久未活动"的措辞（另一条已有断言）。
+  const plainReview = await renderBoard(collabBoard([
+    { id: 'T-6', title: 'plainReview', status: 'review', assignee: 'dsh', reviewer: 'kimi', waiting_on: null },
+  ]))
+  assert.ok(!plainReview.html.includes('can still decide'), '没被 block 的 review 卡不加这句：等待是它的前提')
+  assert.ok(plainReview.html.includes('reviewer: kimi'), '它照旧说的是「裁决人：kimi」')
+})
+
 await check('stats/anomalies: 阈值沿用看板自己的陈旧规则，一张卡只占一行', () => {
   const now = Date.now()
   const board = statsBoard([
