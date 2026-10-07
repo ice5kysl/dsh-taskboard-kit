@@ -584,30 +584,44 @@ function firstOf(task: Task, events: readonly TaskEvent[]): number | null {
 }
 
 /**
+ * 这张卡的全部等待区间（T-52：从 `log` 重建，`[start, end)`，end=∞ 表示至今仍在等）。
+ *
+ * `blocked`(ts) 与其后**第一个** `unblocked`(ts') 配对成一段 `[ts, ts')`；中间没有
+ * `unblocked` 的段延伸到 ∞（此刻仍在等）。连续两次 `blocked` 没有解除夹在中间时
+ * 产生重叠段，`some` 判定不受影响。
+ *
+ * 旧板可能一个 `blocked` 事件都没有（`waiting_on` 字段先于事件存在）：保留
+ * `waiting_on.since` 的回退口径，同样与它之后的 `unblocked` 配对；`since` 已落在
+ * 某段重建区间内时不重复补。
+ */
+function waitIntervals(task: Task): Array<[number, number]> {
+  const unblocks = eventTimes(task, 'unblocked')
+  const intervals: Array<[number, number]> = eventTimes(task, 'blocked').map((start) => {
+    const end = unblocks.find((ts) => ts > start)
+    return [start, end ?? Number.POSITIVE_INFINITY] as [number, number]
+  })
+  const waiting = task.waiting_on
+  if (waiting) {
+    const since = Date.parse(waiting.since)
+    if (!Number.isNaN(since) && !intervals.some(([start, end]) => start <= since && since < end)) {
+      const end = unblocks.find((ts) => ts > since)
+      intervals.push([since, end ?? Number.POSITIVE_INFINITY])
+    }
+  }
+  return intervals
+}
+
+/**
  * 这张卡在 `at` 那一刻是不是"在等某人"。
  *
- * `waiting_on` 只存**当前**那次等待，所以往回看只能用 `since`：它比 `at` 晚，
- * 说明那一刻还没在等；`since` 之后又出现过 `unblocked`，说明那次等待已解除。
- *
- * **已知取舍（T-28 ③ → T-50 第 3 条）：只反映"当前这一次"等待，历史等待会漏。**
- * 一张卡「挂起 → 解除 → 后来又挂起」时，`waiting_on.since` 只指向**后来**那一次，
- * 于是"第一次挂起期间"问 `blockedAt()` 会答 false —— 图上表现为「被卡住」偏低。
- * 这里刻意**不**补，理由：补它要给统计面加一层「等待区间重建」（`blocked` /
- * `unblocked` 在 `log` 里其实可以配对），那是另一张卡的活 —— 会动 KPI 口径、
- * 要处理没有 `blocked` 事件的旧板，而收益只落在统计页这一条趋势上，
- * 不影响任何协作动作。**要看历史等待就读 `log`**：`blocked`(ts1) … `unblocked`(ts2)
- * 就是一段 `[ts1, ts2)` 的等待区间，`taskboard get <id>` 的时间线里逐条可见。
+ * T-52 起按 `waitIntervals` 判定：历史等待（挂起 → 解除 → 再挂起的**第一次**）
+ * 也算——旧口径只读 `waiting_on.since`（当前这一次），那样的等待在「被卡住」
+ * 趋势上是隐身的。口径变化：趋势图上的「被卡住」只增不减（更真实），协作
+ * 动作不受影响。收口之后的时刻不算（与旧口径一致）。
  */
 function blockedAt(task: Task, at: number): boolean {
-  const waiting = task.waiting_on
-  if (!waiting) return false
-  const since = Date.parse(waiting.since)
-  if (Number.isNaN(since) || since > at) return false
   if (statusAt(task, at) === 'closed') return false
-  for (const ts of eventTimes(task, 'unblocked')) {
-    if (ts > since && ts <= at) return false
-  }
-  return true
+  return waitIntervals(task).some(([start, end]) => start <= at && at < end)
 }
 
 // ------------------------------------------------------------------- KPI 环比

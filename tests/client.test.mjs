@@ -1992,6 +1992,42 @@ const ago = ({ d = 0, h = 0 } = {}) => new Date(Date.now() - (d * 24 + h) * 3600
 /** 一条日志：相对时间 + 谁 + 什么事件。 */
 const ev = (when, by, event, note) => ({ at: ago(when), by, event, ...(note ? { note } : {}) })
 
+await check('stats/blocked: 等待区间重建（T-52）——历史等待不再隐身', () => {
+  const now = Date.now()
+  // T-1：6 天前挂起 → 4 天前解除 → 2 天前再挂起。`waiting_on.since` 只指向第二次，
+  // 第一次挂起在旧口径（只读 since）下是隐身的。日末桶：s[0]=6 天前 … s[6]=今天。
+  const relift = statsBoard([
+    { id: 'T-1', status: 'open', created_at: ago({ d: 7 }),
+      waiting_on: { kind: 'human', who: 'x', question: 'q', since: ago({ d: 2 }) },
+      log: [ev({ d: 7 }, 'h', 'created'), ev({ d: 6 }, 'k', 'blocked'), ev({ d: 4 }, 'h', 'unblocked'), ev({ d: 2 }, 'k', 'blocked')] },
+  ])
+  const s = client.kpis(relift, { days: 7, now }).blocked.series
+  assert.equal(s[0], 1, '第一次挂起那天的日末桶：1（旧口径这里是 0）')
+  assert.equal(s[3], 0, '两次等待之间的日末桶：0')
+  assert.equal(s[4], 1, '第二次挂起之后：1')
+  assert.equal(s[6], 1, '此刻：1')
+  assert.equal(client.kpis(relift, { days: 7, now }).blocked.value, 1, '当期值（当前快照）：1')
+  // 旧板回退：waiting_on 在、blocked 事件一个没有 —— 按 since 计，行为与旧口径一致。
+  const legacy = statsBoard([
+    { id: 'T-2', status: 'open', created_at: ago({ d: 7 }),
+      waiting_on: { kind: 'human', who: 'x', question: 'q', since: ago({ d: 5 }) },
+      log: [ev({ d: 7 }, 'h', 'created')] },
+  ])
+  const sl = client.kpis(legacy, { days: 7, now }).blocked.series
+  assert.equal(sl[0], 0, 'since（5 天前）之前的日末桶不计')
+  assert.equal(sl[2], 1, 'since 之后按等待计')
+  assert.equal(sl[6], 1, '至今仍在等')
+  // 收口之后不算（与旧口径一致）；收口之前的等待段照算。
+  const settled = statsBoard([
+    { id: 'T-3', status: 'closed', created_at: ago({ d: 7 }),
+      waiting_on: { kind: 'human', who: 'x', question: 'q', since: ago({ d: 4 }) },
+      log: [ev({ d: 7 }, 'h', 'created'), ev({ d: 2 }, 'h', 'closed')] },
+  ])
+  const ss = client.kpis(settled, { days: 7, now }).blocked.series
+  assert.equal(ss[3], 1, '收口之前、等待之中：1')
+  assert.equal(ss[6], 0, '收口之后不算')
+})
+
 await check('stats/window: 窗外的事件不进当期，也不会偷偷算进上一期', () => {
   const now = Date.now()
   const board = statsBoard([
