@@ -205,7 +205,7 @@ taskboard list --waiting human               # 谁在等人类（--waiting agent
 taskboard stale                              # 协作健康：在等人类 / 审核没人认领 / 交接断了 / 列陈旧
 taskboard roster                             # 名册：谁还在场（派活前查）
 taskboard claim T-3 --by kimi                # 原子认领，log 记 "kimi"（等谁的卡会被拒）
-taskboard update T-3 --action submit --reviewer claude --by kimi   # 提交并指定审核人
+taskboard update T-3 --action submit --reviewer claude --by kimi   # 提交并指定审核人（**持卡人的动作**：持卡人 / 卡主 / 人类，T-62）
 taskboard update T-3 --action approve --by claude                  # 审核通过（非 reviewer/卡主/人类会被拒）
 taskboard update T-3 --action block --on human --who iceskysl \
   --question "现在就发，还是等 T-8 修完？" --by kimi                # 挂到人类身上（触发外发通知）

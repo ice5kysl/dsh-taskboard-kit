@@ -429,17 +429,21 @@ export function registerTaskboardTools(ctx: Context): void {
       '(action start/stop/submit/approve/reject/done/close/reopen), park it on someone with action=block / ' +
       'action=unblock, reassign it, name the reviewer with reviewer=, edit title/detail/priority/value/tags, ' +
       'and attach a note to the log entry. Report progress as you go — the human watches the same board in the ' +
-      'kanban tab. Rules the board enforces: submit hands the card to a named reviewer (never yourself); ' +
-      'approve/reject are reserved for that reviewer, the task\'s creator or the human; close/cancel/reopen are ' +
-      'reserved for the card\'s creator, its owner, its reviewer or the human; unblock is reserved for whoever the ' +
-      'card waits on — and a card parked on the human can be unblocked by the HUMAN ONLY, never by an agent ' +
-      '(ping them instead); a card waiting on someone cannot be claimed. Those checks are **not a security ' +
-      'boundary**: \`by\` is only recorded, so it can be forged — everything else is advisory (the human or a lead ' +
-      'agent can always override); still, prefer acting on the task you hold. ' +
+      'kanban tab. Rules the board enforces: submit hands the card to a named reviewer (never yourself) and is ' +
+      'the HOLDER\'s act — only the card\'s holder, its creator or the human may submit it (never someone else\'s ' +
+      'in_progress card); approve/reject are reserved for that reviewer, the task\'s creator or the human; ' +
+      'close/cancel/reopen are reserved for the card\'s creator, its owner, its reviewer or the human; ' +
+      'ending a wait — action=unblock, and every other action that would clear a waiting card — belongs to ' +
+      'whoever the card waits on, to the card\'s creator / owner / reviewer, or to the human; but a card parked ' +
+      'on the HUMAN can be released by the HUMAN ONLY, never by an agent (ping them instead). Every path that ' +
+      'ends a wait records an explicit `unblocked` event, so a wait is never dropped silently. A card waiting on ' +
+      'someone cannot be claimed. Those checks are **not a security boundary**: \`by\` is only recorded, so it can ' +
+      'be forged — everything else is advisory (the human or a lead agent can always override); still, prefer ' +
+      'acting on the task you hold. ' +
       'To leave information without changing state, use taskboard_comment instead.',
     parameters: {
       id: { type: 'string', required: true, description: 'Task id, e.g. T-1.' },
-      action: { type: 'string', enum: ['start', 'stop', 'submit', 'approve', 'reject', 'done', 'close', 'reopen', 'cancel', 'block', 'unblock'], description: 'start: open→in_progress; stop: in_progress→open; submit: in_progress→review (names a reviewer); approve: review→done; reject: review→in_progress (say why in note); done: open|in_progress|review→done — NOT terminal, the card still owes a close; close: open|in_progress|review|done→closed — THE terminal status (settled), only the creator / owner / reviewer / the human may do it; to abandon work also use close, and say why in the note (cancel is its legacy alias); reopen: done|closed→open (same people as close); block: record that the card is waiting on someone (status unchanged); unblock: the wait is over — only whoever the card waits on (or the human); a card parked on the human can be released by the human only.' },
+      action: { type: 'string', enum: ['start', 'stop', 'submit', 'approve', 'reject', 'done', 'close', 'reopen', 'cancel', 'block', 'unblock'], description: 'start: open→in_progress; stop: in_progress→open; submit: in_progress→review (names a reviewer) — only the holder / creator / the human may submit; approve: review→done; reject: review→in_progress (say why in note); done: open|in_progress|review→done — NOT terminal, the card still owes a close; close: open|in_progress|review|done→closed — THE terminal status (settled), only the creator / owner / reviewer / the human may do it; to abandon work also use close, and say why in the note (cancel is its legacy alias); reopen: done|closed→open (same people as close); block: record that the card is waiting on someone (status unchanged); unblock: the wait is over — whoever the card waits on, plus the card\'s creator / owner / reviewer or the human; a card parked on the human can be released by the human only. Every action that clears a waiting card (submit/approve/reject/done/close/reopen) passes the same gate and records an `unblocked` event.' },
       assignee: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'New owner while open/in_progress; null unassigns back to the pool.' },
       reviewer: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Who owes the review. Set it on submit; the board also accepts it while open/in_progress to pre-delegate. You cannot review your own work.' },
       wait_kind: { type: 'string', enum: ['human', 'agent', 'external'], description: 'For action=block: who the card is waiting on. Inferred from wait_who when omitted.' },

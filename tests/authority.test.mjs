@@ -134,10 +134,11 @@ async function attempt(ws, id, patch, by) {
 
 const label = (wait) => `${wait.kind}${wait.who ? `(${wait.who})` : '(未指名)'}`
 
-/** 一格 unblock 判定：`blockedBy` 只影响文案里的"由谁挂起"。 */
-async function unblockCell(wait, blockedBy, by, expected) {
+/** 一格 unblock 判定：`blockedBy` 只影响文案里的"由谁挂起"；`over` 覆盖卡的归属字段。 */
+async function unblockCell(wait, blockedBy, by, expected, over = {}) {
   const ws = await boardWith({
     status: 'in_progress',
+    ...over,
     waiting_on: wait,
     log: [
       { at: AT, by: blockedBy, event: 'created' },
@@ -199,13 +200,19 @@ await check('unblock × 等人类：**只有人类**（human / TASKBOARD_HUMANS 
   }
 })
 
-await check('unblock × 等具名 Agent：只有那个 Agent（或其别名等价名）或人类', async () => {
-  for (const by of ['human', 'iceskysl', 'kimi']) {
+await check('unblock × 等具名 Agent：被等的人 + 卡主（T-62 ③：追加许可，不是排他许可）', async () => {
+  // 这张卡的 created_by 是 dsh（`unblockCell` 的默认），卡在等 kimi：
+  // T-61 口径下 kimi/人类可以；T-62 ③ 起卡主 dsh（及其别名 dsh-agent）也可以
+  // —— 否则「卡主被自己挂的等待锁死」。
+  for (const by of ['human', 'iceskysl', 'kimi', 'dsh', 'dsh-agent']) {
     await unblockCell(WAIT.agentNamed, 'dsh', by, true)
   }
-  for (const by of ['dsh', 'dsh-agent', 'claude']) {
-    const result = await unblockCell(WAIT.agentNamed, 'dsh', by, false)
-    assert.match(result.message, /only kimi \(or the human\) can unblock it/, `等 kimi × ${by}: 文案要指名该找谁`)
+  // 换一张卡主是 cc 的卡：cc 能解（卡主），既不是被等的人、也不是归属人的照旧被拒。
+  await unblockCell(WAIT.agentNamed, 'dsh', 'cc', true, { created_by: 'cc' })
+  for (const by of ['claude', 'nova']) {
+    const result = await unblockCell(WAIT.agentNamed, 'dsh', by, false, { created_by: 'cc' })
+    assert.match(result.message, /only kimi \(the agent it waits on\)/, `等 kimi × ${by}: 文案要指名被等的人`)
+    assert.match(result.message, /or the human can unblock it/, `等 kimi × ${by}: 文案要给出"还有谁"`)
   }
 })
 

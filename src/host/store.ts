@@ -785,39 +785,113 @@ function blockerOf(task: Task): string | undefined {
 }
 
 /**
- * `unblock` 的 actor 校验（T-61 §1）。
+ * 拆除一段等待的归属（T-61 §1 + T-62 ③）。
  *
- *   • `kind === 'human'`：**agent 一律不得解除**，只有人类可以 —— 挂起是人类的
- *     等待，agent 能做的只有 comment + 催人（这正是①②两次越界）。
- *   • `kind === 'agent'` 且 `who` 有名：只有那个 agent（或其别名等价名）或人类；
- *   • `who` 为空（未指名）或 `kind === 'external'`：放宽为**任何在场 agent 或人类**。
+ * **任何**一条会清掉 `waiting_on` 的路径都要过这道门（见 `releaseWait`），
+ * 不只是 `unblock`：
  *
- * 为什么后两条要放宽（而不是一律锁死）：`external` 挂的是**板外的对方**
- * （如某个 msg9 地址），它永远不会自己来敲这块板子；而"只写了 kind、没指名"
- * 的等待更是没人可指名。按字面锁死只会把卡烂在板上 —— 那不是防越权，是造事故。
+ *   1. **人类**（`human` / `TASKBOARD_HUMANS` 实名）：永远可以；
+ *   2. `kind === 'human'`：**agent 一律不得拆除** —— 挂起是人类的等待，
+ *      agent 能做的只有 comment + 催人（T-61 §1 一步不让，那正是越界 ①②）；
+ *   3. `who` 未指名、或 `kind === 'external'`：放宽为**任何在场 agent**
+ *      —— `external` 挂的是**板外的对方**（如某个 msg9 地址），它永远不会自己
+ *      来敲这块板子；"只写了 kind、没指名"的等待更是没人可指名。按字面锁死
+ *      只会把卡烂在板上，那不是防越权，是造事故；
+ *   4. `kind === 'agent'` 且 `who` 有名：**「谁被等」是追加许可，不是排他许可**
+ *      （T-62 ③）—— 被等的那个人 ✓，**外加卡主 / 持卡人 / 裁决人** ✓。
+ *      没有这一层就会锁死：把卡挂成 `wait:agent(kimi)` 之后，卡主/PO 自己
+ *      也解不开，只能去求人类或 kimi（落地当天就撞上过）。
  */
-function assertCanUnblock(board: Board, task: Task, by: string): void {
+function canReleaseWait(board: Board, task: Task, by: string): boolean {
   const wait = task.waiting_on
-  if (!wait) return
+  if (!wait) return true
   // `human` 与 `TASKBOARD_HUMANS` 里的实名都算人类（与 canDecide 同一口径）。
-  if (kindOf(by) === 'human') return
+  if (kindOf(by) === 'human') return true
+  if (wait.kind === 'human') return false
+  if (samePrincipal(board, wait.who, by)) return true
+  if (!wait.who || wait.kind === 'external') return true
+  // 追加许可（T-62 ③）：卡主 / 持卡人 / 裁决人始终能解自己名下的卡。
+  return samePrincipal(board, task.created_by, by)
+    || samePrincipal(board, task.assignee, by)
+    || samePrincipal(board, task.reviewer, by)
+}
+
+/** 拒绝时把话说清：谁被拒、卡在等谁、由谁挂起、谁能拆、该找谁。 */
+function assertCanReleaseWait(board: Board, task: Task, by: string, verb: string): void {
+  if (canReleaseWait(board, task, by)) return
+  const wait = task.waiting_on!
   const parked = `${task.id} is waiting on ${wait.kind}${wait.who ? ` (${wait.who})` : ''}`
   const blocker = blockerOf(task)
+  const byline = blocker ? `, blocked by ${blocker}` : ''
+  const act = verb === 'unblock' ? 'unblock it' : 'end that wait'
   if (wait.kind === 'human') {
     throw new StoreError(
       'conflict',
-      `${parked}${blocker ? `, blocked by ${blocker}` : ''} ⇒ only the human can unblock it; "${by}" is an agent. `
-      + 'Ask the human to answer it (comment + your own notification channel) and let them release the wait — '
+      `${parked}${byline} ⇒ only the human can ${act}; "${by}" is an agent`
+      + (verb === 'unblock' ? '' : ` — ${verb} would drop the human's question without an answer`)
+      + '. Ask the human to answer it (comment + your own notification channel) and let them release the wait — '
       + 'do not unblock or settle it yourself.',
     )
   }
-  if (wait.kind === 'agent' && wait.who && !samePrincipal(board, wait.who, by)) {
-    throw new StoreError(
-      'conflict',
-      `${parked} ⇒ only ${wait.who} (or the human) can unblock it; "${by}" is neither. `
-      + `Let ${wait.who} answer and release it, or ask the human.`,
-    )
-  }
+  const allowed = [
+    wait.who ? `${wait.who} (the agent it waits on)` : null,
+    task.created_by ? `its creator ${task.created_by}` : null,
+    task.assignee ? `its owner ${task.assignee}` : null,
+    task.reviewer ? `its reviewer ${task.reviewer}` : null,
+  ].filter(Boolean).join(', ')
+  throw new StoreError(
+    'conflict',
+    `${parked}${byline} ⇒ only ${allowed} or the human can ${act}; "${by}" is none of them. `
+    + `Let ${wait.who} answer it, or ask the human.`,
+  )
+}
+
+/**
+ * 拆除等待的**唯一出口**（T-62 ②）—— 先过归属，再**显式**写一条 `unblocked`。
+ *
+ * 为什么必须是唯一出口：`submit` / `approve` / `reject` / `done` / `close` /
+ * `reopen` 过去会**静默**清掉 `waiting_on`，那同时制造了两个洞：
+ *   · 归属洞：一张挂人类的卡可以被 `done` 直接变成"已完"，完全绕过 `unblock`
+ *     （T-61 刚堵上的缝，从隔壁又开了一次）；
+ *   · 账目洞（T-60）：`log` 里没有 `unblocked`，等待区间闭不上 ⇒ 走势图的末点
+ *     与当期大数字可以同屏矛盾。
+ * 一条事件 + 一道门，把两个洞一起修掉。
+ *
+ * 返回 true 表示这次真的拆掉了一段等待。
+ */
+function releaseWait(board: Board, task: Task, by: string, verb: string, events: TaskEvent[]): boolean {
+  if (!task.waiting_on) return false
+  assertCanReleaseWait(board, task, by, verb)
+  task.waiting_on = null
+  events.push('unblocked')
+  return true
+}
+
+/**
+ * `submit` 的归属门（T-62 ①）：**交作业是持卡人的动作**。
+ *
+ * 只允许**持卡人（assignee）/ 卡主（created_by）/ 人类**——过去谁都能敲，
+ * 于是任何人可以把**别人 in_progress 的卡**提交去审核（等同替别人交作业）。
+ * 管理员路径不堵死：人类始终可以。
+ *
+ * 两条**有意不拦**的退路（都是"没有可归属的人 ⇒ 退回改前行为"）：
+ *   · 缺 `created_by` 的老卡（与 `assertCanSettle` 同一口径）；
+ *   · **没有持卡人**的卡 —— `start` 不会把人写成持卡人，一块"没人持卡"的
+ *     in_progress 卡上**没有人可以被"替"**。拦下来只会制造新的锁死：卡在
+ *     in_progress 且没有持卡人时 `claim` 也认领不了（它只认 open + 无负责人），
+ *     于是除了人类谁都推不动（T-62 ③ 修的就是这一类锁死）。改前行为照旧。
+ */
+function assertCanSubmit(board: Board, task: Task, by: string): void {
+  if (kindOf(by) === 'human') return
+  if (!task.created_by) return
+  if (!task.assignee) return
+  if (samePrincipal(board, task.assignee, by) || samePrincipal(board, task.created_by, by)) return
+  const who = [`its holder (${task.assignee})`, `its creator (${task.created_by})`, 'the human'].join(', ')
+  throw new StoreError(
+    'conflict',
+    `${task.id} is not yours to submit: only ${who} can hand it to review; `
+    + `"${by}" is none of them. Ask one of them (or the human) to submit it.`,
+  )
 }
 
 /**
@@ -1109,26 +1183,27 @@ export async function updateTask(
         noteActor(board, waitWho, now, kind === 'human' ? 'human' : 'agent')
         events.push('blocked')
       } else if (action === 'unblock') {
-        if (!task.waiting_on) {
-          throw new StoreError('invalid-transition', `${taskId} is not waiting on anyone`)
-        }
         // State first, then authority: "nothing is waiting" is a more specific
         // answer than "not yours to release", and the two never disagree.
-        assertCanUnblock(board, task, by)
-        task.waiting_on = null
-        events.push('unblocked')
+        if (!releaseWait(board, task, by, 'unblock', events)) {
+          throw new StoreError('invalid-transition', `${taskId} is not waiting on anyone`)
+        }
       } else {
         const transition = transitionOf(task, action)
         // Review ownership: submit hands the card to a named reviewer; the
         // verdict actions are reserved for that reviewer, the task's creator
         // and the human.
         if (action === 'submit') {
+          // ① 交作业是持卡人的动作（T-62 §1）……
+          assertCanSubmit(board, task, by)
+          // ……② 而结束一段等待是另一码事：所有清 `waiting_on` 的路径共用
+          //    `releaseWait`（同一道归属门 + 一条显式 `unblocked`）。
+          releaseWait(board, task, by, 'submit', events)
           // The reviewer rides the `submitted` event itself — no extra `updated`
           // entry, so the timeline stays one line per real state change.
           const resolved = resolveReviewer(board, task, by, reviewer)
           task.reviewer = resolved
           touchActor(board, resolved, now) // being handed the review IS presence
-          task.waiting_on = null
         } else if (action === 'approve' || action === 'reject') {
           if (!canDecide(board, task, by)) {
             throw new StoreError(
@@ -1136,17 +1211,17 @@ export async function updateTask(
               `${taskId} is waiting for ${task.reviewer} to review it; only the reviewer, ${task.created_by} (creator) or the human can decide`,
             )
           }
+          releaseWait(board, task, by, action, events)
           task.reviewer = null
-          task.waiting_on = null
         } else if (action === 'close' || action === 'cancel' || action === 'reopen') {
           // 收口 / 退回的归属（T-61 §2）。`cancel` 是 close 的旧别名，走同一闸门。
           // `done` 有意不在这一支：它不是收口，归属仍由 approve/reject 那条链管。
           assertCanSettle(board, task, by, action)
+          releaseWait(board, task, by, action, events)
           task.reviewer = null
-          task.waiting_on = null
         } else if (action === 'done') {
+          releaseWait(board, task, by, 'done', events)
           task.reviewer = null
-          task.waiting_on = null
         }
         task.status = transition.to
         events.push(transition.event)

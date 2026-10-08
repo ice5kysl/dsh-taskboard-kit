@@ -90,10 +90,16 @@ async function cli(ws, args, env = {}, by = 'kimi') {
   }
 }
 
-/** 一张已经 claim、可以 submit 的新卡。 */
-async function claimableCard(ws, title) {
-  const created = JSON.parse((await cli(ws, ['create', '--title', title, '--json'], { PATH: '/usr/bin:/bin' })).stdout)
-  await cli(ws, ['claim', created.id], { PATH: '/usr/bin:/bin' })
+/**
+ * 一张已经 claim、可以 submit 的新卡。
+ *
+ * `by` 同时是**创建人**与**持卡人**：T-62 起 `submit` 只允许持卡人 / 卡主 / 人类，
+ * 所以"谁来交"必须和 claim 的人一致（默认 kimi）。需要别人来交（例如 reviewer
+ * 就是 kimi、不能审自己的活）时，显式传 `by`。
+ */
+async function claimableCard(ws, title, by = 'kimi') {
+  const created = JSON.parse((await cli(ws, ['create', '--title', title, '--json'], { PATH: '/usr/bin:/bin' }, by)).stdout)
+  await cli(ws, ['claim', created.id], { PATH: '/usr/bin:/bin' }, by)
   return created.id
 }
 
@@ -386,7 +392,7 @@ await check('CLI：板里没有他的地址 ⇒ 只打印占位符，且一个�
 await check('模型工具 taskboard_update 的 submit 也会通知 reviewer（实测 8/10 张静默卡是 dsh 提交的）', async () => {
   const ws = await mkdtemp(join(tmpdir(), 'dsh-taskboard-review-tool-'))
   const fake = await makeFakeMsg9(join(ws, 'fake-bin'))
-  const id = await claimableCard(ws, '模型工具路径')
+  const id = await claimableCard(ws, '模型工具路径', 'dsh')
   await seedAddress(ws, 'kimi', 'kimi@kimi-code.ice.msg9.io')
 
   const registered = []
@@ -420,7 +426,7 @@ await check('模型工具 taskboard_update 的 submit 也会通知 reviewer（�
 await check('模型工具路径：发送失败也只降级，工具照样成功（不阻断）', async () => {
   const ws = await mkdtemp(join(tmpdir(), 'dsh-taskboard-review-tool-fail-'))
   const fake = await makeFakeMsg9(join(ws, 'fake-bin'), { exitCode: 9, stderr: 'boom' })
-  const id = await claimableCard(ws, '工具路径发送失败')
+  const id = await claimableCard(ws, '工具路径发送失败', 'dsh')
   await seedAddress(ws, 'kimi', 'kimi@kimi-code.ice.msg9.io')
   const registered = []
   const ctx = {
@@ -448,9 +454,10 @@ await check('CLI stale：把「欠谁审核」按 reviewer 分组（一行一个
   const ws = await mkdtemp(join(tmpdir(), 'dsh-taskboard-review-stale-'))
   const env = { PATH: '/usr/bin:/bin' }
   for (const [title, reviewer] of [['欠甲一', 'kimi'], ['欠甲二', 'kimi'], ['欠乙一', 'cc']]) {
-    const id = await claimableCard(ws, title)
-    // 交出去的人是 claude（by=kimi 会撞上"不能审自己的活"那条板规）。
-    const result = await cli(ws, ['update', id, '--action', 'submit', '--reviewer', reviewer], env, 'claude')
+    const id = await claimableCard(ws, title, 'dsh')
+    // 交出去的人是**持卡人**（T-62 起 submit 是持卡人的动作）；by=kimi 会撞上
+    // "不能审自己的活"那条板规（这两张的 reviewer 就叫 kimi）。
+    const result = await cli(ws, ['update', id, '--action', 'submit', '--reviewer', reviewer], env, 'dsh')
     assert.equal(result.code, 0, result.stderr)
   }
   const human = await cli(ws, ['stale'], env)

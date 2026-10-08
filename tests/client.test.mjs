@@ -2028,6 +2028,49 @@ await check('stats/blocked: 等待区间重建（T-52）——历史等待不再
   assert.equal(ss[6], 0, '收口之后不算')
 })
 
+await check('stats/blocked: 隐式结束等待也闭合区间（T-60）—— 末点不再与当期值同屏打架', () => {
+  const now = Date.now()
+  // store 里 submit / approve / reject / done / close / reopen 都会清 `waiting_on`。
+  // T-62 ② 起**写侧**会给每条路径补一条 `unblocked`（新数据天然闭合，见
+  // tests/authority-wait.test.mjs）；这里造的是**老数据**形态：log 里没有那条
+  // `unblocked`，只有一个"隐式结束"的状态事件 —— 读侧必须认它，否则等待段
+  // 一路延伸到此刻，走势图末点=1 而当期值=0（T-60 探针的正是这一格）。
+  const implicit = (event, status) => statsBoard([
+    { id: 'T-1', status, created_at: ago({ d: 7 }),
+      log: [
+        ev({ d: 7 }, 'h', 'created'),
+        ev({ d: 6 }, 'k', 'started'),
+        ev({ d: 5 }, 'k', 'blocked'),
+        ev({ d: 3 }, 'k', event),
+      ] },
+  ])
+  for (const [event, status] of [['submitted', 'review'], ['approved', 'done'], ['done', 'done'], ['closed', 'closed'], ['reopened', 'open']]) {
+    const k = client.kpis(implicit(event, status), { days: 7, now }).blocked
+    assert.equal(k.series[1], 1, `${event}: 挂起当天的日末桶 = 1`)
+    assert.equal(k.series[3], 0, `${event}: ${event} 当天之后不应算「还在等」（T-60 的那一格）`)
+    assert.equal(k.series[6], 0, `${event}: 此刻没在等`)
+    assert.equal(k.series.at(-1), k.value, `${event}: 走势图末点必须等于当期值（同屏不得矛盾）`)
+  }
+  // 反面：真的还在等（没有任何终点事件）⇒ 末点与当期值同时 = 1，修复没有把等待抹掉。
+  const stillWaiting = statsBoard([
+    { id: 'T-2', status: 'in_progress', created_at: ago({ d: 7 }),
+      waiting_on: { kind: 'human', who: 'x', question: 'q', since: ago({ d: 5 }) },
+      log: [ev({ d: 7 }, 'h', 'created'), ev({ d: 5 }, 'k', 'blocked')] },
+  ])
+  const w = client.kpis(stillWaiting, { days: 7, now }).blocked
+  assert.equal(w.series[6], 1, '还在等：末点 = 1')
+  assert.equal(w.value, 1, '还在等：当期值 = 1')
+  // 新数据形态（T-62 写侧在场）：blocked → unblocked → submitted，同样闭合。
+  const explicit = statsBoard([
+    { id: 'T-3', status: 'review', created_at: ago({ d: 7 }),
+      log: [ev({ d: 7 }, 'h', 'created'), ev({ d: 5 }, 'k', 'blocked'), ev({ d: 3 }, 'k', 'unblocked'), ev({ d: 3 }, 'k', 'submitted')] },
+  ])
+  const e = client.kpis(explicit, { days: 7, now }).blocked
+  assert.equal(e.series[1], 1, '新数据：挂起当天 = 1')
+  assert.equal(e.series[3], 0, '新数据：unblocked 当天之后不算')
+  assert.equal(e.series.at(-1), e.value, '新数据：末点 = 当期值')
+})
+
 await check('stats/window: 窗外的事件不进当期，也不会偷偷算进上一期', () => {
   const now = Date.now()
   const board = statsBoard([

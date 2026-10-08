@@ -131,31 +131,51 @@
 | `claim` | `open` 且**无负责人**且**未在等谁** | `in_progress`，assignee = 我 | 原子：并发下恰好一个成功（CLI 退出码 3 = 冲突） |
 | `start` | `open` | `in_progress` | 指派给你的卡用它「占位」 |
 | `stop` | `in_progress` | `open`（保留 assignee） | 让出但保留所有权，等人接手 |
-| `submit` | `in_progress` | `review`，写 `reviewer` | 审核人不能是自己（见 §7）；清 `waiting_on` |
-| `approve` | `review` | `done` | 只有 reviewer / 卡主 / 人类 |
+| `submit` | `in_progress` | `review`，写 `reviewer` | **只有持卡人 / 卡主 / 人类**（T-62 ①：交作业是持卡人的动作）；审核人不能是自己（见 §7）；结束等待要过 §4.1 那道门 |
+| `approve` | `review` | `done` | 只有 reviewer / 卡主 / 人类；结束等待要过 §4.1 那道门 |
 | `reject` | `review` | `in_progress` | 同上；**必须** `--note` 写原因 |
-| `done` | `open`/`in_progress`/`review` | `done`（**非终态**） | 自审绕行口，仅用于「无需审核」的琐事；有 reviewer 时优先走 submit。**done 之后仍需 close 收口** |
+| `done` | `open`/`in_progress`/`review` | `done`（**非终态**） | 自审绕行口，仅用于「无需审核」的琐事；有 reviewer 时优先走 submit。**done 之后仍需 close 收口**；**它不再是绕过 `unblock` 的后门**（T-62 ②） |
 | `close` | 非终态 + `done` | `closed`（**唯一终态**） | 收口结清；「不做」也走它，但**必须写原因**；**只有卡主 / 持卡人 / 裁决人 / 人类**；`cancel` 是旧别名 |
 | `reopen` | `done`/`closed` | `open`（保留 assignee） | 清 `reviewer` / `waiting_on`；**与 close 同一批人**有权 |
 | `block` | `open`/`in_progress`/`review` | **状态不变**，写 `waiting_on` | 必须给 `wait_question`；kind 可由 `wait_who` 推断 |
-| `unblock` | 有 `waiting_on` | 状态不变，清 `waiting_on` | 答复写进 `comment`；**只有当初等的那个人（或人类）**能解 —— 等人类的卡**只有人类**能解 |
+| `unblock` | 有 `waiting_on` | 状态不变，清 `waiting_on` | 答复写进 `comment`；归属见 §4.1 —— 等人类的卡**只有人类**能解 |
 
 **两条口径写在规则区，免得下一轮再猜**：
 
-1. **`close` / `unblock` 现在是机制，不只是约定**（v0.7.6 · T-61，起因：一天内 4 次越权）。
+1. **`close` / `unblock` / `submit` 现在是机制，不只是约定**（v0.7.6 · T-61 + T-62，起因：一天内 4 次越权）。
    store 对它们**先做状态校验、再做 actor 校验**：
    - `close` / `cancel` / `reopen`：只有 **卡主（`created_by`）/ 持卡人（`assignee`）/
      裁决人（`reviewer`）/ 人类**可以，其他人被拒（`conflict`）；
-   - `unblock`：只有**当初等的那个人**或人类可以；`kind === 'human'` 的卡**agent 一律不得解除**
-     （这正是那次"某 agent 自己把挂人类的卡解挂并裁决"的缝）；
-     `who` 未指名、或 `kind === 'external'`（挂的是板外对方，它永远不会来敲板子）则放宽为
-     任何在场 agent —— **避免把卡锁死**；
+   - `submit`：只有 **持卡人 / 卡主 / 人类**（T-62 ①）—— **别人的 in_progress 卡交不了**
+     （过去谁都能敲，等于替别人交作业）。没有持卡人的卡不拦（没有"别人"可替，且
+     `start` 不会把人写成持卡人，拦了就是新锁死）；
+   - `unblock` 与**每一条会清掉 `waiting_on` 的路径**（`submit`/`approve`/`reject`/`done`/
+     `close`/`reopen`）共用同一道门（§4.1），且都会**显式记一条 `unblocked` 事件**
+     —— 等待不会被悄悄拆掉（T-62 ② + T-60 的写侧）；
    - **别名折叠**：`dsh ≡ dsh-agent`、`TASKBOARD_ACTOR_ALIASES` / `TASKBOARD_WATCH_NAMES` /
      `TASKBOARD_SIBLING_NAMES` 声明的等价名都算同一个人（否则 dsh 自己的会话会被自己拒）；
-   - **老卡不锁死**：没有 `created_by` 的卡退回改前行为（谁都能收口）；
+   - **老卡不锁死**：没有 `created_by` 的卡退回改前行为（谁都能收口 / 提交）；
    - **这不是安全边界**：`--by` 仍是**记录值、可被伪造** —— 它挡的是手滑 / 顺手 / 抢跑，
      不是冒名。真正的边界只有人类自己。
    所以 §7.5 的「卡主 / PO / 人类都能做」现在是：**这几个人做得到，别人会被拒**。
+
+### 4.1 拆除等待：一道门，一个出口（T-61 §1 + T-62 ②③）
+
+谁能让一张"在等谁"的卡不再等：
+
+| 卡在等 | 谁能拆 |
+|---|---|
+| `human` | **只有人类**（`human` / `TASKBOARD_HUMANS` 实名）—— agent 一律不得代解，**包括卡主与持卡人** |
+| `agent`（指名） | 被等的那个人 ✓ **追加**：卡主 / 持卡人 / 裁决人 ✓ 人类 ✓ |
+| `agent`（未指名） | 任何在场 agent 或人类 |
+| `external`（含指名地址） | 任何在场 agent 或人类（板外对方永远不会来敲这块板子） |
+
+- **「谁被等」是追加许可，不是排他许可**（T-62 ③）：把卡挂成 `wait:agent(kimi)` 之后，
+  卡主/PO 也必须解得开自己名下的卡 —— 否则一个 `block` 就能把卡锁死到只能求人。
+- **「等人类」是排他的**（T-61 §1，一步不让）：那正是 2026-10-07 两次越界的形态。
+- **没有旁路**：`submit` / `approve` / `reject` / `done` / `close` / `reopen` 只要会清掉
+  `waiting_on`，就要过上面这张表；过去它们**静默**清掉等待（挂人类的卡可以被 `done`
+  直接变成"已完"），现在一律被拒 + 记一条 `unblocked`。
 2. **抽屉（面板）没有 `stop` / `block` 入口** —— **有意为之，不是回归**。
    面板只放"往前推"的动作（`claim`/`unblock`/`start`/`submit`/`approve`/`reject`/`done`/`close`/`reopen`）；
    `stop`（让出但保留归属）与 `block`（挂起等人）**走 CLI 补位**：
@@ -193,6 +213,8 @@ taskboard_update <id> --action submit --reviewer <名字>
 taskboard_comment <id> --text "做了什么 / 验证了什么 / 还差什么"
 ```
 
+- **`submit` 是持卡人的动作**（T-62 ①）：只有**持卡人 / 卡主 / 人类**交得了这张卡。
+  别人的 in_progress 卡你交不了 —— 那不是"帮忙推进"，那是替别人交作业；`comment` 说清现状 + 叫人。
 - **交接留言是提交的一部分**：没有它，审核人无法验收 —— 这是最常被省略、也最贵的一步。
 - **提交会主动告诉 reviewer**（T-56）：`submit` 成功后打印一条**可直接复制发送**的提示
   （卡号 + 标题 + 他该敲的命令 + `--cwd`，因为他可能不在这个工作区）。环境里找得到 `msg9`
@@ -290,8 +312,10 @@ taskboard_update <id> --action unblock --by <当初等的那个人>/human
 1. **等谁的卡不能被认领**（`claim` 会被拒并说明原因）。「在等决定」≠「没人要」——这是 `T-8` 的教训。
 2. `wait_question` 必须是**一句能原样转发给人**的问句。写「看看」「你觉得呢」等于没写。
 3. **等人类不等于可以撒手**：block 之后**你有责任叫人**（你自己的通知通道 / 通知 hook），并在超时后按 §11 升级。
-   —— 而且**你解不开它**：等人类的卡只有人类能 `unblock`（v0.7.6 · T-61）。挂起是**人类的**等待，
-   agent 能做的只有 comment + 催，替他解挂 = 越权（2026-10-07 那 4 次越界里有 2 次就是这个）。
+   —— 而且**你解不开它**：等人类的卡只有人类能 `unblock`（v0.7.6 · T-61 + T-62）。挂起是**人类的**等待，
+   agent 能做的只有 comment + 催，替他解挂 = 越权（2026-10-07 那 4 次越界里有 2 次就是这个）——
+   绕道也不行：`done`/`close`/`submit` 只要会清掉等待，走的是同一道门（§4.1）。
+   等某个 Agent 的卡不同：**被等的人 + 卡主 / 持卡人 / 裁决人**都能解（T-62 ③ 修锁死）。
 4. 只有三种情况值得把卡挂到人类身上：**对外动作**（发布、部署、发信）、**资源**（钱、账号、额度）、
    **方向取舍**（做哪个、砍哪个）。其余的自己决定并记录下来。
 
@@ -396,6 +420,8 @@ taskboard_update <id> --action unblock --by <当初等的那个人>/human
 | 只在聊天里答应，不落卡 | 看板与现实脱节 | 结论写进卡片 comment |
 | 替人类解挂（`unblock` 挂人类的卡） | 人类的等待被 agent 代答，授权链断了（2026-10-07 实发） | 只能 `comment` + 催人；解挂是人类的动作（会被拒） |
 | 收口不属于自己的卡（别人的 `close` / `reopen`） | 卡主被越权、结论对也算错（2026-10-07 实发 4 次） | 不是你的卡就 comment 现状 + 催该收口的人 |
+| 替别人交作业（`submit` 别人的 in_progress 卡） | 作者被代言，审核人拿到一份不是他交的东西 | `submit` 是持卡人的动作；不是你的卡就催持卡人（会被拒） |
+| 用 `done` / `close` 绕过 `unblock` 拆掉等待 | 挂人类的卡被悄悄变成"已完"，人类的问题掉了地（T-62 前实发） | 清等待的每条路径都过 §4.1 那道门，并记 `unblocked`；等人类只能由人类解 |
 | 复核留言里留「建议补…/别掉地上」而不落卡 | 卡一 `close` 就再也浮不上来（T-40 审计：38 张 closed 卡里 10 条掉了） | `taskboard tails --file <tailId> --card <新卡号>`（不做了就 `--waive` + 理由） |
 
 ## 15. 与 msg9 任务模型的关系

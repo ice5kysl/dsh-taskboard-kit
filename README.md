@@ -245,7 +245,7 @@ taskboard list --waiting human               # who is waiting on the human (--wa
 taskboard stale                              # health: waiting on the human / review nobody owns / broken handoffs / stale columns
 taskboard roster                             # who is actually around (check before delegating)
 taskboard claim T-3 --by kimi                # atomic claim, stamped "kimi" (a waiting card is refused)
-taskboard update T-3 --action submit --reviewer claude --by kimi   # hand to review, naming the reviewer
+taskboard update T-3 --action submit --reviewer claude --by kimi   # hand to review — the HOLDER's act (holder / creator / the human only, T-62)
 taskboard update T-3 --action approve --by claude                  # only the reviewer / creator / human may decide
 taskboard update T-3 --action block --on human --who iceskysl \
   --question "ship now, or wait for the T-8 fixes?" --by kimi       # park it on the human (fires the notify hook)

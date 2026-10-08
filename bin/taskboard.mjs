@@ -28,12 +28,17 @@
  *
  * The rules the board enforces (long form: docs/COLLABORATION.md):
  *   · claim is atomic and refuses a card that is waiting on someone;
- *   · submit hands the card to a reviewer — never yourself;
+ *   · submit hands the card to a reviewer — never yourself — and is the HOLDER's
+ *     act: only the holder, the creator or the human may submit a card (T-62);
  *   · approve/reject belong to that reviewer, the task's creator, or the human;
  *   · close/cancel/reopen belong to the card's creator, its owner, its reviewer,
  *     or the human (T-61);
- *   · unblock belongs to whoever the card waits on — and a card parked on the
- *     human can be released by the HUMAN ONLY, never by an agent (T-61);
+ *   · ending a wait — unblock, and every action that would clear a waiting card
+ *     (submit/approve/reject/done/close/reopen) — belongs to whoever the card
+ *     waits on PLUS the card's creator/owner/reviewer or the human; a card
+ *     parked on the human can be released by the HUMAN ONLY, never by an agent
+ *     (T-61 + T-62). Each of those paths also records an explicit `unblocked`
+ *     event, so a wait is never dropped silently (T-62 ② / T-60);
  *   · block/unblock record who a card is waiting on WITHOUT faking a status,
  *     and blocking on a human fires TASKBOARD_NOTIFY_CMD when one is wired.
  *   These actor checks stop mistakes and overreach, NOT forgery: `--by` is a
@@ -188,9 +193,11 @@ const USAGE = `commands:
                                                             提交（submit）成功后**主动通知 reviewer**：
                                                             环境里有 msg9 就顺手发一封，否则只打印一条
                                                             可直接复制发送的提示 —— 发不出去绝不影响提交
-                                                            权限：close/reopen 只有卡主 / 持卡人 /
-                                                            裁决人 / 人类能敲；等人类的卡只有人类能
-                                                            unblock（agent 会被拒，去催人）
+                                                            权限：submit 只有持卡人 / 卡主 / 人类；
+                                                            close/reopen 只有卡主 / 持卡人 / 裁决人 /
+                                                            人类；解挂（含任何会清掉等待的动作）
+                                                            等人类的卡只有人类能敲，等某个 agent 的
+                                                            卡被等的人 + 卡主 / 持卡人 / 裁决人都能敲
   comment <id> --text TEXT                                  留言（不改状态）
   tails [--all] [--status S]                                复核尾巴：已结清的卡上，复核留言里还没消化的待办
   tails --file <tailId> --card T-42                         把一条尾巴落成卡（收口）

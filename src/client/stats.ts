@@ -584,27 +584,45 @@ function firstOf(task: Task, events: readonly TaskEvent[]): number | null {
 }
 
 /**
- * 这张卡的全部等待区间（T-52：从 `log` 重建，`[start, end)`，end=∞ 表示至今仍在等）。
+ * 会**结束一段等待**的事件（T-60）。
  *
- * `blocked`(ts) 与其后**第一个** `unblocked`(ts') 配对成一段 `[ts, ts')`；中间没有
- * `unblocked` 的段延伸到 ∞（此刻仍在等）。连续两次 `blocked` 没有解除夹在中间时
- * 产生重叠段，`some` 判定不受影响。
+ * `unblocked` 是显式的那一个；但 `waiting_on` 也会被 `submit` / `approve` /
+ * `reject` / `done` / `close` / `reopen` 清掉。旧代码只认 `unblocked` ⇒ 那些
+ * **隐式结束**的等待段闭不上，一路延伸到此刻：走势图末点说"还在等"、而当期
+ * 大数字（读 `waiting_on` 字段）说"没在等" —— 同屏自相矛盾。
+ * （T-60 探针：blocked@5 天前 → submitted@3 天前 ⇒ series 末点=1、当期=0。）
+ *
+ * T-62 ② 起**写侧**会给每条路径补一条 `unblocked`，新数据天然闭合；
+ * 这个集合是**读侧的兜底**，管的是老数据 —— 真实板上的 T-18 就在那里，
+ * 历史事件改不掉，只能在配对时认它们。
+ */
+const WAIT_END_EVENTS: readonly TaskEvent[] = [
+  'unblocked', 'submitted', 'approved', 'rejected', 'done', 'closed', 'reopened',
+]
+
+/**
+ * 这张卡的全部等待区间（T-52 起从 `log` 重建，T-60 补终点集合；
+ * `[start, end)`，end=∞ 表示至今仍在等）。
+ *
+ * `blocked`(ts) 与其后**第一个结束等待的事件**(ts') 配对成一段 `[ts, ts')`；
+ * 中间没有终点事件的段延伸到 ∞（此刻仍在等）。连续两次 `blocked` 没有解除夹在
+ * 中间时产生重叠段，`some` 判定不受影响。
  *
  * 旧板可能一个 `blocked` 事件都没有（`waiting_on` 字段先于事件存在）：保留
- * `waiting_on.since` 的回退口径，同样与它之后的 `unblocked` 配对；`since` 已落在
+ * `waiting_on.since` 的回退口径，同样与它之后的终点事件配对；`since` 已落在
  * 某段重建区间内时不重复补。
  */
 function waitIntervals(task: Task): Array<[number, number]> {
-  const unblocks = eventTimes(task, 'unblocked')
+  const ends = [...new Set(WAIT_END_EVENTS.flatMap((event) => eventTimes(task, event)))].sort((a, b) => a - b)
   const intervals: Array<[number, number]> = eventTimes(task, 'blocked').map((start) => {
-    const end = unblocks.find((ts) => ts > start)
+    const end = ends.find((ts) => ts > start)
     return [start, end ?? Number.POSITIVE_INFINITY] as [number, number]
   })
   const waiting = task.waiting_on
   if (waiting) {
     const since = Date.parse(waiting.since)
     if (!Number.isNaN(since) && !intervals.some(([start, end]) => start <= since && since < end)) {
-      const end = unblocks.find((ts) => ts > since)
+      const end = ends.find((ts) => ts > since)
       intervals.push([since, end ?? Number.POSITIVE_INFINITY])
     }
   }
@@ -618,6 +636,11 @@ function waitIntervals(task: Task): Array<[number, number]> {
  * 也算——旧口径只读 `waiting_on.since`（当前这一次），那样的等待在「被卡住」
  * 趋势上是隐身的。口径变化：趋势图上的「被卡住」只增不减（更真实），协作
  * 动作不受影响。收口之后的时刻不算（与旧口径一致）。
+ *
+ * T-60 起 `waitIntervals` 的终点不再只有 `unblocked`：隐式结束（submit /
+ * approve / reject / done / close / reopen 清掉 `waiting_on`）同样闭合区间 ——
+ * 否则走势图末点=1、当期值（读字段）=0，同屏自相矛盾。T-62 ② 起**写侧**会给
+ * 新数据补 `unblocked`；这里是**读侧对老数据的兜底**。
  */
 function blockedAt(task: Task, at: number): boolean {
   if (statusAt(task, at) === 'closed') return false
