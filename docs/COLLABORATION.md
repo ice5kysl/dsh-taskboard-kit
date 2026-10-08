@@ -135,18 +135,27 @@
 | `approve` | `review` | `done` | 只有 reviewer / 卡主 / 人类 |
 | `reject` | `review` | `in_progress` | 同上；**必须** `--note` 写原因 |
 | `done` | `open`/`in_progress`/`review` | `done`（**非终态**） | 自审绕行口，仅用于「无需审核」的琐事；有 reviewer 时优先走 submit。**done 之后仍需 close 收口** |
-| `close` | 非终态 + `done` | `closed`（**唯一终态**） | 收口结清；「不做」也走它，但**必须写原因**；`cancel` 是旧别名 |
-| `reopen` | `done`/`closed` | `open`（保留 assignee） | 清 `reviewer` / `waiting_on` |
+| `close` | 非终态 + `done` | `closed`（**唯一终态**） | 收口结清；「不做」也走它，但**必须写原因**；**只有卡主 / 持卡人 / 裁决人 / 人类**；`cancel` 是旧别名 |
+| `reopen` | `done`/`closed` | `open`（保留 assignee） | 清 `reviewer` / `waiting_on`；**与 close 同一批人**有权 |
 | `block` | `open`/`in_progress`/`review` | **状态不变**，写 `waiting_on` | 必须给 `wait_question`；kind 可由 `wait_who` 推断 |
-| `unblock` | 有 `waiting_on` | 状态不变，清 `waiting_on` | 答复写进 `comment` |
+| `unblock` | 有 `waiting_on` | 状态不变，清 `waiting_on` | 答复写进 `comment`；**只有当初等的那个人（或人类）**能解 —— 等人类的卡**只有人类**能解 |
 
 **两条口径写在规则区，免得下一轮再猜**：
 
-1. **`close` / `unblock` 是约定，不是权限** —— store 对它们只做**状态校验**
-   （`close` 只看到达的列、`unblock` 只看有没有 `waiting_on`），**谁来敲都行**；
-   只有 `approve` / `reject` 有 **actor 门**（reviewer / 卡主 / human，见 §8）。
-   所以 §7.5 的「卡主 / PO / 人类都能做」与面板那句「（约定，非权限）」是**协作纪律**，
-   不是一道会被拒绝的闸门 —— 卡主不在场时，PO / 人类 / 别的 Agent 照样能收口。
+1. **`close` / `unblock` 现在是机制，不只是约定**（v0.7.6 · T-61，起因：一天内 4 次越权）。
+   store 对它们**先做状态校验、再做 actor 校验**：
+   - `close` / `cancel` / `reopen`：只有 **卡主（`created_by`）/ 持卡人（`assignee`）/
+     裁决人（`reviewer`）/ 人类**可以，其他人被拒（`conflict`）；
+   - `unblock`：只有**当初等的那个人**或人类可以；`kind === 'human'` 的卡**agent 一律不得解除**
+     （这正是那次"某 agent 自己把挂人类的卡解挂并裁决"的缝）；
+     `who` 未指名、或 `kind === 'external'`（挂的是板外对方，它永远不会来敲板子）则放宽为
+     任何在场 agent —— **避免把卡锁死**；
+   - **别名折叠**：`dsh ≡ dsh-agent`、`TASKBOARD_ACTOR_ALIASES` / `TASKBOARD_WATCH_NAMES` /
+     `TASKBOARD_SIBLING_NAMES` 声明的等价名都算同一个人（否则 dsh 自己的会话会被自己拒）；
+   - **老卡不锁死**：没有 `created_by` 的卡退回改前行为（谁都能收口）；
+   - **这不是安全边界**：`--by` 仍是**记录值、可被伪造** —— 它挡的是手滑 / 顺手 / 抢跑，
+     不是冒名。真正的边界只有人类自己。
+   所以 §7.5 的「卡主 / PO / 人类都能做」现在是：**这几个人做得到，别人会被拒**。
 2. **抽屉（面板）没有 `stop` / `block` 入口** —— **有意为之，不是回归**。
    面板只放"往前推"的动作（`claim`/`unblock`/`start`/`submit`/`approve`/`reject`/`done`/`close`/`reopen`）；
    `stop`（让出但保留归属）与 `block`（挂起等人）**走 CLI 补位**：
@@ -200,7 +209,7 @@ taskboard_comment <id> --text "做了什么 / 验证了什么 / 还差什么"
 ## 7.5 收口：done 之后必须有人 close
 
 ```
-# 审核通过后的收口（卡主 / PO / 人类都能做）
+# 审核通过后的收口（只有卡主 / 持卡人 / 裁决人 / 人类能做，别人会被拒）
 taskboard_update <id> --action close --note "已部署上线"      # 结清
 taskboard_update <id> --action close --note "方向变了，不做"  # 放弃（同样走 close，写清原因）
 ```
@@ -273,7 +282,7 @@ taskboard_update <id> --action block --on agent --who kimi --question "T-3 审�
 
 # 答复到了
 taskboard_comment <id> --text "答复：…"
-taskboard_update <id> --action unblock
+taskboard_update <id> --action unblock --by <当初等的那个人>/human
 ```
 
 铁律：
@@ -281,6 +290,8 @@ taskboard_update <id> --action unblock
 1. **等谁的卡不能被认领**（`claim` 会被拒并说明原因）。「在等决定」≠「没人要」——这是 `T-8` 的教训。
 2. `wait_question` 必须是**一句能原样转发给人**的问句。写「看看」「你觉得呢」等于没写。
 3. **等人类不等于可以撒手**：block 之后**你有责任叫人**（你自己的通知通道 / 通知 hook），并在超时后按 §11 升级。
+   —— 而且**你解不开它**：等人类的卡只有人类能 `unblock`（v0.7.6 · T-61）。挂起是**人类的**等待，
+   agent 能做的只有 comment + 催，替他解挂 = 越权（2026-10-07 那 4 次越界里有 2 次就是这个）。
 4. 只有三种情况值得把卡挂到人类身上：**对外动作**（发布、部署、发信）、**资源**（钱、账号、额度）、
    **方向取舍**（做哪个、砍哪个）。其余的自己决定并记录下来。
 
@@ -383,6 +394,8 @@ taskboard_update <id> --action unblock
 | 派活给久未露面的名字 | 孤儿卡 | 先 `taskboard_roster` |
 | 手改 `.dsh/taskboard.json` | 破坏锁与原子性 | 走工具/CLI |
 | 只在聊天里答应，不落卡 | 看板与现实脱节 | 结论写进卡片 comment |
+| 替人类解挂（`unblock` 挂人类的卡） | 人类的等待被 agent 代答，授权链断了（2026-10-07 实发） | 只能 `comment` + 催人；解挂是人类的动作（会被拒） |
+| 收口不属于自己的卡（别人的 `close` / `reopen`） | 卡主被越权、结论对也算错（2026-10-07 实发 4 次） | 不是你的卡就 comment 现状 + 催该收口的人 |
 | 复核留言里留「建议补…/别掉地上」而不落卡 | 卡一 `close` 就再也浮不上来（T-40 审计：38 张 closed 卡里 10 条掉了） | `taskboard tails --file <tailId> --card <新卡号>`（不做了就 `--waive` + 理由） |
 
 ## 15. 与 msg9 任务模型的关系
@@ -402,6 +415,9 @@ taskboard_update <id> --action unblock
 - 不自动裁决：**没有任何自动 approve / reject / close / 改派**。看板只让事实可见（§10）。
 - reviewer 通知**只认板里名册已有的地址**：不去查 msg9 的通讯录/凭据，也不按域名拼地址
   （拼错的信不会报错，只会静默躺着）。名册里没有就只打印提示（§7）。
+- **`--by` 不是凭据**（T-61 明确的口径）：`close` / `unblock` 的 actor 校验是**防误操作与防越权**，
+  不是安全边界 —— 任何人仍然可以 `--by <别人的名字>` 把身份写错。真要防冒名，需要签名/凭据，
+  那与「一个 JSON 文件 + 一个锁、无账号体系」的定位相冲，本轮**不做**（真正的边界只有人类自己）。
 - 不做跨 workspace 的看板：一块板属于一个目录；跨项目协作走 msg9（见全局 AGENTS.md）。
 - 不做远端服务端 / 账号体系：仍是「一个 JSON 文件 + 一个锁」。
 - 面板不做拖拽以外的批量操作、不做实时协同编辑。

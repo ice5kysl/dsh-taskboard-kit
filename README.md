@@ -249,7 +249,8 @@ taskboard update T-3 --action submit --reviewer claude --by kimi   # hand to rev
 taskboard update T-3 --action approve --by claude                  # only the reviewer / creator / human may decide
 taskboard update T-3 --action block --on human --who iceskysl \
   --question "ship now, or wait for the T-8 fixes?" --by kimi       # park it on the human (fires the notify hook)
-taskboard update T-3 --action unblock --by kimi                     # the answer landed
+taskboard update T-3 --action unblock --by iceskysl                 # the answer landed — a human wait is released by the HUMAN (an agent's unblock is refused, T-61)
+taskboard update T-3 --action close --note "deployed" --by kimi     # settle — creator / owner / reviewer / the human only (T-61)
 taskboard comment T-3 --text "handoff: …" --by kimi     # state untouched
 taskboard create --title "…" --priority high --value 3 --by claude
 ```

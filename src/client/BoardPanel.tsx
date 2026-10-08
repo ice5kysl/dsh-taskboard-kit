@@ -494,7 +494,7 @@ export function holderTitle(task: Task, holder: Holder, reviewerQuiet: boolean):
       ? L('{who} 欠这次审核，但花名册里它已久未活动', '{who} owes this review but has been quiet per the roster', { who: holder.who })
       : L('裁决人：{who}', 'reviewer: {who}', { who: holder.who }))
   } else if (holder.action === 'settle') {
-    parts.push(L('已完成待收口，默认由卡主 {who} 收口（约定，非权限）', 'done and awaiting settle — normally closed by {who} (a convention, not a permission)', { who: holder.who }))
+    parts.push(L('已完成待收口，由卡主 {who} 收口（只有卡主 / 持卡人 / 裁决人 / 人类能收口）', 'done and awaiting settle — closed by {who} (only the creator / owner / reviewer / the human may settle)', { who: holder.who }))
   } else {
     parts.push(L('负责人：{who}', 'owner: {who}', { who: holder.who }))
   }

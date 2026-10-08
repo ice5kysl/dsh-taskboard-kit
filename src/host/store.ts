@@ -684,6 +684,172 @@ export function actorNamesOf(board: Board, name: string): string[] {
   return actorNames(board, name)
 }
 
+// --------------------------------------------------------- actor authority
+// T-61（主人 2026-10-07 拍板「从约定变成机制」）：
+// 一天内 4 次越界都用同一条缝 —— `unblock` / `close` 没有任何 actor 校验。
+// 这里补的是**防误操作与防越权**的闸门，**不是安全边界**：`by` 仍是记录值、
+// 仍可被伪造（照板子既有口径："everything else is advisory"）。它挡住的是
+// "手滑 / 顺手 / 抢跑"，不是"有人故意冒名"。真正的边界只有人类自己。
+
+/**
+ * 「谁是同一个主体」——权限判定专用的规范化。
+ *
+ * 板子上的规范有两层，两层都要走，缺一层就会出人命：
+ *   1. **名册**（`resolveActor` / `sameActor`）：板上的事实。别名由 `touchActor`
+ *      落库，所以 `dsh` 与 `dsh-agent` 通常在这里就折叠了；
+ *   2. **环境声明**（`actorAliasGroups()` + `TASKBOARD_SIBLING_NAMES`）：名册
+ *      里没有别名信息时的兜底 —— `loadBoard` 从 log 回填的老名册条目
+ *      `aliases: []`，**一块老板**上 `dsh` 与 `dsh-agent` 只有在这里才 fold 得上。
+ *
+ * 没有第 2 层，dsh 自己的会话会被自己拒（T-61 卡面点名"这条最关键"）。
+ * 声明之间是**传递**的：`A≡B`、`B≡C` ⇒ `A≡B≡C`（配置里常把别名组与
+ * siblings 分两处写，合并不了就等于没配）。
+ */
+function principalGroups(): string[][] {
+  const groups: string[][] = []
+  for (const [canonical, aliases] of Object.entries(actorAliasGroups())) {
+    groups.push([canonical, ...aliases])
+  }
+  // 同一实例的其他会话（`TASKBOARD_SIBLING_NAMES`）：它们的卡算"我"的，
+  // 所以对闸门而言是同一个主体 —— 否则两个 dsh 会话收不了对方开的卡。
+  // 口径与 watcher 完全一致（watch.ts：`owned = names ∪ siblings`，
+  // `names` = TASKBOARD_WATCH_NAMES 或默认 ['dsh','dsh-agent']）：sibling 不是
+  // 自己独立的一类，而是**并进"本实例"这一类**。
+  const siblings = (process.env.TASKBOARD_SIBLING_NAMES ?? '')
+    .split(',').map((name) => name.trim()).filter(Boolean)
+  if (siblings.length > 0) {
+    const watch = parseWatchNames(process.env.TASKBOARD_WATCH_NAMES)
+    const mine = watch ? [watch.canonical, ...watch.aliases] : ['dsh', 'dsh-agent']
+    groups.push([...mine, ...siblings])
+  }
+  return groups
+}
+
+/** 等价组的合并结果：名字键 → 所在组（组内第一个名字是规范名）。 */
+function mergedPrincipalGroups(): string[][] {
+  const owner = new Map<string, number>()
+  const merged: string[][] = []
+  for (const group of principalGroups()) {
+    const keys = [...new Set(group.map(actorKey).filter((key) => key !== ''))]
+    if (keys.length === 0) continue
+    const hits = [...new Set(keys.map((key) => owner.get(key)).filter((id): id is number => id !== undefined && id >= 0))]
+    const target = hits[0] ?? merged.length
+    if (hits.length === 0) merged.push([])
+    const bucket = merged[target]!
+    for (const key of keys) {
+      if (!bucket.includes(key)) bucket.push(key)
+      owner.set(key, target)
+    }
+    for (const other of hits.slice(1)) {
+      for (const key of merged[other]!) {
+        if (!bucket.includes(key)) bucket.push(key)
+        owner.set(key, target)
+      }
+      merged[other] = []
+    }
+  }
+  return merged
+}
+
+/**
+ * 折叠到规范名：`dsh-agent` → `dsh`（内置）、`TASKBOARD_ACTOR_ALIASES` /
+ * `TASKBOARD_WATCH_NAMES` 声明的别名、以及 `TASKBOARD_SIBLING_NAMES`
+ * （同实例的其他会话）。解析不到就返回规范化后的自身。
+ */
+export function principalKey(name: string): string {
+  const key = actorKey(name)
+  if (key === '') return key
+  for (const group of mergedPrincipalGroups()) {
+    if (group.includes(key)) return group[0] ?? key
+  }
+  return key
+}
+
+/**
+ * 两个名字是不是同一个主体：**名册优先，配置兜底** —— 和板子其它地方
+ * 同一套规范化，只是多了一层"名册还没有别名信息"时的退路。
+ */
+export function samePrincipal(board: Board, a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false
+  if (sameActor(board, a, b)) return true
+  return principalKey(a) === principalKey(b)
+}
+
+/** 这张卡是被谁挂起的（log 里最后一次 `blocked`）——只用于把话说清楚。 */
+function blockerOf(task: Task): string | undefined {
+  for (let index = task.log.length - 1; index >= 0; index -= 1) {
+    const entry = task.log[index]!
+    if (entry.event === 'blocked') return entry.by
+  }
+  return undefined
+}
+
+/**
+ * `unblock` 的 actor 校验（T-61 §1）。
+ *
+ *   • `kind === 'human'`：**agent 一律不得解除**，只有人类可以 —— 挂起是人类的
+ *     等待，agent 能做的只有 comment + 催人（这正是①②两次越界）。
+ *   • `kind === 'agent'` 且 `who` 有名：只有那个 agent（或其别名等价名）或人类；
+ *   • `who` 为空（未指名）或 `kind === 'external'`：放宽为**任何在场 agent 或人类**。
+ *
+ * 为什么后两条要放宽（而不是一律锁死）：`external` 挂的是**板外的对方**
+ * （如某个 msg9 地址），它永远不会自己来敲这块板子；而"只写了 kind、没指名"
+ * 的等待更是没人可指名。按字面锁死只会把卡烂在板上 —— 那不是防越权，是造事故。
+ */
+function assertCanUnblock(board: Board, task: Task, by: string): void {
+  const wait = task.waiting_on
+  if (!wait) return
+  // `human` 与 `TASKBOARD_HUMANS` 里的实名都算人类（与 canDecide 同一口径）。
+  if (kindOf(by) === 'human') return
+  const parked = `${task.id} is waiting on ${wait.kind}${wait.who ? ` (${wait.who})` : ''}`
+  const blocker = blockerOf(task)
+  if (wait.kind === 'human') {
+    throw new StoreError(
+      'conflict',
+      `${parked}${blocker ? `, blocked by ${blocker}` : ''} ⇒ only the human can unblock it; "${by}" is an agent. `
+      + 'Ask the human to answer it (comment + your own notification channel) and let them release the wait — '
+      + 'do not unblock or settle it yourself.',
+    )
+  }
+  if (wait.kind === 'agent' && wait.who && !samePrincipal(board, wait.who, by)) {
+    throw new StoreError(
+      'conflict',
+      `${parked} ⇒ only ${wait.who} (or the human) can unblock it; "${by}" is neither. `
+      + `Let ${wait.who} answer and release it, or ask the human.`,
+    )
+  }
+}
+
+/**
+ * `close` / `cancel` / `reopen` 的 actor 校验（T-61 §2）。
+ *
+ * 只有**卡主（created_by）/ 当前持卡人（assignee）/ 裁决人（reviewer）/ 人类**可以；
+ * `reopen` 用同一集合 —— 结清错了必须退得回来 ✓。放弃工作也走 `close`，
+ * 所以"不做"同样只有这些人能定（理由仍必须写在 note 里，见 §7.5）。
+ *
+ * 向后兼容（T-61 §3）：`created_by` 缺席的老卡**退回改前行为**（谁都能收口）——
+ * 一块无名可归的卡上做不了归属判断，拒了只会把老卡锁死。缺 `waiting_on` 的老卡
+ * 不必特判：加载时补成 `null`，`unblock` 本来就会以 `invalid-transition` 拒绝。
+ */
+function assertCanSettle(board: Board, task: Task, by: string, action: UpdateAction): void {
+  if (kindOf(by) === 'human') return
+  if (!task.created_by) return
+  const holders: string[] = [task.created_by, task.assignee, task.reviewer]
+    .filter((name): name is string => typeof name === 'string' && name !== '')
+  if (holders.some((holder) => samePrincipal(board, holder, by))) return
+  const verb = action === 'reopen' ? 'reopen' : 'close'
+  const named = [
+    `creator ${task.created_by}`,
+    task.assignee ? `owner ${task.assignee}` : null,
+    task.reviewer ? `reviewer ${task.reviewer}` : null,
+  ].filter(Boolean).join(', ')
+  throw new StoreError(
+    'conflict',
+    `${task.id} is not yours to ${verb}: only its ${named} or the human can; "${by}" is none of them. `
+    + 'Ask one of them (or the human) to do it.',
+  )
+}
+
 /** 解析成名册里的规范名，解析不到就给规范化后的自身。 */
 export function canonicalActor(board: Board, name: string): string {
   const entry = resolveActor(board, name)
@@ -880,6 +1046,14 @@ function canDecide(board: Board, task: Task, by: string): boolean {
  *   block:   set `waiting_on` (open | in_progress | review) — 'blocked'
  *   unblock: clear `waiting_on` — 'unblocked'
  * so "parked on a human" stops looking like "free work".
+ *
+ * v0.7.6 (T-61) turns two of the old conventions into checks: `unblock` is
+ * restricted to whoever the card waits on (or the human — an agent may NEVER
+ * release a card parked on the human), and `close`/`cancel`/`reopen` to the
+ * card's creator / owner / reviewer / the human. Both look at the state first,
+ * so `invalid-transition` keeps its meaning and only the actor is a `conflict`.
+ * `by` is still a recorded value, not a credential: this stops mistakes and
+ * overreach, it is not a security boundary (see assertCanUnblock/assertCanSettle).
  */
 export async function updateTask(
   cwd: string,
@@ -938,6 +1112,9 @@ export async function updateTask(
         if (!task.waiting_on) {
           throw new StoreError('invalid-transition', `${taskId} is not waiting on anyone`)
         }
+        // State first, then authority: "nothing is waiting" is a more specific
+        // answer than "not yours to release", and the two never disagree.
+        assertCanUnblock(board, task, by)
         task.waiting_on = null
         events.push('unblocked')
       } else {
@@ -961,7 +1138,13 @@ export async function updateTask(
           }
           task.reviewer = null
           task.waiting_on = null
-        } else if (action === 'done' || action === 'close' || action === 'reopen') {
+        } else if (action === 'close' || action === 'cancel' || action === 'reopen') {
+          // 收口 / 退回的归属（T-61 §2）。`cancel` 是 close 的旧别名，走同一闸门。
+          // `done` 有意不在这一支：它不是收口，归属仍由 approve/reject 那条链管。
+          assertCanSettle(board, task, by, action)
+          task.reviewer = null
+          task.waiting_on = null
+        } else if (action === 'done') {
           task.reviewer = null
           task.waiting_on = null
         }

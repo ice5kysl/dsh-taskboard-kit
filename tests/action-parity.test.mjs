@@ -149,7 +149,9 @@ await check('T-42 · claim 不走状态机（host 的 updateTask 根本不认它
 
   const waiting = fixture('in_progress', { waiting_on: { kind: 'human', who: 'iceskysl', question: 'q', since: '2026-10-01T00:00:00.000Z' } })
   await plant(ws, waiting)
-  const released = await updateTask(ws, 'T-1', { action: 'unblock' }, 'dsh')
+  // T-61：挂人类的卡**只有人类能解**（agent 会被 conflict 拒）。这里由 `human`
+  // 来敲 —— 也正是浏览器面板的真实路径（bridge 的所有变更都盖 `human`）。
+  const released = await updateTask(ws, 'T-1', { action: 'unblock' }, 'human')
   assert.equal(released.task.status, 'in_progress', 'unblock 不改状态（它只解除等待）')
   assert.equal(released.task.waiting_on, null)
   // 客户端同口径：有等待才可用。

@@ -597,8 +597,20 @@ await check('cli: block/unblock + inbox + stale + roster drive the same rules', 
   assert.match(roster, /iceskysl/)
   assert.match(roster, /never acted/, 'the human has not touched the board yet')
 
-  const unblocked = JSON.parse(await cli('update', created.id, '--action', 'unblock', '--json'))
-  assert.equal(unblocked.waiting_on, null)
+  // T-61：这张卡挂在人类（iceskysl）身上 ⇒ **只有人类**能解挂。agent 敲会被拒，
+  // 拒信里要写清「谁被拒 / 为什么 / 该找谁」。
+  const refusedUnblock = await run('node', [bin, '--cwd', ws, '--by', 'kimi', 'update', created.id, '--action', 'unblock'])
+    .then(() => null, (error) => error)
+  assert.ok(refusedUnblock, 'a card parked on the human cannot be unblocked by an agent')
+  assert.equal(refusedUnblock.code, 3, 'conflict exit code')
+  assert.match(refusedUnblock.stderr, /waiting on human/)
+  assert.match(refusedUnblock.stderr, /only the human can unblock it/)
+
+  const unblocked = JSON.parse(
+    await run('node', [bin, '--cwd', ws, '--by', 'iceskysl', 'update', created.id, '--action', 'unblock', '--json'])
+      .then(({ stdout }) => stdout.trim()),
+  )
+  assert.equal(unblocked.waiting_on, null, 'the human releases the wait')
 
   // Submit names a reviewer, and the verdict is enforced.
   const submitted = JSON.parse(await cli('update', created.id, '--action', 'submit', '--reviewer', 'dsh', '--json'))

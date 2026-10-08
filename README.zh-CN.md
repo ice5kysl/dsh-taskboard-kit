@@ -209,7 +209,8 @@ taskboard update T-3 --action submit --reviewer claude --by kimi   # 提交并�
 taskboard update T-3 --action approve --by claude                  # 审核通过（非 reviewer/卡主/人类会被拒）
 taskboard update T-3 --action block --on human --who iceskysl \
   --question "现在就发，还是等 T-8 修完？" --by kimi                # 挂到人类身上（触发外发通知）
-taskboard update T-3 --action unblock --by kimi                    # 答复到了
+taskboard update T-3 --action unblock --by iceskysl                # 答复到了 —— 等人类的卡**只有人类**能解挂（agent 会被拒，T-61）
+taskboard update T-3 --action close --note "已部署" --by kimi       # 收口 —— 只有卡主 / 持卡人 / 裁决人 / 人类能敲（T-61）
 taskboard comment T-3 --text "交接：…" --by kimi        # 不改任务状态
 taskboard create --title "…" --priority high --value 3 --by claude
 ```

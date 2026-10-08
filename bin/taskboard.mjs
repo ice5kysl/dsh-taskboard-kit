@@ -30,8 +30,14 @@
  *   · claim is atomic and refuses a card that is waiting on someone;
  *   · submit hands the card to a reviewer — never yourself;
  *   · approve/reject belong to that reviewer, the task's creator, or the human;
+ *   · close/cancel/reopen belong to the card's creator, its owner, its reviewer,
+ *     or the human (T-61);
+ *   · unblock belongs to whoever the card waits on — and a card parked on the
+ *     human can be released by the HUMAN ONLY, never by an agent (T-61);
  *   · block/unblock record who a card is waiting on WITHOUT faking a status,
  *     and blocking on a human fires TASKBOARD_NOTIFY_CMD when one is wired.
+ *   These actor checks stop mistakes and overreach, NOT forgery: `--by` is a
+ *   recorded value, so the board is still not a security boundary.
  *   · submit 成功后**主动通知 reviewer**（T-56）：板里名册里有他的 msg9 地址、
  *     且环境里有 msg9 二进制时才真发一封；否则只打印一条可直接复制发送的提示。
  *     通知是附属动作 —— 没有 msg9 / 地址未知 / 发送失败都不影响提交成功。
@@ -182,6 +188,9 @@ const USAGE = `commands:
                                                             提交（submit）成功后**主动通知 reviewer**：
                                                             环境里有 msg9 就顺手发一封，否则只打印一条
                                                             可直接复制发送的提示 —— 发不出去绝不影响提交
+                                                            权限：close/reopen 只有卡主 / 持卡人 /
+                                                            裁决人 / 人类能敲；等人类的卡只有人类能
+                                                            unblock（agent 会被拒，去催人）
   comment <id> --text TEXT                                  留言（不改状态）
   tails [--all] [--status S]                                复核尾巴：已结清的卡上，复核留言里还没消化的待办
   tails --file <tailId> --card T-42                         把一条尾巴落成卡（收口）
