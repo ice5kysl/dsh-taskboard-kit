@@ -130,6 +130,44 @@ Naming `@0.7.4` opts that release out of the gate and installs what you asked fo
 Once a release is more than a day old, a bare `add` finds it too.
 
 <a id="release-notes"></a>
+## v0.7.5 — turning "said in review, nobody followed up" into a list
+
+**Client and CLI changes only — refresh the page** (no restart needed for the CLI side).
+
+1. **New `taskboard tails` (review-tail scanner)**: scans the decision notes and review comments of **closed / done** cards and
+   pulls out sentences that look like outstanding work; each hit carries **card + location (`log:6` / `comment:3`) + sentence offset
+   + the original fragment + the rule that fired**. Disposition: `--file <tail> --card <id>` files it, `--waive <tail> --reason "…"`
+   explicitly voids it (**a reason is required**), `--reset` undoes it; stored in an **optional** `Board.tails?` field (old boards still read).
+   It also feeds the existing surfaces: a 「review tails」 section in `stale`, and a bounded hint in `inbox` for whoever owes them.
+   **The rules were narrowed against real data** (the first version produced 240 hits — wallpaper nobody reads — now 94), each narrowing
+   rule has its own unit test, and a **`not-done` rule fires only on section headings** (so the items under "explicitly not done" surface,
+   with noise control pinned by an assertion — proven by two mutations).
+   **Why**: at least 10 review leftovers across 38 closed cards had been **dropped on the floor** (including falsely-green claims like
+   "a test pins this" when no such test existed). The root cause is structural: a review verdict lives in a **note**, and a note
+   **does not move a card** — so it has no carrier, no reminder, no list, and is therefore **silently forgettable**.
+2. **Nine review leftovers cleaned up**: including **the test that was claimed but never existed** (`tests/action-parity.test.mjs`
+   **drives the host**: 7 actions × 5 states through the real `updateTask`, compared against what the drawer actually renders —
+   behaviour, not string literals); the stats page **no longer uses `brand-primary` as a data colour** (`done` uses the host success
+   green, deliberately not the link colour so it cannot collide with in-progress; measured contrast 2.28/6.89 and 4.23/6.75 in the two
+   themes); `MILESTONE_TAG` case handling aligned with `semverParts`; the `?` guide gained a **card-mark legend** derived from the real
+   constants; the card ref gained a proper title; `T-93-hotfix` / `T-93.5` **number boundaries fixed**; two half-width commas and a
+   source-level rule to keep them from coming back.
+3. **A guard on the card render layer**: an unnamed wait (`waiting_on.who` empty) **must not render as claimable**. Previously, reverting
+   the render branch order left **all 76 client tests green** — the derived layer was guarded, the layer that actually paints the card was
+   not. A mutation now turns exactly one assertion red. Also added: 「the reviewer can still decide」 (one `holderTitle()`, three surfaces),
+   and when the reviewer is empty nothing is added (no fallback to the creator — consistent with the attribute row beside it).
+4. **Two semantic touches**: after `start`, if a wait is still on, the outcome column says 「the wait is still on ({who})」
+   (the host genuinely does not clear `waiting_on`); the drawer deliberately **does not** gain `stop`/`block` (neither moves a column, so
+   the button would appear to do nothing) — the docs give the exact CLI instead.
+5. **The stats page's "blocked" metric changed meaning (owner's call)**: `blockedAt` now **reconstructs wait intervals** by pairing
+   `blocked` → `unblocked` in the log (falling back to `waiting_on.since` on older boards; two consecutive `blocked` events simply
+   produce overlapping intervals, which `some` handles) ⇒ **the number goes up**, which is the point: "how long was this card stuck"
+   is finally answerable, instead of historical waits being invisible.
+
+**Verified**: `npm test` **256 checks green** + clean typecheck; every new rule and cleanup carries **mutation evidence**
+(T-44 13/13 · T-42 10/10 · T-50 two-way · T-40 single-point); the scanner took **this workspace's real board** from 94 open tails
+to **0** (47 filed / 47 waived, each with a reason).
+
 ## v0.7.4 — the keyboard works, walking never loses sight, and the toolbar stops being "unstable"
 
 **Client-side only: refresh the page.** Three things:
