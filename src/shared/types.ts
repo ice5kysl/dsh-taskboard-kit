@@ -169,6 +169,30 @@ export interface TailSettlement {
   at: string
 }
 
+/**
+ * 一次「已把提交告诉 reviewer」的去重记录（T-56）。
+ *
+ * submit 是**附属通知**的触发点：通知是 best-effort，但**不能重复轰炸**。
+ * 锚点是 `anchor`（`T-56#log:7` —— 卡上最后一条 `submitted` 事件的下标），
+ * 所以「同一轮提交重放」命中同一条记录而跳过，而 reject 之后重新 submit
+ * 是一轮新提交、会重新通知（那次交接本来就是新信息）。
+ */
+export interface ReviewNotice {
+  /** 哪张卡。 */
+  task: string
+  /** 通知了谁（submit 时任命的 reviewer）。 */
+  reviewer: string
+  /** 本轮提交的锚点：`<卡号>#log:<下标>`。 */
+  anchor: string
+  /** 真的发出去了（msg9），还是只打印了可复制的提示。 */
+  how: 'msg9' | 'printed'
+  /** 只打印时的原因（发成功时为 null）。 */
+  reason: 'no-msg9' | 'no-address' | 'send-failed' | 'disabled' | null
+  /** 解析到的 msg9 收件地址（没解析到则 null —— 地址绝不猜）。 */
+  address: string | null
+  at: string
+}
+
 export interface Board {
   version: 1
   /** Absolute path of the workspace this board belongs to. */
@@ -186,6 +210,11 @@ export interface Board {
    * 第一次收口时由写入方顺手落地 —— 向后兼容是"读端容忍缺失"，不是"写端补齐"。
    */
   tails?: Record<string, TailSettlement>
+  /**
+   * reviewer 通知的去重记录（T-56 起）：key 是 `<卡号>#log:<下标>@<reviewer>`。
+   * 同样**刻意可选**（读端 `board.review_notices ?? {}`），旧板不需要迁移。
+   */
+  review_notices?: Record<string, ReviewNotice>
 }
 
 /**

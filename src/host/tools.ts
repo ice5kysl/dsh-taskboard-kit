@@ -24,6 +24,7 @@ import { actorSeenAt, boardHealth, stalenessOf, type InboxItem } from '../shared
 import { columnOf, type Board, type Task } from '../shared/types.ts'
 import { L } from './locale.ts'
 import { notifyHuman } from './notify.ts'
+import { notifyReviewer } from './review-notify.ts'
 import {
   StoreError,
   addComment,
@@ -475,6 +476,26 @@ export function registerTaskboardTools(ctx: Context): void {
             'handed to {who} for review (it now shows up in their taskboard_inbox)',
             { who: task.reviewer },
           ))
+          // 交付 ≠ 他知道（T-56）。模型工具是**真实现场**里最常走的那条路
+          // （板上那 9 张静默卡里 8 张是 dsh 提交的），所以这条通道也必须通知。
+          // 与 CLI 共用同一份实现与同一条幂等记录；通知绝不阻断提交
+          // （notifyReviewer 自己承诺不抛错）。
+          if (events.includes('submitted')) {
+            const notice = await notifyReviewer(
+              { cwd, task, reviewer: task.reviewer, submittedBy: actor },
+              {
+                log: (message) => {
+                  try {
+                    ctx.logger('taskboard-kit').info(message)
+                  } catch {
+                    /* logger is best-effort */
+                  }
+                },
+              },
+            )
+            extra.push(notice.message)
+            if (notice.hint) extra.push(notice.hint)
+          }
         }
         if (args.action === 'block' && task.waiting_on?.kind === 'human') {
           const result = await notifyHuman({

@@ -65,6 +65,21 @@ export {
 export { resolveCwd } from './workspace.ts'
 export { L } from './locale.ts'
 export { noticePayload, notifyHuman, notifyHookExample, msg9HookExample, type HumanNotice, type NotifyResult } from './notify.ts'
+export {
+  findOnPath,
+  msg9AddressOf,
+  noticeKey,
+  notifyReviewer,
+  reviewNoticeBody,
+  reviewNoticeSubject,
+  reviewNotifyHint,
+  shellQuote,
+  submitAnchor,
+  type ReviewerNotice,
+  type ReviewerNotifyDeps,
+  type ReviewerNotifyReason,
+  type ReviewerNotifyResult,
+} from './review-notify.ts'
 export { TASK_VALUES } from '../shared/types.ts'
 export {
   HUMAN_ACTOR,
@@ -96,7 +111,7 @@ export {
   type Staleness,
   type StalenessOptions,
 } from '../shared/board.ts'
-export { ageLabel, formatGet, formatInbox, marksOf } from './tools.ts'
+export { ageLabel, formatGet, formatInbox, marksOf, registerTaskboardTools } from './tools.ts'
 export { createBoardWatcher, diffBoards, type HumanWaitEscalation } from './watch.ts'
 
 /** The slice of `@deepseek-ai/dsh-host-webserver` this plugin uses. */

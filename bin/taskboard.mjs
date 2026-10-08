@@ -32,6 +32,9 @@
  *   · approve/reject belong to that reviewer, the task's creator, or the human;
  *   · block/unblock record who a card is waiting on WITHOUT faking a status,
  *     and blocking on a human fires TASKBOARD_NOTIFY_CMD when one is wired.
+ *   · submit 成功后**主动通知 reviewer**（T-56）：板里名册里有他的 msg9 地址、
+ *     且环境里有 msg9 二进制时才真发一封；否则只打印一条可直接复制发送的提示。
+ *     通知是附属动作 —— 没有 msg9 / 地址未知 / 发送失败都不影响提交成功。
  *
  * --value takes the Fibonacci value points 0.5 1 2 3 5 8 ("1/2" works for 0.5;
  * "none" on update clears back to unestimated).
@@ -54,6 +57,7 @@ const {
   ageLabel,
   boardFilePath,
   claimTask,
+  columnAgeMs,
   createTask,
   formatGet,
   formatInbox,
@@ -64,6 +68,7 @@ const {
   loadBoard,
   marksOf,
   notifyHuman,
+  notifyReviewer,
   roster,
   saveBoard,
   updateTask,
@@ -165,7 +170,7 @@ function fail(error) {
 const USAGE = `commands:
   inbox [--by NAME] [--limit N] [--pool N] [--no-human]     现在该你处理的事（按急迫度，带该敲的命令）
   list  [--status S] [--assignee NAME|none] [--waiting K]   全板（含 reviewer / 等谁 / 陈旧标记）
-  stale [--days N] [--limit N]                              协作健康：在等人类 / 审核没人认领 / 交接断了 / 列陈旧 / 复核尾巴
+  stale [--days N] [--limit N]                              协作健康：在等人类 / 审核没人认领 / 欠谁审核（按 reviewer 分组）/ 交接断了 / 列陈旧 / 复核尾巴
   roster                                                    名册：谁还在场（别名 dsh ≡ dsh-agent）
   get <id>                                                  单卡全文（时间线 + 留言 + SLA）
   create --title T [--detail D] [--assignee A] [--priority P] [--value V] [--tags a,b]
@@ -174,6 +179,9 @@ const USAGE = `commands:
               [--assignee A|none] [--reviewer A|none] [--on human|agent|external]
               [--who A] [--question Q] [--title T] [--detail D] [--priority P]
               [--value V|none] [--tags a,b] [--note N]
+                                                            提交（submit）成功后**主动通知 reviewer**：
+                                                            环境里有 msg9 就顺手发一封，否则只打印一条
+                                                            可直接复制发送的提示 —— 发不出去绝不影响提交
   comment <id> --text TEXT                                  留言（不改状态）
   tails [--all] [--status S]                                复核尾巴：已结清的卡上，复核留言里还没消化的待办
   tails --file <tailId> --card T-42                         把一条尾巴落成卡（收口）
@@ -219,6 +227,27 @@ function tailLine(tail, indent = '  ') {
 
 function tailCommand(tail) {
   return `taskboard tails --file ${tail.id} --card T-新卡号   （或 --waive ${tail.id} --reason "…"）`
+}
+
+/**
+ * 「欠谁审核」按 reviewer 分组（T-56 次要项）。
+ *
+ * `stale` 原来只列卡，回答不了 PO 最想问的那句话——**我该催谁**。只算
+ * review 列里**有审核人、且没在等别人**的卡：在等别人的卡不是欠审核，
+ * 是欠那个人一条答复（那属于「在等另一个 Agent」那一节）。
+ */
+function groupReviewOwed(tasks, now) {
+  const groups = new Map()
+  for (const task of tasks) {
+    if (!task.reviewer || task.waiting_on) continue
+    const group = groups.get(task.reviewer) ?? { reviewer: task.reviewer, cards: [], oldestMs: 0 }
+    group.cards.push(task)
+    group.oldestMs = Math.max(group.oldestMs, columnAgeMs(task, now))
+    groups.set(task.reviewer, group)
+  }
+  // 欠得最多的人排最前；一样多时看谁压得最久，再看名字（输出稳定，方便贴进信里）。
+  return [...groups.values()].sort((a, b) =>
+    b.cards.length - a.cards.length || b.oldestMs - a.oldestMs || a.reviewer.localeCompare(b.reviewer))
 }
 
 /** `tails` 命令的收口动作：--file / --waive / --reset 三者其一。 */
@@ -359,6 +388,9 @@ async function main() {
         }
       const result = await health(cwd, options)
       const openTails = result.reviewTails.filter((tail) => !tail.settlement)
+      // 「欠谁审核」按 reviewer 分组（T-56 次要项）：只列卡回答不了 PO 最想问的
+      // 那句话——**该催谁**。review 列有审核人的卡，审核人就是他该被催的理由。
+      const reviewOwed = groupReviewOwed(await listTasks(cwd, { status: 'review' }), Date.now())
       if (asJson) {
         const json = Object.fromEntries(Object.entries(result)
           .filter(([kind]) => kind !== 'reviewTails' && kind !== 'reviewTailOrphans')
@@ -373,6 +405,12 @@ async function main() {
               detail: issue.detail,
             })),
           ]))
+        json.review_owed = reviewOwed.map((group) => ({
+          reviewer: group.reviewer,
+          count: group.cards.length,
+          oldest_ms: group.oldestMs,
+          cards: group.cards.map((card) => card.id),
+        }))
         json.review_tails = openTails.map((tail) => ({
           id: tail.id,
           task: tail.task_id,
@@ -394,14 +432,23 @@ async function main() {
         ['⏳ 在等人类决定（面板顶部可见；不看面板就用你的通知通道叫人）', result.waitingHuman],
         ['🔗 在等另一个 Agent / 外部（去催那个人，别干等）', result.waitingOther],
         ['🔍 在 review 但没有审核人（改派或 comment 说明）', result.unownedReview],
+        [`🕵 欠审核：${reviewOwed.length} 个 reviewer 手里压着 ${reviewOwed.reduce((sum, group) => sum + group.cards.length, 0)} 张卡（他不看就等于没有——先催人，再谈改派）`, reviewOwed, 'review'],
         ['👻 派给了久未/从未出现的 Agent（改派或收回池子）', result.orphaned],
         ['🕰 列陈旧（超过该列阈值）', result.stale],
       ]
       let printed = 0
-      for (const [title, issues] of sections) {
+      for (const [title, issues, kind] of sections) {
         if (issues.length === 0) continue
         printed += 1
         console.log(title)
+        // 「欠审核」按人分组：一行一个人（他欠几张、最久多久、哪几张卡 + 他该敲的命令）。
+        if (kind === 'review') {
+          for (const group of issues) {
+            console.log(`  ${group.reviewer} · ${group.cards.length} 张 · 最久 ${ageLabel(group.oldestMs)} · ${group.cards.map((card) => card.id).join(' ')}`)
+            console.log(`      → taskboard inbox --by ${group.reviewer} --cwd ${cwd}`)
+          }
+          continue
+        }
         for (const issue of issues) {
           const who = issue.actor ? ` · ${issue.actor}` : ''
           console.log(`  ${issue.task.id} · ${issue.task.status} · ${issue.task.priority} · 已 ${ageLabel(issue.ageMs)}${who} · ${issue.task.title}`)
@@ -548,6 +595,21 @@ async function main() {
       if (typeof flags.note === 'string') patch.note = flags.note
       const { task, events } = await updateTask(cwd, rest[0], patch, by)
       print(asJson ? task : `updated ${line(task)}  (${events.join(', ')})`, asJson)
+      // 把卡交给某个人审核 ≠ 他知道这件事（T-56：kimi 那 9 张卡就是这么静默的）。
+      // 通知**绝不阻断提交**：notifyReviewer 自己承诺不抛错（没有 msg9 / 地址未知 /
+      // 发送失败 ⇒ 只打印一条可复制的提示）。这里不套 try/catch 是刻意的 ——
+      // 保证"不阻断"只有一个责任人，变异测试改坏它就必须红。
+      if (patch.action === 'submit' && events.includes('submitted') && task.reviewer) {
+        const notice = await notifyReviewer(
+          { cwd, task, reviewer: task.reviewer, submittedBy: by },
+          { log: (message) => console.error(`taskboard: ${message}`) },
+        )
+        // --json 时 stdout 必须保持可解析（有测试盯着），提示走 stderr。
+        if (notice.hint) {
+          if (asJson) console.error(notice.hint)
+          else console.log(notice.hint)
+        }
+      }
       // Parking a card on the human must actually reach the human: same
       // out-of-band hook the model tool fires, so the CLI is not a second-class
       // path into the board.
