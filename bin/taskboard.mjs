@@ -33,7 +33,8 @@
  *   · approve/reject belong to that reviewer, the task's creator, or the human;
  *   · close/cancel/reopen belong to the card's creator, its owner, its reviewer,
  *     or the human (T-61);
- *   · ending a wait — unblock, and every action that would clear a waiting card
+ *   · ending a wait — unblock, block **replacing** an existing wait (T-69), and
+ *     every action that would clear a waiting card
  *     (submit/approve/reject/done/close/reopen) — belongs to whoever the card
  *     waits on PLUS the card's creator/owner/reviewer or the human; a card
  *     parked on the human can be released by the HUMAN ONLY, never by an agent

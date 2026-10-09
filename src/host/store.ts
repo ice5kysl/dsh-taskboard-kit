@@ -788,7 +788,8 @@ function blockerOf(task: Task): string | undefined {
  * 拆除一段等待的归属（T-61 §1 + T-62 ③）。
  *
  * **任何**一条会清掉 `waiting_on` 的路径都要过这道门（见 `releaseWait`），
- * 不只是 `unblock`：
+ * 不只是 `unblock`；**`block` 替换一段已存在的等待时同样要过**（T-69：
+ * 替换就是结束旧等待的另一种说法，漏掉它 = 闸门上开了道侧门）：
  *
  *   1. **人类**（`human` / `TASKBOARD_HUMANS` 实名）：永远可以；
  *   2. `kind === 'human'`：**agent 一律不得拆除** —— 挂起是人类的等待，
@@ -824,13 +825,21 @@ function assertCanReleaseWait(board: Board, task: Task, by: string, verb: string
   const blocker = blockerOf(task)
   const byline = blocker ? `, blocked by ${blocker}` : ''
   const act = verb === 'unblock' ? 'unblock it' : 'end that wait'
+  // `block` 挂在一张**已经在等**的卡上不是"再挂一次"，而是**替换**掉当前那段等待
+  // —— 与 `unblock` 是同一件事的两种说法（T-69），拒信必须把这层说清，
+  // 否则读起来像"连改问句也不行"，没人看得出它其实是同一个洞。
+  const why = verb === 'unblock'
+    ? ''
+    : verb === 'block'
+      ? ` — block would replace that wait and drop the human's question without an answer`
+      : ` — ${verb} would drop the human's question without an answer`
   if (wait.kind === 'human') {
     throw new StoreError(
       'conflict',
       `${parked}${byline} ⇒ only the human can ${act}; "${by}" is an agent`
-      + (verb === 'unblock' ? '' : ` — ${verb} would drop the human's question without an answer`)
+      + why
       + '. Ask the human to answer it (comment + your own notification channel) and let them release the wait — '
-      + 'do not unblock or settle it yourself.',
+      + (verb === 'block' ? 'do not unblock, replace or settle it yourself.' : 'do not unblock or settle it yourself.'),
     )
   }
   const allowed = [
@@ -847,23 +856,39 @@ function assertCanReleaseWait(board: Board, task: Task, by: string, verb: string
 }
 
 /**
- * 拆除等待的**唯一出口**（T-62 ②）—— 先过归属，再**显式**写一条 `unblocked`。
+ * 结束一段等待（**拆**或**换**）的**唯一出口** —— 先过归属门，再**显式**记一条 `unblocked`。
  *
- * 为什么必须是唯一出口：`submit` / `approve` / `reject` / `done` / `close` /
- * `reopen` 过去会**静默**清掉 `waiting_on`，那同时制造了两个洞：
- *   · 归属洞：一张挂人类的卡可以被 `done` 直接变成"已完"，完全绕过 `unblock`
- *     （T-61 刚堵上的缝，从隔壁又开了一次）；
- *   · 账目洞（T-60）：`log` 里没有 `unblocked`，等待区间闭不上 ⇒ 走势图的末点
- *     与当期大数字可以同屏矛盾。
- * 一条事件 + 一道门，把两个洞一起修掉。
+ * 为什么必须是唯一出口（T-62 ② + T-69）：
+ *   · `submit` / `approve` / `reject` / `done` / `close` / `reopen` 过去会**静默**清掉
+ *     `waiting_on` —— 归属洞（挂人类的卡被 `done` 变成"已完"，绕过 `unblock`）
+ *     + 账目洞（`log` 里没有 `unblocked`，等待区间闭不上 ⇒ T-60 的走势图与当期值
+ *     可以同屏矛盾）；
+ *   · `block` 挂到一张**已经在等**的卡上时也是**静默覆盖**（T-69）—— 同一道侧门，
+ *     只是换了个地方开。所以"拆"（`releaseWait`，清空等待）与"换"（`block`，旧等待
+ *     被新等待顶掉）共用本函数：闸门一份、事件一条，两条路的区别只在"之后要不要写
+ *     新的 `waiting_on`"。
  *
- * 返回 true 表示这次真的拆掉了一段等待。
+ * `eventNotes` + `note` 是给"换"用的：补丁级的 `note` 只会贴在**最后**一条事件上，
+ * 而替换要把说明贴在**被顶掉**的那条 `unblocked` 上。
  */
+function endWait(
+  board: Board,
+  task: Task,
+  by: string,
+  verb: string,
+  events: TaskEvent[],
+  eventNotes?: Map<number, string>,
+  note?: string,
+): void {
+  assertCanReleaseWait(board, task, by, verb)
+  if (note !== undefined && eventNotes) eventNotes.set(events.length, note)
+  events.push('unblocked')
+}
+
 function releaseWait(board: Board, task: Task, by: string, verb: string, events: TaskEvent[]): boolean {
   if (!task.waiting_on) return false
-  assertCanReleaseWait(board, task, by, verb)
+  endWait(board, task, by, verb, events)
   task.waiting_on = null
-  events.push('unblocked')
   return true
 }
 
@@ -1128,6 +1153,14 @@ function canDecide(board: Board, task: Task, by: string): boolean {
  * so `invalid-transition` keeps its meaning and only the actor is a `conflict`.
  * `by` is still a recorded value, not a credential: this stops mistakes and
  * overreach, it is not a security boundary (see assertCanUnblock/assertCanSettle).
+ *
+ * T-69 closes the side door those two checks left open: `block` on a
+ * card that is **already waiting** does not park it twice — it **replaces** the
+ * existing wait, which ends it just as surely as `unblock` does. So that path
+ * goes through the same gate (`endWait` → `assertCanReleaseWait`) and records
+ * the same explicit `unblocked` (with a "replaced by X → …" note) before the new
+ * `blocked`. A first-time `block` on a card with no wait is **not** gated — that
+ * is not ending anybody else's wait.
  */
 export async function updateTask(
   cwd: string,
@@ -1162,6 +1195,12 @@ export async function updateTask(
     const task = mustTask(board, taskId)
     const now = new Date().toISOString()
     const events: TaskEvent[] = []
+    /**
+     * 事件自带的 note（按 `events` 的下标；`events` 只 append，下标稳定）。
+     * 补丁级的 `note` 只会贴在**最后**一条上，而"替换等待"要的是**前一条**
+     * `unblocked` 带上"由谁替换成了什么"（T-69），所以需要这条旁路。
+     */
+    const eventNotes = new Map<number, string>()
 
     if (action) {
       if (action === 'block') {
@@ -1175,6 +1214,19 @@ export async function updateTask(
         const question = (waitQuestion ?? '').trim()
         if (question === '') {
           throw new StoreError('invalid-input', 'block needs wait_question — say exactly what the other side must decide')
+        }
+        // T-69：挂在一张**已经在等**的卡上不是"再挂一次"，而是**替换**掉那段等待
+        // —— 与 `unblock` 是同一件事的两种说法，所以先过**同一道**归属门
+        // （`assertCanReleaseWait`）；而替换在旧实现里是**静默**的（`waiting_on`
+        // 被直接覆盖、连一条 `unblocked` 都没有），所以替换时还要**显式**先记一条
+        // `unblocked`（note 写明由谁替换成了什么）再记 `blocked` —— T-62 ② 的口径：
+        // **等待不会被悄悄拆掉**。
+        // 没有等待的卡（首次挂起）**不过门**：那不是"结束别人的等待"，谁都能挂。
+        if (task.waiting_on) {
+          endWait(
+            board, task, by, 'block', events, eventNotes,
+            `wait replaced by ${by} → ${kind}${waitWho ? `(${waitWho})` : ''}`,
+          )
         }
         task.waiting_on = { kind, who: waitWho ?? null, question, since: now }
         // The wait target belongs on the roster so the panel and the CLI can
@@ -1289,6 +1341,9 @@ export async function updateTask(
     // the patch itself changed nothing else.
     if (events.length === 0) events.push('updated')
     const entries = events.map((event) => logEntry(now, by, event))
+    // 事件自带的 note 先贴（如替换等待的 `unblocked`），补丁的 `note` 后贴最后一条
+    // —— 后者是调用方的东西，优先级最高，行为与改前逐字一致。
+    for (const [index, text] of eventNotes) entries[index]!.note = text
     if (note) entries[entries.length - 1]!.note = note
     task.log.push(...entries)
     task.updated_at = now
