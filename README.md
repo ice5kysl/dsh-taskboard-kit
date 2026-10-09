@@ -130,6 +130,44 @@ Naming `@0.7.4` opts that release out of the gate and installs what you asked fo
 Once a release is more than a day old, a bare `add` finds it too.
 
 <a id="release-notes"></a>
+## v0.8.0 — permissions move from convention to mechanism, plus a proactive channel for reviewers
+
+Everything here is a **behaviour change**; the client side shows up on refresh, while the **host side (permission checks, notifications)
+needs a `dsh web` restart**.
+
+1. **Actor checks for `unblock` / `close`** (T-61). Motivated by **four same-family overreaches in one day**: an agent unblocked a
+   human-parked card and ruled in the human's place, and twice published versions on its own.
+   - **`unblock`**: a card parked on **the human** may only be released by the human — **never by an agent**; a card parked on a named agent
+     only by that agent (or an **alias-equivalent** name) or the human; `who` empty / `kind:'external'` are deliberately relaxed (the other side
+     never knocks on this board; locking it literally only rots the card).
+   - **`close` / `cancel` / `reopen`**: only the **creator / current owner / reviewer / the human**; refusals are `conflict` and the message
+     spells out who was refused, what the card waits on, who parked it, and who to ask.
+   - **Alias folding**: roster first, config as fallback (built-in `dsh ≡ dsh-agent`, `TASKBOARD_ACTOR_ALIASES` / `WATCH_NAMES` /
+     `SIBLING_NAMES`, transitively merged) — otherwise you lock yourself out.
+   - **Backward compatible**: cards without `created_by` fall back to the pre-change behaviour; **state is checked before ownership**, so
+     nothing-waiting / illegal moves keep their original error code.
+   - The scope is stated where it matters: this prevents mistakes and overreach; it is **not a security boundary** — `--by` is a record, not a credential.
+2. **A `submit` ownership gate, ownership on wait release, and a lock-out fix** (T-62): previously **anyone could submit someone else's
+   in-progress card**; now only the owner/creator/human. `submit`/`approve`/`reject`/`done`/`close`/`reopen` used to clear `waiting_on`
+   **silently** (which let a human-parked card be turned into "done" by someone else) — every path now runs the same ownership check and
+   **explicitly writes an `unblocked` event**. The lock-out the new mechanism introduced is fixed too: who the card waits on is now an
+   **additional** permission, not an exclusive one (waiting on an agent/external/unnamed ⇒ creator/owner/reviewer can always release;
+   **waiting on the human stays human-only**).
+3. **A proactive channel for reviewers** (T-56): after a successful `submit`, the named reviewer is notified — a ready-to-copy
+   `msg9 send` command is printed, and the message is actually sent only when `msg9` exists **and** the board roster knows his address.
+   Unknown address / no `msg9` / send failure / internal error **all degrade to printing only; the submit still succeeds** (submitting is the
+   core action, notifying is secondary). Idempotence is anchored on the index of the last `submitted` event (not a timestamp). `stale` gained
+   a 「review owed」 section grouped by reviewer, plus `--json.review_owed`.
+   > Why: nine cards sat in `review` while the reviewer reported "nothing pending for me" — his cwd was a different workspace and he was looking
+   > at "assigned to me" rather than "I owe a review". **Nothing ever told him he had been named as reviewer.**
+4. **Read-side fallback for wait intervals** (T-60): interval pairing only recognised `unblocked`, so waits ended implicitly stayed open forever —
+   the series said "still waiting" while the current value said "not waiting", on the same screen. The other terminal events
+   (`submit`/`approve`/`reject`/`done`/`closed`/`reopened`) are now recognised. **Metric note**: the stats page's "blocked" number moves as
+   historical waits are included — the direction the owner approved.
+
+**Verified**: `npm test` **312 checks green** (14 suites) + clean typecheck; new suites `tests/authority.test.mjs` (18 checks) and
+`tests/authority-wait.test.mjs`; **mutations** turn exactly the expected assertions red; **backward compatibility is pinned against the real board**.
+
 ## v0.7.5 — turning "said in review, nobody followed up" into a list
 
 **Client and CLI changes only — refresh the page** (no restart needed for the CLI side).
