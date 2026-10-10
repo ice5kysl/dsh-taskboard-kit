@@ -1,7 +1,7 @@
 {
   "name": "dsh-taskboard-kit",
-  "version": "0.9.0",
-  "description": "dsh (DeepSeek Harness) taskboard kit: one local task board per workspace. Agents create/claim/progress tasks with model tools; humans watch and drive the same board in a kanban tab \u2014 a single JSON file in the workspace is the only source of truth, no server needed. \u7ed9\u6bcf\u4e2a dsh workspace \u4e00\u5757\u672c\u5730\u4efb\u52a1\u770b\u677f\uff1aAgent \u7528\u5de5\u5177\u8ba4\u9886\u63a8\u8fdb\uff0c\u754c\u9762\u91cc\u70b9\u300c\u770b\u677f\u300d\u5c31\u80fd\u534f\u540c\uff0c\u6570\u636e\u5c31\u662f\u5de5\u4f5c\u533a\u91cc\u7684\u4e00\u4e2a JSON \u6587\u4ef6\u3002",
+  "version": "0.9.1",
+  "description": "dsh (DeepSeek Harness) taskboard kit: one local task board per workspace. Agents create/claim/progress tasks with model tools; humans watch and drive the same board in a kanban tab — a single JSON file in the workspace is the only source of truth, no server needed. 给每个 dsh workspace 一块本地任务看板：Agent 用工具认领推进，界面里点「看板」就能协同，数据就是工作区里的一个 JSON 文件。",
   "type": "module",
   "main": "lib/index.js",
   "files": [

@@ -130,6 +130,27 @@ Naming `@0.7.4` opts that release out of the gate and installs what you asked fo
 Once a release is more than a day old, a bare `add` finds it too.
 
 <a id="release-notes"></a>
+## v0.9.1 — 320px drawer header fix · remove the “to settle” strip · pre-commit guard
+
+**Versioning (effective this release)**: under 0.x, **fixes and internal changes are patches**; **only new capabilities or
+user-visible behaviour changes warrant a minor** — a minor should be a capability step, not a pile of fixes.
+
+- **Fix** (T-75): at a 320px viewport the drawer header title collapsed into a **vertical** column and the header grew to
+  **953.95px**; now **117.98px** (title 175 → 15px). **560/900 are byte-for-byte unchanged** (60.89 / 40.59px) — zero regression.
+  Chosen by measurement: `flex-wrap: wrap` plus `flex-basis: 160px` (both are required; `flex-basis: 100%` was rejected
+  because it pushed 560/900 to 102.39px).
+- **Change** (T-77): the top “to settle” strip is **removed** (147.59 / 100.80 / 75.80px with one done card; 332 / 235 / 210px with four)
+  — board content moves up 154 / 107 / 82px. The explanatory sentence moves into the `done` column header's tooltip, and both
+  settle paths remain (the drawer's “Settle (close)” is the same `close` action) — the only cost is one extra click.
+- **Tooling** (T-79 / T-82): a **pre-commit guard** (`npm run check:commit` / `npm run commit:guarded`) enforcing
+  source↔artifact consistency, refusing to commit while another writer is active, and giving a clear message when the index is empty.
+  An optional repo-local git hook (`npm run install-hooks`) never touches the global config; `git commit --no-verify` remains available.
+- **Docs**: two design-system facts (`ACCENT` is the host's inverting monochrome — use `LINK`; CSS inside template strings is not
+  type-checked, so a comment after `*/` silently eats a rule).
+
+**Verified**: `npm test` 351 checks / 17 suites green, clean typecheck, green `action-parity`; negative controls genuinely red;
+the loaded face was proven by page-level sha256.
+
 ## v0.9.0 — closing the permission gate's side door, and reshaping drawer / board density
 
 **Every entry is labelled by kind (capability / fix / docs / tooling)** — otherwise the version count gets read as a delivery volume.
