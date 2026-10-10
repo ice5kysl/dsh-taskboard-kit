@@ -799,7 +799,7 @@ export function drawerActions(task: Task, board?: Board | null, now: number = Da
   })
 }
 
-/** One row of the drawer's attribute table. */
+/** 属性区里的**一个字段**：`标签 值`（标签 muted 小字，去掉它就分不清哪三个名字是谁）。 */
 export interface DrawerProp {
   key: string
   label: string
@@ -809,6 +809,24 @@ export interface DrawerProp {
   /** 值处于警示态（琥珀），例如久未活动的持球人 / 已过 SLA 的列龄。 */
   warn?: boolean
   title?: string
+}
+
+/** 抽屉顶部语义分组的键（T-74：`人 / 值 / 时`；第四行「标签」是药丸，单独渲染）。 */
+export type DrawerGroupKey = 'people' | 'values' | 'time'
+
+/**
+ * 属性区的一**行**（T-74 结构重塑）：
+ *
+ *   人  ： 负责人 cc · 裁决人 kimi（久未活动 ⚠）· 持球人 dsh
+ *
+ * 每行 `flex-wrap`：宽时一行、窄时自动折行；字段之间 ` · ` 分隔。
+ * 行首那个 muted 小字标签（人 / 值 / 时）不能省 —— 三个名字并排而无标签会歧义。
+ */
+export interface DrawerPropGroup {
+  key: DrawerGroupKey
+  /** 行首标签。 */
+  label: string
+  fields: DrawerProp[]
 }
 
 /**
@@ -889,79 +907,114 @@ export function assigneeChoices(board: Board | null, actors: string[], current: 
   return { present, quiet }
 }
 
-/** 属性表（状态 / 优先级 / 价值度 / 负责人 / 裁决人 / 持球人 / 时间 / 里程碑）。 */
-export function drawerProps(task: Task, board: Board | null, now: number = Date.now()): DrawerProp[] {
+/**
+ * 属性区的三行（T-74 结构重塑）：**人 / 值 / 时**。
+ *
+ * 与卡面 / 统计页同一口径的派生一个字都不改（`currentHolder` / `stalenessOf` /
+ * `isQuietActor` / `milestoneTags` / `priorityLabel` / `statusLabel`）：这一版只
+ * 重排**呈现**，不重算**事实**。
+ *
+ * 相比 0.8.0 的两处删除，都是「同一事实的第二个出口」，值仍在别处 ✓：
+ *   ①「状态」字段 —— 头部胶囊已有；且「当前列」的值就是 `状态 列龄`；
+ *   ②「列龄」字段 —— 「当前列」的值已经把它写在里面（`进行中 2d19h`），
+ *      而它真正独有的信息「是否超 SLA」变成独立的 `已超时 ⚠` 字段（warn 不丢）。
+ * 除了这两处，**没有任何字段被折叠 / 隐藏**：`人 / 值 / 时 / 标签` 四行就是
+ * 0.8.0 那 11 行的全部内容（有测试逐键钉住）。
+ */
+export function drawerProps(task: Task, board: Board | null, now: number = Date.now()): DrawerPropGroup[] {
   const holder = currentHolder(task, board, now)
   const staleness = stalenessOf(task, now)
   const reviewer = task.reviewer
   const reviewerQuiet = reviewer ? isQuietActor(board, reviewer, now) : false
   const holderQuiet = holder?.who ? isQuietActor(board, holder.who, now) : false
   const quietSuffix = L(' · 久未活动', ' · quiet')
-  const rows: DrawerProp[] = [
-    { key: 'status', label: L('状态', 'Status'), value: statusLabel(task) },
-    { key: 'priority', label: L('优先级', 'Priority'), value: priorityLabel(task.priority) },
-    { key: 'value', label: L('价值度', 'Value'), value: task.value !== null ? `◆${valueText(task.value)}` : L('未评估', 'unestimated') },
+  return [
     {
-      key: 'assignee',
-      label: L('负责人', 'Owner'),
-      value: task.assignee ?? L('待认领', 'unclaimed'),
-      ...(task.assignee ? { copy: task.assignee } : {}),
+      key: 'people',
+      label: L('人', 'Who'),
+      fields: [
+        {
+          key: 'assignee',
+          label: L('负责人', 'Owner'),
+          value: task.assignee ?? L('待认领', 'unclaimed'),
+          ...(task.assignee ? { copy: task.assignee } : {}),
+        },
+        {
+          key: 'reviewer',
+          label: L('裁决人', 'Reviewer'),
+          value: reviewer ? `${reviewer}${reviewerQuiet ? quietSuffix : ''}` : L('—（没人欠这次裁决）', '— (nobody owes a verdict)'),
+          warn: reviewerQuiet,
+          ...(reviewer
+            ? {
+                copy: reviewer,
+                title: reviewerQuiet
+                  ? L('{who} 欠这次审核，但花名册里它已久未活动', '{who} owes this review but has been quiet per the roster', { who: reviewer })
+                  : L('裁决人：{who}', 'reviewer: {who}', { who: reviewer }),
+              }
+            : {}),
+        },
+        {
+          key: 'holder',
+          label: L('持球人', 'Holder'),
+          value: holder
+            ? `${holder.who ?? (task.waiting_on ? waitKindLabel(task.waiting_on.kind) : L('池子里', 'the pool'))}${holderQuiet ? quietSuffix : ''}`
+            : L('—（已结清）', '— (settled)'),
+          warn: holderQuiet,
+          ...(holder ? { title: holderTitle(task, holder, reviewerQuiet) } : {}),
+          ...(holder?.who ? { copy: holder.who } : {}),
+        },
+      ],
     },
     {
-      key: 'reviewer',
-      label: L('裁决人', 'Reviewer'),
-      value: reviewer ? `${reviewer}${reviewerQuiet ? quietSuffix : ''}` : L('—（没人欠这次裁决）', '— (nobody owes a verdict)'),
-      warn: reviewerQuiet,
-      ...(reviewer
-        ? {
-            copy: reviewer,
-            title: reviewerQuiet
-              ? L('{who} 欠这次审核，但花名册里它已久未活动', '{who} owes this review but has been quiet per the roster', { who: reviewer })
-              : L('裁决人：{who}', 'reviewer: {who}', { who: reviewer }),
-          }
-        : {}),
+      key: 'values',
+      label: L('值', 'What'),
+      fields: [
+        { key: 'priority', label: L('优先级', 'Priority'), value: priorityLabel(task.priority) },
+        { key: 'value', label: L('价值度', 'Value'), value: task.value !== null ? `◆${valueText(task.value)}` : L('未评估', 'unestimated') },
+        {
+          key: 'milestone',
+          label: L('里程碑', 'Milestone'),
+          value: milestoneTags(task).join(' · ') || L('—', '—'),
+          ...(milestoneTags(task).length > 0 ? { copy: milestoneTags(task).join(' '), title: L('来自标签，与统计页里程碑同一口径', 'derived from tags — same rule as the stats milestones') } : {}),
+        },
+      ],
     },
     {
-      key: 'holder',
-      label: L('持球人', 'Holder'),
-      value: holder
-        ? `${holder.who ?? (task.waiting_on ? waitKindLabel(task.waiting_on.kind) : L('池子里', 'the pool'))}${holderQuiet ? quietSuffix : ''}`
-        : L('—（已结清）', '— (settled)'),
-      warn: holderQuiet,
-      ...(holder ? { title: holderTitle(task, holder, reviewerQuiet) } : {}),
-      ...(holder?.who ? { copy: holder.who } : {}),
-    },
-    {
-      key: 'created',
-      label: L('创建', 'Created'),
-      value: relTime(task.created_at),
-      copy: task.created_at,
-      title: L('由 {by} 创建 · {at}', 'created by {by} · {at}', { by: task.created_by, at: task.created_at }),
-    },
-    {
-      key: 'column',
-      label: L('当前列', 'In column'),
-      value: `${statusLabel(task)} · ${ageLabel(staleness.ageMs)}`,
-      title: L('在这一列已经 {age} · 创建于 {created}', '{age} in this column · created {created}', { age: ageLabel(staleness.ageMs), created: task.created_at }),
-    },
-    {
-      key: 'age',
-      label: L('列龄', 'Column age'),
-      value: staleness.stale ? `${ageLabel(staleness.ageMs)}${L(' · 已超时', ' · overdue')}` : ageLabel(staleness.ageMs),
-      copy: ageLabel(staleness.ageMs),
-      warn: staleness.stale,
-      ...(staleness.stale && staleness.slaMs !== null
-        ? { title: L('在这一列待了 {age}，已超过该列 {sla} 的阈值', '{age} in this column — past its {sla} threshold', { age: ageLabel(staleness.ageMs), sla: ageLabel(staleness.slaMs) }) }
-        : { title: L('在这一列待了 {age}', '{age} in this column', { age: ageLabel(staleness.ageMs) }) }),
-    },
-    {
-      key: 'milestone',
-      label: L('里程碑', 'Milestone'),
-      value: milestoneTags(task).join(' · ') || L('—', '—'),
-      ...(milestoneTags(task).length > 0 ? { copy: milestoneTags(task).join(' '), title: L('来自标签，与统计页里程碑同一口径', 'derived from tags — same rule as the stats milestones') } : {}),
+      key: 'time',
+      label: L('时', 'When'),
+      fields: [
+        {
+          key: 'created',
+          label: L('创建', 'Created'),
+          value: relTime(task.created_at),
+          copy: task.created_at,
+          title: L('由 {by} 创建 · {at}', 'created by {by} · {at}', { by: task.created_by, at: task.created_at }),
+        },
+        {
+          key: 'column',
+          label: L('当前列', 'In column'),
+          // 状态 + 列龄在同一个值里（0.8.0 是两行）—— 分隔用空格，因为 ` · `
+          // 是**字段之间**的分隔符，值里再用一次会让读者分不清字段边界。
+          value: `${statusLabel(task)} ${ageLabel(staleness.ageMs)}`,
+          copy: ageLabel(staleness.ageMs),
+          title: L('在这一列已经 {age} · 创建于 {created}', '{age} in this column · created {created}', { age: ageLabel(staleness.ageMs), created: task.created_at }),
+        },
+        // 超 SLA 是「列龄」行真正独有的那点信息，独立成一个 warn 字段（值就是记号，
+        // 因为「已超时」三个字本身已经是这句话的全部内容）。
+        ...(staleness.stale
+          ? [{
+              key: 'overdue',
+              label: L('已超时', 'Overdue'),
+              value: '⚠',
+              warn: true,
+              title: staleness.slaMs !== null
+                ? L('在这一列待了 {age}，已超过该列 {sla} 的阈值', '{age} in this column — past its {sla} threshold', { age: ageLabel(staleness.ageMs), sla: ageLabel(staleness.slaMs) })
+                : L('在这一列待了 {age}', '{age} in this column', { age: ageLabel(staleness.ageMs) }),
+            }]
+          : []),
+      ],
     },
   ]
-  return rows
 }
 
 // ------------------------------------------------------------------ panel
@@ -2476,6 +2529,19 @@ function actionClass(row: ActionRow): string {
   return 'tb-btn'
 }
 
+/**
+ * 可复制字段的 hover 文案（T-74）：有自定义 `title` 时把它接在「点击复制」前面。
+ *
+ * 0.8.0 只渲染后者，于是 `drawerProps` 给 `created` / `reviewer` / `holder` /
+ * `milestone` 写的 `title` 在 DOM 里**从来没出现过**（死值）。属性区变紧凑之后
+ * 值前面的标签已经说明了字段名，但全文（ISO 时间、阈值、口径）仍然只能靠 hover
+ * 读 —— 两个都不能丢，所以是拼接不是二选一。
+ */
+function propTitle(row: DrawerProp): string {
+  const hint = L('点击复制：{value}', 'Click to copy: {value}', { value: row.copy ?? '' })
+  return row.title ? `${row.title} · ${hint}` : hint
+}
+
 export function DetailDrawer({
   task,
   state,
@@ -2507,10 +2573,16 @@ export function DetailDrawer({
   const [commentDraft, setCommentDraft] = useState('')
   // v2 state: the assignee disclosure, the in-place tag listing, the copy
   // confirmation, the folded description and the activity baseline.
-  const [showQuiet, setShowQuiet] = useState(false)
+  //
+  // T-74：`showQuiet` 没了 —— 成员列表只有「收起 / 展开」两态，展开即列出全部成员
+  // （久未活动者带琥珀点 + 最近活动），不再需要「显示全部」这第三个开关。
+  const [assignOpen, setAssignOpen] = useState(false)
+  const assignRef = useRef<HTMLDivElement | null>(null)
   const [actorQuery, setActorQuery] = useState('')
   const [tagFilter, setTagFilter] = useState<string | null>(null)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  // T-74：动作区的「暂不可用」默认折起（一行 disclosure），点开显示逐条原因。
+  const [blockedOpen, setBlockedOpen] = useState(false)
   const [descOpen, setDescOpen] = useState(() => expandedDetails.has(task.id))
   const [seenLog, setSeenLog] = useState(task.log.length)
   const commentRef = useRef<HTMLTextAreaElement | null>(null)
@@ -2533,16 +2605,13 @@ export function DetailDrawer({
   // 主操作 = 该列的主色调动作；没有主色调就退到第一个可执行动作（已结清 → 重开）。
   const chosen = available.find((row) => row.tone === 'primary') ?? available[0] ?? null
   const choices = useMemo(() => assigneeChoices(board, actors, task.assignee), [board, actors, task.assignee])
-  const shownChoices = useMemo(() => {
+  // 展开后列**全部**成员：在场者在前（assigneeChoices 的分组就是「有人味」的证据），
+  // 久未活动者随后、各自带琥珀点与「最近活动 X 前」。输入即过滤（搜全部）。
+  const assigneeList = useMemo(() => {
+    const all = [...choices.present, ...choices.quiet]
     const query = actorQuery.trim().toLowerCase()
-    // 搜索永远搜全部（搜不到自己刚打的字才是坏的）；不搜索时默认只列在场者。
-    const pool = query
-      ? [...choices.present, ...choices.quiet]
-      : showQuiet
-        ? [...choices.present, ...choices.quiet]
-        : choices.present
-    return query ? pool.filter((choice) => choice.name.toLowerCase().includes(query)) : pool
-  }, [choices, showQuiet, actorQuery])
+    return query ? all.filter((choice) => choice.name.toLowerCase().includes(query)) : all
+  }, [choices, actorQuery])
   const tagged = useMemo(() => (tagFilter ? tasksWithTag(board, tagFilter) : []), [board, tagFilter])
   const log = useMemo(() => [...task.log].sort((a, b) => a.at.localeCompare(b.at)), [task.log])
   const unseen = unseenActivity(log.length, seenLog)
@@ -2720,34 +2789,42 @@ export function DetailDrawer({
 
       {tab === 'detail' && !editing && (
         <>
-          {/* 属性表：左标签右值、值右对齐、点值即复制；标签语言与卡面同一套。 */}
+          {/* 属性区（T-74 结构重塑）：四行语义行 —— 人 / 值 / 时 / 标签。
+              行内 `标签 值` 用 ` · ` 分隔并 flex-wrap（宽时一行、窄时折行）；
+              值本身仍是按钮（点一下即复制），可复制性与 hover 全文一个字没少。 */}
           <div style={styles.drawerSection}>
-            <div style={styles.sectionTitle}>{L('属性', 'Attributes')}</div>
             <div style={styles.propTable}>
-              {props.map((row) => (
-                <div key={row.key} className="tb-prop-row">
-                  <span className="tb-prop-label">{row.label}</span>
-                  {row.copy ? (
-                    <button
-                      type="button"
-                      className="tb-prop-val tb-prop-copy"
-                      style={row.warn ? { color: WARN } : undefined}
-                      title={L('点击复制：{value}', 'Click to copy: {value}', { value: row.copy })}
-                      onClick={() => void copyProp(row.key, row.copy ?? '')}
-                    >
-                      {row.value}
-                      {copiedKey === row.key && <span style={styles.copiedMark}>✓</span>}
-                    </button>
-                  ) : (
-                    <span className="tb-prop-val" style={row.warn ? { color: WARN } : undefined} title={row.title}>
-                      {row.value}
-                    </span>
-                  )}
+              {props.map((group) => (
+                <div key={group.key} className="tb-prop-line">
+                  <span className="tb-prop-label">{group.label}</span>
+                  <div className="tb-prop-fields">
+                    {group.fields.map((row) => (
+                      <span key={row.key} className="tb-prop-field">
+                        <span className="tb-prop-field-label">{row.label}</span>
+                        {row.copy ? (
+                          <button
+                            type="button"
+                            className="tb-prop-field-val tb-prop-copy"
+                            style={row.warn ? { color: WARN } : undefined}
+                            title={propTitle(row)}
+                            onClick={() => void copyProp(row.key, row.copy ?? '')}
+                          >
+                            {row.value}
+                            {copiedKey === row.key && <span style={styles.copiedMark}>✓</span>}
+                          </button>
+                        ) : (
+                          <span className="tb-prop-field-val" style={row.warn ? { color: WARN } : undefined} title={row.title}>
+                            {row.value}
+                          </span>
+                        )}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               ))}
-              <div className="tb-prop-row">
+              <div className="tb-prop-line">
                 <span className="tb-prop-label">{L('标签', 'Tags')}</span>
-                <span className="tb-prop-val" style={styles.tagCell}>
+                <span className="tb-tagline">
                   {task.tags.length === 0 ? (
                     <span style={styles.detailEmpty}>—</span>
                   ) : (
@@ -2812,103 +2889,10 @@ export function DetailDrawer({
             </div>
           )}
 
-          {/* 动作表：可执行的先列（按钮 + 结果列），不可执行的仍然逐条列出并说明
-              原因 —— 「按钮凭空消失」正是这一版要消灭的东西。 */}
-          <div style={styles.drawerSection}>
-            <div style={styles.sectionTitle}>{L('动作', 'Actions')}</div>
-            <div style={styles.actionTable}>
-              {available.map((row) => (
-                <div key={row.action} className="tb-action-row">
-                  <button type="button" className={actionClass(row)} disabled={busy} onClick={() => runAction(row.action)}>
-                    {row.label}
-                  </button>
-                  <span className="tb-action-outcome">{row.outcome}</span>
-                </div>
-              ))}
-              {blocked.length > 0 && <div style={styles.actionBlockTitle}>{L('暂不可用', 'Not available now')}</div>}
-              {blocked.map((row) => (
-                <div key={row.action} className="tb-action-row" data-off="1" title={row.disabledReason ?? undefined}>
-                  <button type="button" className="tb-btn" disabled>
-                    {row.label}
-                  </button>
-                  <span className="tb-action-reason">{row.disabledReason}</span>
-                </div>
-              ))}
-            </div>
-            {column === 'review' && (
-              <input
-                className="tb-input"
-                value={rejectNote}
-                placeholder={L('打回原因（可选，随打回一起提交）', 'Reject reason (optional, sent with the rejection)')}
-                autoComplete="off"
-                spellCheck={false}
-                onChange={(event) => setRejectNote(event.target.value)}
-              />
-            )}
-          </div>
-
-          {/* 指派：默认只列在场者；久未活动的收进「显示全部」，带琥珀点与最近活动。 */}
-          <div style={styles.drawerSection}>
-            <div style={styles.sectionTitle}>{L('指派', 'Assignee')}</div>
-            {actors.length === 0 ? (
-              <div style={styles.detailEmpty}>
-                {L('暂无可指派成员——Agent 或人认领过一次就会出现在这里', 'No assignable members yet — an agent or human shows up here after claiming once.')}
-              </div>
-            ) : (
-              <div style={styles.assignBox}>
-                {actors.length > 5 && (
-                  <input
-                    className="tb-input"
-                    style={styles.assignSearch}
-                    value={actorQuery}
-                    placeholder={L('搜索成员…', 'Search members…')}
-                    autoComplete="off"
-                    spellCheck={false}
-                    onChange={(event) => setActorQuery(event.target.value)}
-                  />
-                )}
-                <div style={styles.assignList}>
-                  {shownChoices.map((choice) => (
-                    <button
-                      key={choice.name}
-                      type="button"
-                      className="tb-picker-row"
-                      disabled={busy || choice.current}
-                      onClick={() => update({ id: task.id, assignee: choice.name })}
-                    >
-                      <span style={styles.pickerName}>{choice.name}</span>
-                      {choice.current && <span style={styles.pickerCurrent}>{L('当前', 'current')}</span>}
-                      {choice.quiet && (
-                        <span style={styles.assignSeen}>
-                          <span className="tb-quiet-dot" />
-                          {choice.seenText ?? L('花名册里没有它', 'not on the roster')}
-                        </span>
-                      )}
-                    </button>
-                  ))}
-                  {shownChoices.length === 0 && <div style={styles.pickerEmpty}>{L('没有匹配的成员', 'No member matches')}</div>}
-                </div>
-                <div style={styles.assignFoot}>
-                  <button
-                    type="button"
-                    className="tb-picker-row"
-                    disabled={busy || task.assignee === null}
-                    onClick={() => update({ id: task.id, assignee: null })}
-                  >
-                    {L('移回待认领', 'Back to pool')}
-                  </button>
-                  {choices.quiet.length > 0 && (
-                    <button type="button" className="tb-picker-row" style={styles.pickerCancel} onClick={() => setShowQuiet(!showQuiet)}>
-                      {showQuiet
-                        ? L('只看在场（{n}）', 'Only present ({n})', { n: choices.present.length })
-                        : L('显示全部（含 {n} 个久未活动）', 'Show all ({n} quiet)', { n: choices.quiet.length })}
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
+          {/* 描述（T-74 顺序调整）：主人的原话是「下面正式的内容太靠下了」——
+              0.8.0 里属性 (≈250) + 动作 (≈350) + 指派 (≈470) 把正文推到 ~1600px，
+              现在三块压成 ~230px，描述提到第一屏。先给人看内容，再给动作；
+              指派是低频操作，放最后。 */}
           <div style={styles.drawerSection}>
             <div style={styles.sectionTitle}>{L('描述', 'Description')}</div>
             {task.detail ? (
@@ -2941,6 +2925,190 @@ export function DetailDrawer({
               <div style={styles.detailEmpty}>{L('（没有描述）', '(no description)')}</div>
             )}
           </div>
+
+          {/* 动作区（T-74 结构重塑）：能按的收成**一行胶囊**（`flex-wrap`，结果列进
+              title），不能按的收成**一行 disclosure** —— 点开逐条显示原因。
+              「按钮凭空消失」仍然是这一版要消灭的东西：置灰的按钮与它们各自的原因
+              一个字都没删，只是默认折起来（`hidden`，不是 `display:none` 的私活，
+              也不影响键盘/读屏之外的可达性 —— 折叠区里全是 disabled 的按钮）。 */}
+          <div style={styles.drawerSection}>
+            <div className="tb-prop-line">
+              <span className="tb-prop-label">{L('动作', 'Actions')}</span>
+              <div className="tb-action-chips">
+                {available.map((row) => (
+                  <button key={row.action} type="button" className={actionClass(row)} disabled={busy} onClick={() => runAction(row.action)} title={row.outcome}>
+                    {row.label}
+                  </button>
+                ))}
+                {available.length === 0 && <span style={styles.detailEmpty}>{L('现在没有能按的动作', 'nothing is actionable right now')}</span>}
+              </div>
+            </div>
+            {blocked.length > 0 && (
+              <>
+                <div className="tb-prop-line">
+                  {/* 占位标签：让 disclosure 与上一行的胶囊左对齐（同一列）。 */}
+                  <span className="tb-prop-label" aria-hidden="true" />
+                  <div className="tb-action-chips">
+                    <button
+                      type="button"
+                      className="tb-btn tb-action-more"
+                      aria-expanded={blockedOpen}
+                      title={L('点开看为什么：每个动作各说一句现在不能按的原因', 'Open to see why each one is greyed out')}
+                      onClick={() => setBlockedOpen(!blockedOpen)}
+                    >
+                      <span className="tb-action-more-mark" aria-hidden="true">{blockedOpen ? '▾' : '▸'}</span>
+                      {L('{n} 个动作暂不可用', '{n} action(s) not available now', { n: blocked.length })}
+                    </button>
+                  </div>
+                </div>
+                <div hidden={!blockedOpen}>
+                  <div style={styles.actionBlocked}>
+                    {blocked.map((row) => (
+                      <div key={row.action} className="tb-action-row" data-off="1" title={row.disabledReason ?? undefined}>
+                        <button type="button" className="tb-btn" disabled>
+                          {row.label}
+                        </button>
+                        <span className="tb-action-reason">{row.disabledReason}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+            {column === 'review' && (
+              <input
+                className="tb-input"
+                value={rejectNote}
+                placeholder={L('打回原因（可选，随打回一起提交）', 'Reject reason (optional, sent with the rejection)')}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => setRejectNote(event.target.value)}
+              />
+            )}
+          </div>
+
+          {/* 指派（T-74 结构重塑）：0.8.0 是「搜索框 + 每个成员一行 + 移回待认领一行 +
+              「显示全部」一行」（≈470px）。现在压成**一行**：`当前：<谁>` + 一个
+              展开式 combobox + 右侧小号次操作「移回待认领」。成员列表默认收起
+              （DOM 里根本没有这些行 —— 这也是 T-29 ② 那条不变量「久未活动者必须
+              显式展开才出现」在新形态下的实现：展开 = 这次点击）；展开后列出**全部**
+              成员，久未活动者带琥珀点与「最近活动 X 前」（不再需要「显示全部」这一行）。 */}
+          <div
+            style={styles.drawerSection}
+            ref={assignRef}
+            onBlur={(event) => {
+              // 焦点离开这一块（点到抽屉别处 / Tab 走）就收起来；容器内部互相聚焦
+              // （点成员行、点触发器）不算离开。
+              if (!assignRef.current?.contains(event.relatedTarget as Node | null)) setAssignOpen(false)
+            }}
+          >
+            <div className="tb-prop-line">
+              <span className="tb-prop-label">{L('指派', 'Assignee')}</span>
+              <div className="tb-assign-line">
+                <span className="tb-assign-current">
+                  {L('当前：', 'Current: ')}
+                  <span style={task.assignee ? undefined : styles.detailEmpty}>{task.assignee ?? L('—（待认领）', '— (unclaimed)')}</span>
+                </span>
+                {actors.length > 0 && (
+                  <button
+                    type="button"
+                    className="tb-btn tb-assign-more"
+                    aria-expanded={assignOpen}
+                    title={L('展开成员列表，可就地过滤', 'Open the member list and filter it in place')}
+                    onClick={() => {
+                      if (assignOpen) setAssignOpen(false)
+                      else {
+                        setActorQuery('')
+                        setAssignOpen(true)
+                      }
+                    }}
+                  >
+                    {task.assignee
+                      ? L('更换', 'Change')
+                      : L('指派', 'Assign')}
+                    <span className="tb-action-more-mark" aria-hidden="true">{assignOpen ? '▾' : '▸'}</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="tb-btn tb-assign-more"
+                  disabled={busy || task.assignee === null}
+                  title={L('把这张卡放回待认领池', 'Put this card back in the claimable pool')}
+                  onClick={() => update({ id: task.id, assignee: null })}
+                >
+                  {L('移回待认领', 'Back to pool')}
+                </button>
+              </div>
+            </div>
+            {actors.length === 0 && (
+              <div className="tb-prop-line">
+                <span className="tb-prop-label" aria-hidden="true" />
+                <div style={styles.detailEmpty}>
+                  {L('暂无可指派成员——Agent 或人认领过一次就会出现在这里', 'No assignable members yet — an agent or human shows up here after claiming once.')}
+                </div>
+              </div>
+            )}
+            {assignOpen && actors.length > 0 && (
+              <div className="tb-prop-line">
+                <span className="tb-prop-label" aria-hidden="true" />
+                <div style={styles.assignBox}>
+                  <input
+                    className="tb-input"
+                    style={styles.assignSearch}
+                    value={actorQuery}
+                    placeholder={L('搜索成员…', 'Search members…')}
+                    autoComplete="off"
+                    spellCheck={false}
+                    autoFocus
+                    onChange={(event) => setActorQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        // 一次 Esc 只关一层：`preventDefault()` 是抽屉自己认的记号
+                        // （BoardPanel 的 drawer Esc 处理器先看 `event.defaultPrevented`
+                        // 就 stand down，见那里的注释），所以这里是"收起 combobox"
+                        // 而不是"顺手把整个抽屉也关了"。stopPropagation 是双保险。
+                        event.preventDefault()
+                        event.stopPropagation()
+                        setAssignOpen(false)
+                      }
+                    }}
+                  />
+                  <div style={styles.assignList}>
+                    {assigneeList.map((choice) => (
+                      <button
+                        key={choice.name}
+                        type="button"
+                        className="tb-picker-row"
+                        disabled={busy || choice.current}
+                        onClick={() => {
+                          update({ id: task.id, assignee: choice.name })
+                          setAssignOpen(false)
+                        }}
+                      >
+                        <span style={styles.pickerName}>{choice.name}</span>
+                        {choice.current && <span style={styles.pickerCurrent}>{L('当前', 'current')}</span>}
+                        {choice.quiet && (
+                          <span style={styles.assignSeen}>
+                            <span className="tb-quiet-dot" />
+                            {choice.seenText ?? L('花名册里没有它', 'not on the roster')}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                    {assigneeList.length === 0 && <div style={styles.pickerEmpty}>{L('没有匹配的成员', 'No member matches')}</div>}
+                  </div>
+                  {/* 「显示全部」不再是一行开关：展开本来就列全部成员，这里只留一句
+                      说明（底部提示），久未活动者有几位仍然一眼可见。 */}
+                  {choices.quiet.length > 0 && (
+                    <div style={styles.assignHint}>
+                      {L('含 {n} 个久未活动（琥珀点 + 最近活动）', '{n} quiet member(s) — amber dot + last seen', { n: choices.quiet.length })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
         </>
       )}
 
@@ -3901,10 +4069,10 @@ const styles: Record<string, CSSProperties> = {
   holderRow: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', minHeight: 18, minWidth: 0 },
   holderChip: { maxWidth: '100%' },
   holderAction: { flexShrink: 0, fontSize: 10, color: DIM },
-  // 属性表 + 标签筛选结果（就地列出同标签的卡）。
+  // 属性区（T-74）：四行语义行，行内 `标签 值` 由 CSS 的 flex-wrap 排（见 TB_CSS
+  // 的 .tb-prop-line / .tb-prop-fields / .tb-prop-field），所以这里只剩行距。
   propTable: { display: 'flex', flexDirection: 'column', gap: 2 },
   copiedMark: { marginLeft: 5, color: LINK, fontSize: 10 },
-  tagCell: { display: 'flex', flexWrap: 'wrap', gap: 4, justifyContent: 'flex-end', alignItems: 'center' },
   tagBox: {
     display: 'flex',
     flexDirection: 'column',
@@ -3920,16 +4088,18 @@ const styles: Record<string, CSSProperties> = {
   tagBoxRef: { flexShrink: 0, fontSize: 10, color: FAINT, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
   tagBoxName: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   tagBoxStatus: { flexShrink: 0, fontSize: 10, color: DIM },
-  // 动作表：左按钮右结果列（不可执行的也列出来，右侧换成原因）。
-  actionTable: { display: 'flex', flexDirection: 'column', gap: 4 },
-  actionBlockTitle: { fontSize: 10, color: FAINT, marginTop: 4 },
+  // 动作区（T-74）：可执行的动作是一行胶囊（.tb-action-chips），暂不可用的是
+  // 一行 disclosure + 一个默认 hidden 的原因列表（.tb-action-row 原样保留）。
+  actionBlocked: { display: 'flex', flexDirection: 'column', gap: 4, paddingTop: 2 },
   // 指派：可搜索的下拉面板（默认只列在场者，久未活动的收进「显示全部」）。
   assignBox: { display: 'flex', flexDirection: 'column', gap: 4, border: `1px solid ${BORDER}`, borderRadius: 8, background: BG_SUNK, padding: 6 },
   assignSearch: { marginBottom: 2 },
   // 指派列表不设内部滚动条：抽屉自己就滚，内层再挖一个 176px 的洞只会把第 5 行
   // 拦腰截断（首版就是这个问题）。成员多了靠上面的搜索框收窄。
   assignList: { display: 'flex', flexDirection: 'column', gap: 1 },
-  assignFoot: { display: 'flex', flexDirection: 'column', gap: 1, borderTop: `1px solid ${BORDER}`, paddingTop: 4 },
+  // 底部提示（T-74）：说明展开了的列表里有几个久未活动者 —— 原来那行「显示全部」
+  // 开关的替代品，但它只是一句提示，不再占一行控件。
+  assignHint: { borderTop: `1px solid ${BORDER}`, paddingTop: 4, fontSize: 10, color: FAINT, lineHeight: 1.5 },
   assignSeen: { display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0, fontSize: 10, color: WARN },
   // 折叠描述：默认露前 ~6 行，展开状态记在本次页面会话里。
   detailBodyFolded: {

@@ -153,18 +153,36 @@ export const TB_CSS = `
    drawerHeadWrap），标签页上的「有新动态」圆点与琥珀色的「久未活动」点都只是记号。 */
 .tb-tab-dot { display: inline-block; width: 6px; height: 6px; border-radius: 3px; background: ${LINK}; margin-left: 5px; vertical-align: 1px; }
 .tb-quiet-dot { display: inline-block; width: 6px; height: 6px; border-radius: 3px; background: ${WARN}; flex-shrink: 0; }
-/* 属性表：左标签右值、值右对齐；值本身是按钮 —— 点一下即复制（可复制性是硬要求，
-   行内再放一枚复制图标就是一圈噪声）。 */
-.tb-prop-row { display: grid; grid-template-columns: 66px minmax(0, 1fr); align-items: baseline; gap: 10px; }
+/* 属性区（T-74 结构重塑）：四行语义行 —— 人 / 值 / 时 / 标签。
+   行首 66px 的 muted 小字标签 + 右侧「标签 值 · 标签 值」的 flex 流；字段之间
+   的分隔符用 ::before 挂在**后一个字段**上，于是折行时「·」永远跟着下一段的
+   开头走，不会孤零零掉在行尾。字段不收缩（flex:0 0 auto）+ max-width:100%：
+   一条超长的值（「—（没人欠这次裁决）」）自己折行，绝不会把整行撑出抽屉。 */
+.tb-prop-line { display: grid; grid-template-columns: 66px minmax(0, 1fr); align-items: baseline; gap: 10px; }
 .tb-prop-label { font-size: 10px; color: ${DIM}; line-height: 18px; }
-.tb-prop-val { min-width: 0; font-size: 11.5px; line-height: 18px; text-align: right; overflow-wrap: anywhere; }
-.tb-prop-copy { display: block; width: 100%; box-sizing: border-box; border: none; border-radius: 5px; background: transparent; color: inherit; font: inherit; font-size: 11.5px; line-height: 18px; text-align: right; padding: 0 4px; cursor: pointer; }
+.tb-prop-fields { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; min-width: 0; }
+.tb-prop-field { display: inline-flex; align-items: baseline; gap: 5px; flex: 0 0 auto; min-width: 0; max-width: 100%; }
+.tb-prop-field + .tb-prop-field::before { content: '·'; color: ${FAINT}; }
+.tb-prop-field-label { flex-shrink: 0; font-size: 10px; color: ${DIM}; line-height: 18px; }
+.tb-prop-field-val { min-width: 0; font-size: 11.5px; line-height: 18px; overflow-wrap: anywhere; }
+.tb-prop-copy { border: none; border-radius: 5px; background: transparent; color: inherit; font: inherit; font-size: 11.5px; line-height: 18px; text-align: left; padding: 0 3px; cursor: pointer; }
 .tb-prop-copy:hover { background: ${HOVER_BG}; }
-/* 动作表：左按钮右结果列；不可执行时按钮置灰、右侧换成原因。 */
+/* 属性区第四行的标签药丸（沿用 .tb-tag，只是排成一条会折行的流）。 */
+.tb-tagline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+/* 动作区（T-74）：能按的动作是**一行胶囊**；结果列进 title（沿用既有 label /
+   title / disabled 语义），不可执行的动作折进下一行的 disclosure。 */
+.tb-action-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.tb-action-chips .tb-btn { white-space: nowrap; }
+.tb-action-more { font-size: 10.5px; color: ${DIM}; padding: 3px 8px; }
+.tb-action-more-mark { font-size: 10px; color: ${FAINT}; }
+/* 指派（T-74）：「当前：<谁>」 + 展开式 combobox + 小号次操作，全在一行里。 */
+.tb-assign-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.tb-assign-current { display: inline-flex; align-items: baseline; gap: 2px; min-width: 0; font-size: 11.5px; line-height: 18px; overflow-wrap: anywhere; }
+.tb-assign-more { font-size: 10.5px; padding: 3px 8px; }
+/* 折起的那一层：仍然是 0.8.0 的「左按钮右原因」，只是默认 hidden。 */
 .tb-action-row { display: grid; grid-template-columns: 108px minmax(0, 1fr); align-items: center; gap: 10px; }
 .tb-action-row .tb-btn { width: 100%; }
 .tb-action-row[data-off="1"] .tb-btn { opacity: 0.5; }
-.tb-action-outcome { font-size: 10.5px; color: ${DIM}; line-height: 1.5; }
 .tb-action-reason { font-size: 10.5px; color: ${FAINT}; line-height: 1.5; }
 /* 属性表里可点的标签：沿用 .tb-tag 的 10px 药丸，只是变成按钮。 */
 .tb-tag-btn { background: transparent; font-family: inherit; cursor: pointer; }

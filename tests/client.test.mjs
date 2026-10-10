@@ -2710,6 +2710,15 @@ function drawerFixture() {
   return board
 }
 
+/** 抽屉属性区里的一个字段（T-74：`drawerProps` 返回「人 / 值 / 时」三组，字段在组里）。 */
+function drawerField(task, board, key, now = Date.now()) {
+  for (const group of client.drawerProps(task, board, now)) {
+    const field = group.fields.find((row) => row.key === key)
+    if (field) return field
+  }
+  return undefined
+}
+
 /** 渲染抽屉本身（不是整块板）：SSR 直接把 DetailDrawer 丢进去。 */
 async function renderDrawer(board, taskId, actors) {
   const store = client.createTaskboardStore({ bridge: { board: async () => ({ ok: true, board }) }, pollMs: 10 ** 9 })
@@ -2827,11 +2836,44 @@ await check('T-29 · 指派列表：默认只含在场者，久未活动者要�
   assert.ok(ghost && ghost.current && ghost.quiet, '久未活动者若是当前负责人，仍在默认列表里并带标记')
   assert.equal(asCurrent.quiet.length, 0)
 
-  // 渲染层面：默认 HTML 里根本没有 ghost，但有「显示全部」这条出路和数量。
+  // 渲染层面（T-74 新形态）：成员列表默认**收起** —— 默认 HTML 里一行成员都没有
+  // （在场者也没有），久未活动的 ghost 更不在；「展开」就是那次点击本身。
   const { html } = await renderDrawer(board, 'T-1', actors)
   assert.ok(!html.includes('ghost'), '默认不渲染久未活动者')
-  assert.ok(html.includes('Show all (1 quiet)'), '给出显式展开的出路 + 数量')
-  assert.ok(html.includes('cc') && html.includes('kimi'), '在场者照常列出')
+  assert.equal((html.match(/tb-picker-row/g) ?? []).length, 0, '成员列表默认收起（一行都不渲染）')
+  assert.match(html, /Current: <span[^>]*>cc<\/span>/, '那一行说的是「当前：<谁>」，不是一串成员')
+  assert.ok(html.includes('>Change<'), '有成员时给一个展开式 combobox 触发器')
+  assert.ok(html.includes('Back to pool'), '「移回待认领」是同一行右侧的小号次操作')
+})
+
+await check('T-74 · 指派压成一行：当前值 + combobox 触发器 + 移回待认领（不再逐个成员占行）', async () => {
+  const now = Date.now()
+  const board = drawerFixture()
+  const actors = [...client.knownActors(board), 'ghost']
+
+  // 纯函数仍然给出「在场 / 久未活动」两分（展开后按这个顺序排：在场者在前）。
+  const choices = client.assigneeChoices(board, actors, 'cc', now)
+  assert.deepEqual(choices.quiet.map((choice) => choice.name), ['ghost'])
+  assert.deepEqual([...choices.present, ...choices.quiet].map((choice) => choice.name).sort(), ['cc', 'dsh', 'ghost', 'kimi'])
+
+  // 0.8.0 那一串东西一个都不能在默认 DOM 里：过滤输入框 / 成员行 / 「显示全部」开关。
+  const claimed = await renderDrawer(board, 'T-1', actors)
+  assert.ok(!/Search members/.test(claimed.html), '过滤输入框默认不在 DOM 里')
+  assert.ok(!/Show all \(1 quiet\)/.test(claimed.html), '「显示全部」不再是一行开关')
+  assert.equal((claimed.html.match(/tb-picker-row/g) ?? []).length, 0, '成员行默认一行都不渲染')
+
+  // 未指派：那一行如实说「待认领」，触发器改口叫「指派」（不是「更换」）。
+  const pool = { ...board.tasks['T-1'], assignee: null }
+  const poolBoard = { ...board, tasks: { ...board.tasks, 'T-1': pool } }
+  const unclaimed = await renderDrawer(poolBoard, 'T-1', actors)
+  assert.match(unclaimed.html, /Current: <span[^>]*>— \(unclaimed\)<\/span>/, '未指派时如实说「待认领」')
+  assert.ok(unclaimed.html.includes('>Assign<'), '未指派时触发器说的是「指派」而不是「更换」')
+  assert.ok(unclaimed.html.includes('tb-assign-line'), '那一行有稳定的类名')
+  assert.ok(unclaimed.html.includes('Back to pool'), '「移回待认领」还在（置灰），不独占一行')
+
+  const nobody = await renderDrawer(poolBoard, 'T-1', [])
+  assert.ok(!nobody.html.includes('>Assign<'), '没有可指派成员就不给触发器')
+  assert.ok(nobody.html.includes('No assignable members yet'), '没有成员时说明为什么')
 })
 
 await check('T-29 · 里程碑 tag 与卡面 / 统计页同一口径', async () => {
@@ -2842,8 +2884,8 @@ await check('T-29 · 里程碑 tag 与卡面 / 统计页同一口径', async () 
   assert.deepEqual(client.milestoneTags(task), task.tags.filter((tag) => client.isMilestoneTag(tag)))
   assert.deepEqual(client.milestoneTags(task), ['v0.7.2'], '不是 vX.Y.Z 的 tag 不是里程碑')
 
-  const row = client.drawerProps(task, board).find((prop) => prop.key === 'milestone')
-  assert.equal(row.value, 'v0.7.2', '属性表的里程碑只列里程碑 tag')
+  const row = drawerField(task, board, 'milestone')
+  assert.equal(row.value, 'v0.7.2', '属性区的里程碑只列里程碑 tag')
   assert.ok(!row.value.includes('ui') && !row.value.includes('client'), '普通 tag 不会混进里程碑')
 
   // 就地列出同标签的卡：口径与统计页 milestones() 的 ids 完全一致。
@@ -2855,15 +2897,54 @@ await check('T-29 · 里程碑 tag 与卡面 / 统计页同一口径', async () 
   assert.deepEqual(client.tasksWithTag(board, '  v0.7.2  ').map((row) => row.id).sort(), ['T-1', 'T-2'])
 })
 
-await check('T-29 · 属性表：值可复制、列龄沿用同一个 stalenessOf', () => {
+await check('T-74 · 属性区分组：人 / 值 / 时 三行，字段仍是 0.8.0 那些（只有两处真重复被去掉）', () => {
   const now = Date.now()
   const board = drawerFixture()
   const task = board.tasks['T-1']
-  const rows = client.drawerProps(task, board, now)
-  const by = (key) => rows.find((row) => row.key === key)
+  const groups = client.drawerProps(task, board, now)
 
-  for (const key of ['status', 'priority', 'value', 'assignee', 'reviewer', 'holder', 'created', 'column', 'age', 'milestone']) {
-    assert.ok(by(key), `属性表缺 ${key}`)
+  // 顺序与行首标签都是规格的一部分（宽时一行、窄时折行，但行的语义不变）。
+  assert.deepEqual(groups.map((group) => group.key), ['people', 'values', 'time'])
+  assert.deepEqual(groups.map((group) => group.label), ['Who', 'What', 'When'])
+  for (const group of groups) {
+    assert.ok(group.fields.length > 0, `${group.key} 不能是空行`)
+    for (const field of group.fields) {
+      assert.ok(field.label && field.value !== undefined, `${field.key} 必须形如「标签 值」—— 去掉标签三个名字并排会歧义`)
+    }
+  }
+
+  // 0.8.0 的 10 个字段键，去掉的**只有**那两处真重复（status / age）。
+  const keys = groups.flatMap((group) => group.fields.map((field) => field.key))
+  // 这张 fixture 的卡在 review 列待了 30h > 24h SLA ⇒ 末尾多一个条件字段「已超时」。
+  assert.deepEqual(keys, ['assignee', 'reviewer', 'holder', 'priority', 'value', 'milestone', 'created', 'column', 'overdue'])
+  for (const gone of ['status', 'age']) {
+    assert.ok(!keys.includes(gone), `「${gone}」是同一事实的第二个出口，已并入「当前列」`)
+  }
+  // 值仍在别处：状态与列龄都在「当前列」的值里（`状态 列龄`），一个都没少。
+  const column = drawerField(task, board, 'column', now)
+  assert.equal(column.value, `In review ${client.ageLabel(client.stalenessOf(task, now).ageMs)}`)
+  assert.match(column.value, /^In review \d/, `状态 + 列龄同值：${column.value}`)
+
+  // 人 / 值 / 时 的分工（字段落在正确的行里）。
+  const groupOf = (key) => groups.find((group) => group.fields.some((field) => field.key === key)).key
+  assert.equal(groupOf('assignee'), 'people')
+  assert.equal(groupOf('reviewer'), 'people')
+  assert.equal(groupOf('holder'), 'people')
+  assert.equal(groupOf('priority'), 'values')
+  assert.equal(groupOf('value'), 'values')
+  assert.equal(groupOf('milestone'), 'values')
+  assert.equal(groupOf('created'), 'time')
+  assert.equal(groupOf('column'), 'time')
+})
+
+await check('T-29 · 属性区：值可复制、列龄沿用同一个 stalenessOf、warn 不丢', () => {
+  const now = Date.now()
+  const board = drawerFixture()
+  const task = board.tasks['T-1']
+  const by = (key) => drawerField(task, board, key, now)
+
+  for (const key of ['priority', 'value', 'assignee', 'reviewer', 'holder', 'created', 'column', 'milestone']) {
+    assert.ok(by(key), `属性区缺 ${key}`)
   }
   assert.equal(by('assignee').copy, 'cc', '负责人可复制')
   assert.equal(by('created').copy, task.created_at, '创建时间可复制的是 ISO 原文，不是「30 小时前」')
@@ -2873,9 +2954,41 @@ await check('T-29 · 属性表：值可复制、列龄沿用同一个 stalenessO
   // 列龄 / 陈旧标记与卡面读同一个 stalenessOf（同一个 now 必须得出同一个数）。
   const stale = client.stalenessOf(task, now)
   assert.equal(stale.stale, true, '待审核 30h > 24h SLA')
-  assert.equal(by('age').copy, client.ageLabel(stale.ageMs))
-  assert.equal(by('age').warn, stale.stale)
-  assert.ok(by('age').value.includes('overdue'), '陈旧必须在属性表里显形')
+  assert.equal(by('column').copy, client.ageLabel(stale.ageMs), '列龄仍可复制（并入「当前列」）')
+  // T-74：warn 从被删掉的「列龄」行搬到独立的「已超时」字段 —— 记号与阈值说明都还在。
+  const overdue = by('overdue')
+  assert.ok(overdue, '超 SLA 必须有自己的字段')
+  assert.equal(overdue.warn, true, '陈旧必须在属性区显形')
+  assert.equal(overdue.label, 'Overdue')
+  assert.equal(overdue.value, '⚠')
+  assert.match(overdue.title, /past its 1d threshold/, `阈值说明在 title 里：${overdue.title}`)
+
+  // 不陈旧时这个字段**根本不存在**（不是空着）—— 属性区因此不会为正常卡拉长一行。
+  const fresh = { ...task, status: 'in_progress', updated_at: new Date().toISOString() }
+  assert.equal(drawerField(fresh, board, 'overdue', now), undefined, '没过 SLA 就没有「已超时」字段')
+  assert.equal(drawerField(fresh, board, 'column', now).copy, client.ageLabel(client.stalenessOf(fresh, now).ageMs))
+})
+
+await check('T-74 · 属性区渲染：四行语义行 + 「标签 值」成对出现 + 标签药丸还能筛', async () => {
+  const board = drawerFixture()
+  const { html } = await renderDrawer(board, 'T-1')
+
+  // 四行：人 / 值 / 时 / 标签（0.8.0 是 11 行属性 + 1 行标签）。
+  assert.equal((html.match(/tb-prop-line/g) ?? []).length >= 4, true, '至少四条 tb-prop-line')
+  assert.ok(!/tb-prop-row/.test(html), '0.8.0 的一行一个字段没了')
+  for (const label of ['Who', 'What', 'When', 'Tags']) {
+    assert.ok(html.includes(`>${label}<`), `行首标签「${label}」在页面上`)
+  }
+  // 字段形如「标签 值」：标签一个都不能少（三个名字并排无标签会歧义）。
+  for (const label of ['Owner', 'Reviewer', 'Holder', 'Priority', 'Value', 'Milestone', 'Created', 'In column']) {
+    assert.ok(html.includes(`>${label}<`), `字段标签「${label}」在页面上`)
+  }
+  assert.ok(html.includes('tb-prop-field') && html.includes('tb-prop-fields'), '字段排成会折行的流')
+  // 值仍可复制（值本身就是按钮）。
+  assert.ok(html.includes('tb-prop-copy'), '可复制的值仍是按钮')
+  // 标签仍是药丸按钮，且**没有**被折进动作区。
+  assert.ok(html.includes('tb-tag-btn') && html.includes('tb-tagline'), '标签渲染成可点的药丸')
+  assert.ok(html.includes('client') && html.includes('ui'), '普通 tag 也在标签行里')
 })
 
 await check('T-29 · 抽屉渲染：结果列 / 置灰原因 / 两个 tab 的计数都在页面上', async () => {
@@ -2886,19 +2999,25 @@ await check('T-29 · 抽屉渲染：结果列 / 置灰原因 / 两个 tab 的计
   assert.ok(html.includes('back to “In progress” · cc reworks'), '打回 的结果列渲染出来了')
   assert.ok(html.includes('only an “In progress” card can be submitted'), '不可用动作的原因渲染出来了')
   assert.ok(html.includes('already claimed by cc'), '认领不可用的原因渲染出来了')
-  assert.ok(html.includes('>Not available now<'), '置灰分组有标题')
-  // 不可用的动作仍然在 DOM 里（置灰），不是消失。
-  assert.equal((html.match(/tb-action-row/g) ?? []).length >= 9, true, '九个动作全部在 DOM 里')
+  // T-74：置灰分组收成一行 disclosure（「暂不可用」标题 + 逐条原因仍在 DOM 里）。
+  const blockedCount = client.drawerActions(board.tasks['T-1'], board).filter((row) => row.disabledReason !== null).length
+  assert.ok(html.includes(`${blockedCount} action(s) not available now`), `置灰分组有一行 disclosure + 数量（${blockedCount}）`)
+  assert.ok(html.includes('aria-expanded="false"'), '默认是折起的')
+  assert.ok(/<div hidden=""/.test(html), '原因列表默认 hidden（不是删掉）')
+  // 九个动作一个都没消失：能按的在胶囊行里，不能按的逐条在（默认折起的）DOM 里。
+  const actionRows = client.drawerActions(board.tasks['T-1'], board)
+  assert.equal((html.match(/tb-action-row/g) ?? []).length, actionRows.filter((row) => row.disabledReason !== null).length, '置灰动作逐条仍在 DOM 里')
+  for (const row of actionRows) {
+    assert.ok(html.includes(`>${row.label}<`), `${row.action}（${row.label}）的入口还在页面上`)
+  }
 
   // 两个 tab 都带计数（主人只要计数，不要合并成一条时间线）。
   assert.ok(html.includes('Comments (1)'), '评论 tab 带计数')
   assert.ok(html.includes('Activity (1)'), '动态 tab 也带计数')
   assert.ok(html.includes('Details'), '详情 tab 还在 —— 三个 tab 没有合并')
 
-  // 描述默认折叠 + 展开出路；标签可点。
+  // 描述默认折叠 + 展开出路。
   assert.ok(html.includes('Show all'), '长描述给出展开')
-  assert.ok(html.includes('tb-tag-btn'), '标签渲染成可点的按钮')
-  assert.ok(html.includes('client') && html.includes('ui'), '普通 tag 也在标签行里')
 })
 
 await check('T-29 · 小派生：未读动态计数与描述折叠阈值', () => {

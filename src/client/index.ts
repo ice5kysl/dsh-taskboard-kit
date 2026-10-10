@@ -68,7 +68,7 @@ export {
   drawerActions, drawerProps, assigneeChoices, milestoneTags, tasksWithTag,
   unseenActivity, detailNeedsFold,
 } from './BoardPanel.tsx'
-export type { DrawerAction, ActionRow, DrawerProp, AssigneeChoice, AssigneeChoices } from './BoardPanel.tsx'
+export type { DrawerAction, ActionRow, DrawerProp, DrawerPropGroup, DrawerGroupKey, AssigneeChoice, AssigneeChoices } from './BoardPanel.tsx'
 export { MiniBoardButton, MiniBoardDrawer } from './MiniBoard.tsx'
 export { createBridgeClient } from './api.ts'
 export { createTaskboardStore, getTaskboardStore } from './store.ts'
