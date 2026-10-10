@@ -102,6 +102,7 @@ import {
   LINK,
   MASK,
   PRIORITY_COLORS,
+  TB_LANE,
   TB_TOOLBAR,
   TERTIARY,
   WARN,
@@ -1439,7 +1440,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
       ) : state.groupBy === 'stats' ? (
         <StatsView board={board} onOpenTask={(id) => store.select(id)} />
       ) : state.groupBy === 'owner' ? (
-        <div style={styles.lanes}>
+        <div style={styles.lanes} className="tb-lanes">
           <OwnerLanes
             groups={ownerGroups}
             state={state}
@@ -1448,7 +1449,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
           />
         </div>
       ) : (
-        <div style={styles.lanes}>
+        <div style={styles.lanes} className="tb-lanes">
           {columns.map(({ column, tasks: list }) =>
             column === 'closed' && !state.showClosed ? (
               // The closed column defaults to a narrow strip (still a drop
@@ -3826,17 +3827,32 @@ const styles: Record<string, CSSProperties> = {
   noticeText: { minWidth: 0, overflowWrap: 'anywhere' },
   lanes: {
     flex: 1,
+    // 泳道行是 root（column 方向 flex）里唯一的软孩子：root 已经 overflow:hidden，
+    // 这里再声明 minWidth:0，是防止将来有人在 root 外层再套一层 flex 时，
+    // min-width:auto 又把整排的 min-content 顶回父级、重新长出横向溢出。
+    minWidth: 0,
     minHeight: 0,
     display: 'flex',
-    gap: 10,
-    padding: 12,
+    gap: TB_LANE.gap,
+    padding: TB_LANE.padding,
+    // T-85：**兜底，不是修法**。泳道现在会伸缩（见 column），1280 及以上都放得下；
+    // 只有视口窄到「连 TB_LANE.min × 该列数都排不下」时才轮到它滚动 ——
+    // 那时滚动是唯一诚实的选择（总比把列静默裁掉强）。
+    // 反过来说：如果这里的 auto 真被触发，说明 column 的伸缩又坏了。
     overflowX: 'auto',
     overflowY: 'hidden',
   },
   column: {
     position: 'relative', // anchors the in-lane roster picker overlay
-    width: 240,
-    flexShrink: 0,
+    // T-85 真凶（既有缺陷：0.9.0 与 0.9.1 逐值相同，不是今天的回归）：原来是
+    //   width: 240 + flexShrink: 0
+    // ⇒ 一整排**刚性**的 5×240 + 36(收起的已关闭条) + 5×10(gap) + 2×12(padding) = 1310px：
+    //   · 面板 < 1310px（1280/1440 视口 ⇒ 993/1153）⇒ 右侧的列被 overflowX 裁掉（317/157px），看不见也点不到 ✗
+    //   · 面板 > 1310px（1680/2560/2878 视口）⇒ 行止于 1310，右侧留白 83 / 963 / 1281px ✗
+    // 改成「可伸缩的一等分」：flex-basis 仍是 240（设计宽度），但**能收也能力**——
+    // 宽屏各列等分铺满（消除空白），窄屏按 min 收缩（1280 仍不溢出）。
+    flex: `1 1 ${TB_LANE.basis}px`,
+    minWidth: TB_LANE.min,
     display: 'flex',
     flexDirection: 'column',
     minHeight: 0,

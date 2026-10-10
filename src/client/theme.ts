@@ -96,6 +96,29 @@ export const TB_TOOLBAR = {
   padding: '10px 14px',
 } as const
 
+/**
+ * 泳道行的几何常量（T-85）—— **宽度不变量的唯一来源**。
+ *
+ * 为什么单独拿出来：这块布局原先没有一个「宽度层面」的定义处，`240` 和 `10` 是
+ * 散在 BoardPanel 的 `styles` 里的裸数字，于是**没有人能对「整排一共要多宽」下断言**，
+ * 也就没人发现它是一排刚性的 1310px（1280/1440 视口下右侧列被裁、1680+ 视口下右侧留白）。
+ * 现在这四个数是规格：`basis` × 列数 + `gap` × 间隔 + `padding` × 2 必须 ≤ 可用宽度，
+ * 或者（更窄时）各列收缩到 `min` 为止 —— 两种情况都由 tests/layout-invariants.test.mjs
+ * 在真无头浏览器里逐宽度断言。
+ */
+export const TB_LANE = {
+  /** 设计宽度（flex-basis）：宽屏时各列在这条基准上等分伸展。 */
+  basis: 240,
+  /** 一列还能读的下限（min-width）。收到这里为止，再窄才轮到泳道行横向滚动 ——
+   *  168 是「卡片三行还在、列头 + 计数 + 新建按钮还排得开」的实测下限（1280 视口
+   *  下面板 993px：5×168 + 36 + 5×10 + 2×12 = 950 ≤ 993 ✓）。 */
+  min: 168,
+  /** 列间距。 */
+  gap: 10,
+  /** 泳道行内边距。 */
+  padding: 12,
+} as const
+
 /** Interactive-state rules for the tb-* classes used across the surfaces. */
 export const TB_CSS = `
 .tb-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid ${BORDER_STRONG}; border-radius: 8px; background: transparent; color: inherit; padding: 5px 10px; font-size: 12px; font-family: inherit; line-height: 1.4; cursor: pointer; }

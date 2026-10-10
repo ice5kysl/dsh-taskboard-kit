@@ -75,7 +75,7 @@ export type { DrawerAction, ActionRow, DrawerProp, DrawerPropGroup, DrawerGroupK
 export { MiniBoardButton, MiniBoardDrawer } from './MiniBoard.tsx'
 export { createBridgeClient } from './api.ts'
 export { createTaskboardStore, getTaskboardStore } from './store.ts'
-export { TB_CSS, TB_TOOLBAR, CLIENT_PLUGIN_ID, CSS_TAG_ID, ensureTaskboardStyles } from './theme.ts'
+export { TB_CSS, TB_TOOLBAR, TB_LANE, CLIENT_PLUGIN_ID, CSS_TAG_ID, ensureTaskboardStyles } from './theme.ts'
 export { columnOf, compareTasks, isTerminalStatus, needsSettling, TERMINAL_STATUS } from '../shared/types.ts'
 export { planDrop } from '../shared/dnd.ts'
 export type { DropOp } from '../shared/dnd.ts'
