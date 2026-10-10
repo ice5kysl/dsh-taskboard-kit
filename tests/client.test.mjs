@@ -955,7 +955,7 @@ await check('store.answerWaiting: comment first, then unblock (and never the oth
   assert.deepEqual(calls, [], 'blank answer fires nothing')
 })
 
-await check('human strip: cards parked on a PERSON get their own surface', async () => {
+await check('T-76 · 汇总条：一行、只数人类的等待、空态不渲染（大横幅已删）', async () => {
   const fixture = collabBoard([
     {
       id: 'T-1', title: '删掉 C 段吗', status: 'in_progress', assignee: 'dsh',
@@ -968,42 +968,115 @@ await check('human strip: cards parked on a PERSON get their own surface', async
   ])
   const { store, html } = await renderBoard(fixture)
 
-  assert.ok(html.includes('class="tb-human-strip"'), 'the strip renders when a person is being waited on')
-  assert.ok(html.includes('◷ 1 card(s) waiting on you'), 'it counts ONLY the human-parked card (the agent-parked one is the agents\' business)')
-  assert.ok(!html.includes('2 card(s) waiting on you'), 'the agent-parked card is not counted as the human\'s')
-  assert.ok(html.includes('删掉 C 段吗'), 'the card title is listed')
-  assert.ok(html.includes('C 段前提已过时'), 'the full question is shown verbatim — answerable without opening anything')
-  assert.ok(html.includes('waiting on iceskysl · 2d'), 'who is waiting and for how long')
-  assert.ok(html.includes('>overdue<'), 'a 48h wait passes the 24h human SLA and is marked')
-  assert.ok(html.includes('Reply'), 'an answer affordance is offered inline')
-  // The agent-parked card still carries its badge on the CARD (not the strip).
-  // 2026-10-01: the card's footer is strictly ONE line, so the chip is the
-  // compact 「◷ who · age」 and the full sentence moved into its tooltip — the
-  // invariant (agent waits ride the card badge, humans get the strip) is
-  // unchanged, only the copy got shorter.
-  // Assert on the RENDERED TEXT (tags stripped): the chip is built from two
-  // spans — the who part ellipsizes, the age is pinned — so matching raw markup
-  // would test the markup rather than what the user reads.
-  const cardText = html.replace(/<[^>]*>/g, '')
-  // 2026-10-01（持球人）：等待不再是一枚「◷ who · age」徽章，而是卡面唯一回答的那句
-  // 「球在 kimi（待回执）」——同一条不变量（agent 的等待上卡面、人类的等待进 strip），
-  // 只是把「谁持球」和「欠什么动作」合成了一句。
-  // 测试进程没有 navigator ⇒ locale.ts 解析为英文，所以这里断言英文文案；
-  // 中文（全角括号）由双主题预览图核对 —— 见 docs/images/card-holder.png。
-  // 2026-10-01（图标化）：标签词换成记号 —— 等待用◷、裁决用⚑、收口用⌂、持球用➤，
-  // 名字与数字保留，整句进 tooltip。图标是语言中立的，所以这条断言不再依赖 locale。
-  // 记号与名字是两个 span（用 margin 分隔，不靠会被折叠的空格）⇒ 用 \s* 容忍两种形态
-  assert.ok(/◷\s*kimi/.test(cardText), 'agent waits ride the card badge (wait mark + who)')
-  assert.ok(cardText.includes('1h'), 'and the holder chip still counts how long the ball has been held')
-  assert.ok(html.includes('waiting on agent kimi'), 'the full sentence survives in the tooltip')
+  // 0.8.0 那块 ~150px 的大横幅（卡标题 + 问题全文 + 回复框全铺在顶上）没有了。
+  assert.ok(!html.includes('tb-human-strip'), '顶部的大横幅被删掉了')
+  assert.ok(!html.includes('card(s) waiting on you'), '横幅那句文案也不在了')
 
-  // Selecting the waiting card unfolds the inline answer box (textarea + the
-  // one-gesture 「回复并解除等待」 submit). SSR drives the selection via the store.
+  // 取而代之：一行汇总条，计数**只算人类的等待**（等 Agent 是 Agent 之间的事）。
+  assert.ok(html.includes('class="tb-wait-bar"'), '汇总条在等待卡存在时渲染')
+  assert.ok(html.includes('data-waiting="1"'), '条上带机器可读的计数（1）')
+  assert.ok(html.includes('⏳ 1 waiting on you'), '只数人类停牌的那张')
+  assert.ok(!html.includes('2 waiting on you'), '等 Agent 的卡不算进"等你决定"')
+  assert.ok(html.includes('Jump to it'), '「跳过去」是这一行唯一的动作')
+  assert.ok(html.includes('Dismiss (this session only'), '右侧的 × 关掉它（只在本会话生效）')
+
+  // 空态：没有等待卡 ⇒ 整条不渲染（也不许出现「0 张在等你」）。
+  const quiet = collabBoard([{ id: 'T-9', title: '没人在等', status: 'in_progress', assignee: 'dsh' }])
+  const quietHtml = (await renderBoard(quiet)).html
+  assert.ok(!quietHtml.includes('tb-wait-bar'), '没有等待卡时整条不渲染')
+  assert.ok(!/0 waiting on you/.test(quietHtml), '不许出现「0 张在等你」')
+})
+
+await check('T-76 · 卡片凸显：等你决定的卡有竖条 + ⏳ 徽章（title = 问题全文），别的卡没有', async () => {
+  const fixture = collabBoard([
+    {
+      id: 'T-1', title: '删掉 C 段吗', status: 'in_progress', assignee: 'dsh',
+      waiting_on: { kind: 'human', who: 'iceskysl', question: 'C 段前提已过时——撤掉还是重定义？', since: new Date(Date.now() - 48 * 3600_000).toISOString() },
+    },
+    {
+      id: 'T-2', title: '等 kimi 回执', status: 'in_progress', assignee: 'dsh',
+      waiting_on: { kind: 'agent', who: 'kimi', question: '回执呢', since: new Date(Date.now() - 3600_000).toISOString() },
+    },
+  ])
+  const { html } = await renderBoard(fixture)
+
+  // 竖条（CSS 类）+ 徽章（卡面第一行）：两处都在等待你的那张卡上。
+  assert.ok(html.includes('tb-card-wait'), '等待你的卡带左侧竖条的类')
+  assert.ok(html.includes('tb-badge-you'), '等待你的卡带 ⏳ 徽章')
+  assert.ok(html.includes('⏳ waiting on you'), '徽章说的是「等你决定」')
+  // 信息不丢：原横幅第 2–3 行那份**问题全文**，现在挂在徽章的 title 上，一字不动。
+  assert.ok(html.includes('title="C 段前提已过时——撤掉还是重定义？"'), '徽章 title = 问题全文（横幅只是移走，不是删掉信息）')
+
+  // 只标记"等你"的卡：等 Agent 的那张不许混进来（否则两种等待又长得一样了）。
+  const cardOf = (id) => {
+    const at = html.indexOf(`data-task="${id}"`)
+    return html.slice(html.lastIndexOf('<button', at), html.indexOf('</button>', at))
+  }
+  assert.ok(cardOf('T-1').includes('tb-card-wait') && cardOf('T-1').includes('tb-badge-you'), 'T-1（等你）被标记')
+  assert.ok(!cardOf('T-2').includes('tb-card-wait'), 'T-2（等 Agent）没有竖条')
+  assert.ok(!cardOf('T-2').includes('tb-badge-you'), 'T-2（等 Agent）没有「等你决定」徽章')
+  assert.ok(!cardOf('T-2').includes('C 段前提已过时'), 'T-2 不背 T-1 的问题全文')
+
+  // 列内排最前：同一列里，等人的那张排在等 Agent 的前面（compareTasks 仍是次序口径）。
+  assert.ok(html.indexOf('data-task="T-1"') < html.indexOf('data-task="T-2"'), '等你的卡在列内排最前')
+
+  // 等 Agent 的卡照旧只有它自己的琥珀等待徽章（两种等待在形状与颜色上都分开）。
+  const cardText = cardOf('T-2').replace(/<[^>]*>/g, '')
+  assert.ok(/◷\s*kimi/.test(cardText), '等 Agent 的卡仍然靠它自己的等待徽章表达')
+})
+
+await check('T-76 · waitingFirst：只把「等你决定」的卡提前，其余次序原样（compareTasks 说了算）', () => {
+  const at = '2026-10-10T00:00:00.000Z'
+  const mk = (id, waiting, priority = 'medium', created = at) => ({
+    id, title: id, detail: '', status: 'in_progress', assignee: 'dsh', reviewer: null,
+    waiting_on: waiting, priority, value: null, tags: [], created_by: 'dsh',
+    created_at: created, updated_at: created, log: [], comments: [],
+  })
+  const humanWait = { kind: 'human', who: 'iceskysl', question: 'q', since: at }
+  const agentWait = { kind: 'agent', who: 'kimi', question: 'q', since: at }
+
+  // 等人的卡提前；同为"没人等"的两张之间，仍是 compareTasks 的原次序（优先级高的前）。
+  const rows = [mk('T-1', null, 'low'), mk('T-2', humanWait, 'low'), mk('T-3', agentWait, 'high'), mk('T-4', null, 'high')]
+  assert.deepEqual(rows.slice().sort(client.waitingFirst).map((t) => t.id), ['T-2', 'T-3', 'T-4', 'T-1'],
+    '等人类的先出；其余按 compareTasks（高优先级在前、同龄按 id）')
+  // 反例：等 Agent 的卡**不会**被提前（它没有 ⏳ 徽章，插到最前面就是"两种事看起来一样"）。
+  assert.equal(client.waitingFirst(mk('T-3', agentWait), mk('T-4', null)), client.compareTasks(mk('T-3', agentWait), mk('T-4')),
+    '等 Agent 的卡参与比较时，结果与纯 compareTasks 一致')
+  assert.equal(client.isWaitingOnYou(mk('T-2', humanWait)), true)
+  assert.equal(client.isWaitingOnYou(mk('T-3', agentWait)), false)
+  assert.equal(client.isWaitingOnYou(mk('T-1', null)), false)
+})
+
+await check('T-76 · 回答「等你决定」的入口搬进抽屉（同一张卡、同一份问题全文）', async () => {
+  const fixture = collabBoard([
+    {
+      id: 'T-1', title: '删掉 C 段吗', status: 'in_progress', assignee: 'dsh',
+      waiting_on: { kind: 'human', who: 'iceskysl', question: 'C 段前提已过时——撤掉还是重定义？', since: new Date(Date.now() - 48 * 3600_000).toISOString() },
+    },
+    {
+      id: 'T-2', title: '等 kimi 回执', status: 'in_progress', assignee: 'dsh',
+      waiting_on: { kind: 'agent', who: 'kimi', question: '回执呢', since: new Date(Date.now() - 3600_000).toISOString() },
+    },
+  ])
+  const { store } = await renderBoard(fixture)
+
+  // 未选中时抽屉里没有回复框（它只跟着选中的那张卡走）。
+  assert.ok(!renderToStaticMarkup(React.createElement(client.BoardPanel, { store })).includes('Reply &amp; release'))
+
+  // 选中等待你的那张 ⇒ 抽屉的等待框里出现「回复并解除等待」（comment → unblock，
+  // 仍然由 store.answerWaiting 拥有那两步的顺序，测试见上一条）。
   store.select('T-1')
   const opened = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
-  assert.ok(opened.includes('class="tb-textarea"'), 'the answer box opens for the selected waiting card')
-  assert.ok(opened.includes('Reply &amp; release'), 'the one-gesture answer button is there')
-  assert.ok(opened.includes('>Hide<'), 'and it can be folded away again')
+  assert.ok(opened.includes('class="tb-textarea"'), '选中等你的卡，抽屉里出现回复框')
+  assert.ok(opened.includes('Reply &amp; release'), '一键回复并解除等待还在')
+  assert.ok(opened.includes('C 段前提已过时'), '问题全文也在抽屉里')
+  assert.ok(opened.includes('>overdue<'), '等了 48h > 24h 人类 SLA ⇒ 琥珀「已超时」仍然显形')
+
+  // 选中「等 Agent」的那张：问题照常显示，但**没有**回答框（那个问题是给 Agent 的）。
+  store.select('T-2')
+  const agent = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+  assert.ok(agent.includes('回执呢'), '等 Agent 的问题也在抽屉里')
+  assert.ok(!agent.includes('Reply &amp; release'), '等 Agent 的卡不给人类一个"回复并解除等待"的入口')
   store.select(null)
 })
 
@@ -3060,6 +3133,62 @@ await check('T-35 · theme: every 10px pill truncates instead of spilling out of
   // The「关于」popover's link rows hover via the sheet (inline styles cannot
   // express :hover) and they must hover on a host token, not a hardcoded colour.
   assert.ok(cssRule(css, '.tb-about-link:hover').includes('background:var(--dsw-alias'), 'the about link hovers on a host token')
+})
+
+await check('T-76 · TB_CSS 的骨架必须合法：注释之外、每个 `{` 之前只能是选择器', () => {
+  // 这条来自一次**真机才发现**的事故（T-76 自查）：把一段注释文字写在了 `*/` 之后，
+  // CSS 解析器从错处一路跳到下一个 `}`，于是紧跟着的 `.tb-card-wait` 整条规则被吃掉
+  // —— 左侧竖条在页面上根本不存在。tsc 不检查模板串里的 CSS，而"字符串里包含
+  // var(--dsw-alias-link)"这种断言照样绿（它查的是文本，不是生效的规则）⇒ 需要一条
+  // 查**结构**的判据。
+  const css = client.TB_CSS
+  // 选择器允许出现的字符（宿主的选择器都是类/属性/伪类/逗号/后代/通配/at-rule）。
+  const SELECTOR = /^[\s.,#:\[\]()@%a-zA-Z0-9_\-*>+~="'|^$]*$/
+  const chunks = css.split('*/')
+  for (let i = 1; i < chunks.length; i += 1) {
+    const after = chunks[i].slice(0, chunks[i].indexOf('{') === -1 ? chunks[i].length : chunks[i].indexOf('{'))
+    assert.ok(SELECTOR.test(after), `注释结束后到下一个 { 之间只能是选择器，实际：${JSON.stringify(after.trim().slice(0, 60))}`)
+  }
+  // 花括号必须配平（错位的注释会把整条规则连花括号一起吞掉，剩下一个孤儿的 }）。
+  let depth = 0
+  for (const ch of css.replace(/\/\*[\s\S]*?\*\//g, '')) {
+    if (ch === '{') depth += 1
+    else if (ch === '}') depth -= 1
+    assert.ok(depth >= 0, '出现了多余的 }')
+  }
+  assert.equal(depth, 0, '去掉注释之后花括号必须配平')
+})
+
+await check('T-76 · 颜色纪律：⏳「等你决定」用主色蓝 + 矩形，绝不与琥珀「已超时」混同', () => {
+  const css = client.TB_CSS
+  const you = cssRule(css, '.tb-badge-you')
+  const overdue = cssRule(css, '.tb-badge-wait')
+  const cardWait = cssRule(css, '.tb-card-wait')
+  assert.ok(you && overdue && cardWait, '三条规则都在样式表里')
+
+  // ① 颜色：一个是 link 蓝（两个主题下都是蓝），一个是 WARN 琥珀 —— 不是同一个 token。
+  assert.ok(you.includes('var(--dsw-alias-link'), `「等你决定」用主色蓝：${you}`)
+  assert.ok(!you.includes('state-warn'), '「等你决定」绝不能用 WARN 琥珀 —— 那会让"超时"与"等你"在扫视时等价')
+  assert.ok(overdue.includes('var(--dsw-alias-state-warn-primary'), '「已超时」仍然是琥珀（这条没被动过）')
+  assert.notEqual(you.split('color:')[1].split(';')[0], overdue.split('color:')[1].split(';')[0], '两枚徽章的前景色是两个不同的 token')
+
+  // ② 形状：实心矩形 vs 描边胶囊 —— 形状差异让两种事在**不看颜色**时也分得开。
+  assert.ok(you.includes('border-radius:5px'), `「等你决定」是 5px 圆角矩形：${you}`)
+  assert.ok(!you.includes('border-radius:999px'), '不是胶囊')
+  assert.ok(overdue.includes('border-radius:999px'), '「已超时」仍是胶囊')
+  assert.ok(overdue.includes('border:1pxsolid'), '而且是描边（空心），与实心蓝进一步区分')
+
+  // ③ 左侧竖条同样是主色，而不是琥珀 —— 竖条是「等你决定」独有的记号。
+  // 竖条必须用 **蓝**（link），不能是 ACCENT —— ACCENT 是宿主的反相单色（浅色下近黑、
+  // 深色下近白），做主色会被读成"选中"而不是"等你"。
+  assert.ok(cardWait.includes('var(--dsw-alias-link'), `竖条用蓝（link）：${cardWait}`)
+  assert.ok(!cardWait.includes('brand-primary'), '竖条不能落在反相单色的 brand-primary 上')
+  assert.ok(!cardWait.includes('state-warn'), '竖条不能是琥珀色')
+  assert.ok(cssRule(css, '.tb-card-flash').includes('var(--dsw-alias-link'), '「跳过去」的高亮也是同一个蓝')
+
+  // ④ active（选中）与 wait（等你）同时命中时，两条 box-shadow 必须显式合并 ——
+  //    否则后写的那条会把前一条吃掉（选中环或竖条凭空消失）。
+  assert.ok(cssRule(css, '.tb-card.active.tb-card-wait').includes('inset3px00'), '两个状态同时命中时合并声明')
 })
 
 await check('T-35 · the three dead style keys are gone (1 definition / 0 references)', () => {

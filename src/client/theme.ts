@@ -117,6 +117,20 @@ export const TB_CSS = `
 .tb-card { display: block; width: 100%; box-sizing: border-box; text-align: left; border: 1px solid ${BORDER}; border-radius: 8px; background: ${BG_RAISED}; color: inherit; padding: 6px 8px; font-family: inherit; cursor: pointer; }
 .tb-card:hover { border-color: ${ACCENT}; }
 .tb-card.active { border-color: ${ACCENT}; box-shadow: 0 0 0 1px ${ACCENT}; }
+/* T-76「在等你决定」的凸显之一：**左侧竖条**（另两处是卡面第一行的 ⏳ 徽章、列内排
+   最前，见 waitingFirst）。用 inset box-shadow 而不是 border-left：border 会把内容
+   右推 2px（同一列里"等待卡的字比别人偏一点"读起来像排版坏了），inset 阴影只画不占
+   布局。active 的描边是**外**阴影 —— 两条不能同时声明（同一元素上 box-shadow 只有
+   一条），所以两者同时命中时显式合并（见下一条规则）。
+   竖条用 **LINK 蓝** 而不是 ACCENT：ACCENT 是宿主 brand-primary —— 它是**反相单色**
+   （浅色下近黑、深色下近白，见本文件顶部那条 token 教训），不是蓝。主人的要求是
+   「蓝系」，而且要在两个主题下都是同一个记号 ⇒ 用与 ⏳ 徽章同一个蓝（LINK）。 */
+.tb-card-wait { box-shadow: inset 3px 0 0 ${LINK}; }
+.tb-card.active.tb-card-wait { box-shadow: 0 0 0 1px ${ACCENT}, inset 3px 0 0 ${LINK}; }
+/* 「跳过去」的落点高亮：outline 不参与布局（高亮不会把卡片挤动一下），1.2s 自己淡掉
+   —— 卡本来就在列表里，高亮只是指路，不是一种新的状态。同样是那个蓝。 */
+.tb-card-flash { outline: 2px solid ${LINK}; outline-offset: 2px; animation: tb-flash 1200ms ease-out 1 both; }
+@keyframes tb-flash { 0%, 55% { outline-color: ${LINK}; } 100% { outline-color: transparent; } }
 .tb-chip { border: 1px solid ${BORDER}; border-radius: 999px; background: transparent; color: ${DIM}; padding: 3px 11px; font-size: 11px; font-family: inherit; cursor: pointer; }
 .tb-chip:hover { color: ${FG}; border-color: ${BORDER_STRONG}; }
 .tb-chip.active { background: ${HOVER_BG}; color: ${LINK}; border-color: ${LINK}; font-weight: 600; }
@@ -128,6 +142,13 @@ export const TB_CSS = `
 .tb-tag { font-size: 10px; color: ${DIM}; border: 1px solid ${BORDER}; border-radius: 999px; padding: 1px 6px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tb-badge { display: inline-flex; align-items: center; font-size: 10px; color: ${LINK}; background: ${HOVER_BG}; border-radius: 999px; padding: 1px 7px; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tb-badge-outline { display: inline-flex; align-items: center; font-size: 10px; color: ${DIM}; border: 1px dashed ${BORDER_STRONG}; border-radius: 999px; padding: 0 7px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* T-76：**「等你决定」的徽章**。它必须一眼就和「已超时」分开，因为它俩说的不是一回事
+   （一个是"该你拍板"，一个是"这件事拖太久了"）。两重区分，缺一不可：
+     · 颜色：link 蓝（两个主题下都是蓝） vs WARN 琥珀；
+     · 形状：**实心 + 5px 圆角矩形**（与 .tb-prop-copy 同一档圆角） vs **描边 + 999px 胶囊**。
+   前身是 .tb-badge-wait（琥珀描边胶囊）——「等你」绝不能沿用那个形状，否则扫视时
+   "超时"与"等你"会等价，那正是本周在治的病（两种不同的事看起来一样）。 */
+.tb-badge-you { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; font-size: 10px; line-height: 16px; color: ${ON_PRIMARY}; background: ${PRIMARY_FILL}; border-radius: 5px; padding: 0 6px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* v0.5.4 collaboration marks: "parked on someone" (amber, shared by the card
    and the drawer) and "past its column SLA" (a quiet dot, deliberately NOT a
    red alarm — see the human strip for the one place that speaks up). */
@@ -153,6 +174,10 @@ export const TB_CSS = `
    drawerHeadWrap），标签页上的「有新动态」圆点与琥珀色的「久未活动」点都只是记号。 */
 .tb-tab-dot { display: inline-block; width: 6px; height: 6px; border-radius: 3px; background: ${LINK}; margin-left: 5px; vertical-align: 1px; }
 .tb-quiet-dot { display: inline-block; width: 6px; height: 6px; border-radius: 3px; background: ${WARN}; flex-shrink: 0; }
+/* T-76 汇总条里的「跳过去 ▸」：读起来是一句链接，行为是一个按钮（与 .tb-link 同一套
+   语言：link 蓝、无边框、hover 才浮底）。 */
+.tb-wait-jump { border: none; border-radius: 6px; background: transparent; color: ${LINK}; font: inherit; font-size: 11.5px; line-height: 16px; padding: 2px 6px; white-space: nowrap; cursor: pointer; }
+.tb-wait-jump:hover { background: ${HOVER_BG}; }
 /* 属性区（T-74 结构重塑）：四行语义行 —— 人 / 值 / 时 / 标签。
    行首 66px 的 muted 小字标签 + 右侧「标签 值 · 标签 值」的 flex 流；字段之间
    的分隔符用 ::before 挂在**后一个字段**上，于是折行时「·」永远跟着下一段的

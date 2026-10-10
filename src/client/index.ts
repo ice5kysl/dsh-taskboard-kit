@@ -67,6 +67,9 @@ export type { AboutFact, AboutFactsInput, AboutLink } from './about.ts'
 export {
   drawerActions, drawerProps, assigneeChoices, milestoneTags, tasksWithTag,
   unseenActivity, detailNeedsFold,
+  // T-76：看板列表页「在等你决定」的派生 —— 汇总条计数（humanWaiting）、卡片凸显
+  // （isWaitingOnYou）、列内排序（waitingFirst）三者共用同一个谓词。
+  isWaitingOnYou, waitingFirst, humanWaiting,
 } from './BoardPanel.tsx'
 export type { DrawerAction, ActionRow, DrawerProp, DrawerPropGroup, DrawerGroupKey, AssigneeChoice, AssigneeChoices } from './BoardPanel.tsx'
 export { MiniBoardButton, MiniBoardDrawer } from './MiniBoard.tsx'

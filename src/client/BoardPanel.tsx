@@ -191,18 +191,29 @@ export function scrollAncestorBoxes(
  *  只在确实被某个祖先裁掉时才调 scrollIntoView（判定在 view.ts 的纯函数里：
  *  已经可见 ⇒ 一个滚动容器都不碰，连横向泳道容器也不会被"顺便"问一次）。
  *  抽屉是绝对定位的兄弟节点、不是卡的祖先 ⇒ 它自己的滚动不受影响。 */
-function revealActiveCard(root: HTMLElement | null): void {
-  const card = root?.querySelector<HTMLElement>('.tb-card.active')
-  if (!card) return
-  revealIntoView(
-    card,
+function revealSelector(root: HTMLElement | null, selector: string): boolean {
+  const el = root?.querySelector<HTMLElement>(selector)
+  if (!el) return false
+  return revealIntoView(
+    el,
     scrollAncestorBoxes(
-      card,
-      (el) => getComputedStyle(el),
-      (el) => el.getBoundingClientRect(),
+      el,
+      (node) => getComputedStyle(node),
+      (node) => node.getBoundingClientRect(),
       { top: 0, left: 0, bottom: window.innerHeight, right: window.innerWidth },
     ),
   )
+}
+
+function revealActiveCard(root: HTMLElement | null): void {
+  revealSelector(root, '.tb-card.active')
+}
+
+/** T-76：把某一张卡滚进视口 —— 汇总条的「跳过去」必须有真落点（不是按了没反应）。
+ *  与 revealActiveCard 同一套「已经可见就一个滚动容器都不碰」的判定。 */
+function revealCardById(root: HTMLElement | null, id: string): void {
+  const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function' ? CSS.escape(id) : id
+  revealSelector(root, `.tb-card[data-task="${escaped}"]`)
 }
 
 /** dsh web 把面板包在一个 overflow-y:auto 的滚动容器里——root 的 height:100%
@@ -590,6 +601,27 @@ export function isQuietActor(board: Board | null, name: string | null | undefine
 export function humanWaiting(board: Board | null, now: number = Date.now()): HealthIssue[] {
   if (!board) return []
   return waitingOnHuman(board, now).filter((issue) => issue.task.waiting_on?.kind === 'human')
+}
+
+/**
+ * 卡片是不是「在等你决定」（T-76 的凸显三件套：左侧竖条 + ⏳ 徽章 + 列内排最前）。
+ *
+ * 口径就一条：`waiting_on.kind === 'human'` —— 与 `humanWaiting()`（汇总条的计数）
+ * **同一个谓词**，否则「条上说 1 张、列表里却找不到那张」就会成为常态。
+ * 等 Agent / 等外部**不算**：那是 Agent 之间的事，卡片自带的琥珀等待徽章已经说了。
+ */
+export function isWaitingOnYou(task: Task): boolean {
+  return task.waiting_on?.kind === 'human'
+}
+
+/**
+ * 列内排序（T-76）：**等你的卡排最前**，其余原样 —— `compareTasks` 仍然是唯一的
+ * 次序口径（用户选的排序没有被改动，只是"需要人做的事"先被看见）。
+ * 只提前 `kind === 'human'` 的卡：让没有 ⏳ 徽章的卡插到最前面，是"两种不同的事
+ * 看起来一样"的另一种写法。
+ */
+export function waitingFirst(a: Task, b: Task): number {
+  return Number(!isWaitingOnYou(a)) - Number(!isWaitingOnYou(b)) || compareTasks(a, b)
 }
 
 // ----------------------------------------------- drawer v2 derivations (T-29)
@@ -1131,7 +1163,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
     () =>
       BOARD_COLUMNS.map((column) => ({
         column,
-        tasks: tasks.filter((task) => columnOf(task) === column).sort(compareTasks),
+        tasks: tasks.filter((task) => columnOf(task) === column).sort(waitingFirst),
       })),
     [tasks],
   )
@@ -1156,8 +1188,27 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
     [state.groupBy, state.showClosed, columns, ownerGroups],
   )
   // The human's own list: cards parked on a PERSON. (等 Agent / 等外部 are the
-  // agents' business — they carry a card badge, not a place in this strip.)
+  // agents' business — they carry a card badge, not a place in this bar.)
   const waitingHuman = useMemo(() => humanWaiting(board), [board])
+  // T-76：汇总条只用一行，而且**只在本会话里**可以关掉（刷新就回来 —— 需要人做的
+  // 事不该被一次误点永久藏起来）。
+  const [waitBarClosed, setWaitBarClosed] = useState(false)
+  // 「跳过去」的落点高亮：1.2s 后自己灭掉（卡本身已经在列表里，高亮只是指路）。
+  const [flashId, setFlashId] = useState<string | null>(null)
+  /**
+   * T-76：跳到最后一张在等你的卡（`humanWaiting` 按等待时长排序 ⇒ 等最久的排最前，
+   * 跳它最有意义）+ 1.2s 高亮。不打开抽屉：落点是**那张卡本身**，抽屉盖上去反而
+   * 挡住了它（要回答就点卡，抽屉里的等待框带着回复框）。
+   */
+  const jumpToWaiting = (): void => {
+    const target = waitingHuman[0]
+    if (!target) return
+    const id = target.task.id
+    store.select(null)
+    revealCardById(revealRef.current, id)
+    setFlashId(id)
+    window.setTimeout(() => setFlashId((current) => (current === id ? null : current)), 1200)
+  }
   /**
    * Approved-but-unsettled cards (v0.6): `done` is not terminal, so these still
    * need someone to close them out. They get their own strip because the whole
@@ -1351,8 +1402,11 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
           </button>
         </div>
       )}
-      {waitingHuman.length > 0 && (
-        <HumanStrip items={waitingHuman} state={state} store={store} />
+      {/* T-76：原来那块 ~150px 的「◷ N 张卡在等你决定」大横幅删掉了（卡标题与问题
+          全文在列表 / 抽屉里本来就有，横幅等于把同一件事说第三遍）。现在只剩这一行
+          ≤28px 的汇总条；**没有等待卡时整条不渲染**（不许出现「0 张在等你」）。 */}
+      {waitingHuman.length > 0 && !waitBarClosed && (
+        <WaitBar count={waitingHuman.length} onJump={jumpToWaiting} onDismiss={() => setWaitBarClosed(true)} />
       )}
       {unsettled.length > 0 && (
         <SettleStrip tasks={unsettled} store={store} />
@@ -1393,6 +1447,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
             groups={ownerGroups}
             state={state}
             onOpen={(id) => store.select(id)}
+            flashId={flashId}
           />
         </div>
       ) : (
@@ -1411,6 +1466,7 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
                 store={store}
                 onCreate={() => setCreateOpen(true)}
                 dnd={dnd}
+                flashId={flashId}
                 onCollapse={column === 'closed' ? () => store.setShowClosed(false) : undefined}
                 overlay={
                   column === 'assigned' && pickerTask ? (
@@ -2060,99 +2116,39 @@ function SettleStrip({ tasks, store }: { tasks: Task[]; store: TaskboardStore })
 }
 
 /**
- * The human's strip — the one surface on this board that speaks to the person
- * instead of to an agent. It exists because "在等人类决定" used to be
- * indistinguishable from "待认领": a card parked on a person is not work
- * anyone can pick up, and it must not rot unnoticed in a lane.
+ * T-76 —— 「在等你决定」的**汇总条**（≤28px 的一行）。
  *
- * Every row lists the card, who is waiting, how long, and the FULL question
- * verbatim — it has to be answerable without opening anything. The row's main
- * button opens the card's drawer; 回复 unfolds an inline answer box that posts
- * the answer as a comment and then releases the wait (comment → unblock, in
- * that order), so the waiting agent is told the answer and the card leaves
- * this list in one gesture.
+ * 0.8.0 这里是一块 ~150px 的大横幅，把每张等待卡的标题 + 问题全文 + 回复框都铺在
+ * 看板顶上。主人 2026-10-10：「这个上面的『1 张卡在等你决定』也有点浪费空间，
+ * 是不是可以在卡片列表里需要人工参与的，做个凸显，而不是用上面的空间来」⇒
+ * **信号搬进卡片本身**（左侧竖条 + ⏳ 徽章 + 列内排最前，见 isWaitingOnYou /
+ * waitingFirst / TaskCard），顶上只留这一行指路。
+ *
+ * 三条纪律：
+ *   ① **没有等待卡时整条不渲染**（`0 张在等你` 是比横幅更纯的噪声）；
+ *   ② 关闭**只在本会话生效**（刷新就回来 —— 需要人做的事不该被一次误点永久藏起来）；
+ *   ③ 高度写死 ${TB_TOOLBAR.controlHeight}px（与工具栏控件同一把尺），不许被内容撑高 ⇒
+ *      文字 `nowrap + ellipsis`、按钮 `flex-shrink:0`。
  */
-function HumanStrip({ items, state, store }: { items: HealthIssue[]; state: TaskboardState; store: TaskboardStore }): JSX.Element {
-  const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [drafts, setDrafts] = useState<Record<string, string>>({})
-  const busy = state.busy
-
-  const answer = async (id: string): Promise<void> => {
-    const text = (drafts[id] ?? '').trim()
-    if (!text || busy) return
-    // The store owns the two-step write (comment → unblock, in that order) so
-    // the panel, the tests and any future surface share one implementation.
-    if (await store.answerWaiting(id, text)) {
-      setDrafts((prev) => ({ ...prev, [id]: '' }))
-      setExpandedId(null)
-    }
-  }
-
+function WaitBar({ count, onJump, onDismiss }: { count: number; onJump(): void; onDismiss(): void }): JSX.Element {
   return (
-    <section style={styles.humanStrip} className="tb-human-strip">
-      <div style={styles.humanHead}>
-        <span style={styles.humanTitle}>{L('◷ {n} 张卡在等你决定', '◷ {n} card(s) waiting on you', { n: items.length })}</span>
-        <span style={styles.humanHint}>
-          {L('回答后点「回复并解除等待」——留言入档并解除挂起，等你的 Agent 会收到通知。', 'Answer and hit 回复并解除等待 — the reply joins the thread, the wait is released, and the waiting agent is notified.')}
-        </span>
-      </div>
-      <ul style={styles.humanList}>
-        {items.map((issue) => {
-          const task = issue.task
-          const waiting = task.waiting_on
-          if (!waiting) return null
-          const open = expandedId === task.id || state.selectedId === task.id
-          const overdue = stalenessOf(task).waitOverdue
-          const draft = drafts[task.id] ?? ''
-          return (
-            <li key={task.id} style={styles.humanItem}>
-              <div style={styles.humanItemHead}>
-                <button type="button" className="tb-human-card" onClick={() => store.select(task.id)} title={task.title}>
-                  <span style={styles.humanRef}>{taskRef(task.id)}</span>
-                  <span style={styles.humanItemTitle}>{task.title}</span>
-                </button>
-                <span style={styles.humanMeta}>
-                  {L('等 {who} · 已等 {age}', 'waiting on {who} · {age}', {
-                    who: waiting.who ?? L('人类', 'human'),
-                    age: ageLabel(issue.ageMs),
-                  })}
-                </span>
-                {overdue && (
-                  <span style={styles.humanOverdue} title={L('等待已超过升级阈值', 'the wait passed its escalation threshold')}>
-                    {L('已超时', 'overdue')}
-                  </span>
-                )}
-                <button type="button" className="tb-btn" onClick={() => setExpandedId(open ? null : task.id)}>
-                  {open ? L('收起', 'Hide') : L('回复', 'Reply')}
-                </button>
-              </div>
-              <div style={styles.humanQuestion} className="tb-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(waiting.question) }} />
-              {open && (
-                <div style={styles.humanComposer}>
-                  <textarea
-                    className="tb-textarea"
-                    rows={2}
-                    value={draft}
-                    placeholder={L('写下你的决定或答复（会作为评论留在这张卡上）…', 'Write your decision or answer (it lands on this card as a comment)…')}
-                    onChange={(event) => setDrafts((prev) => ({ ...prev, [task.id]: event.target.value }))}
-                  />
-                  <div style={styles.humanComposerFoot}>
-                    <button
-                      type="button"
-                      className="tb-btn tb-btn-primary"
-                      disabled={busy || !draft.trim()}
-                      onClick={() => void answer(task.id)}
-                    >
-                      {busy ? L('提交中…', 'Sending…') : L('回复并解除等待', 'Reply & release')}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </li>
-          )
-        })}
-      </ul>
-    </section>
+    <div style={styles.waitBar} className="tb-wait-bar" data-waiting={count}>
+      <span style={styles.waitBarText} title={L('这些卡在等你决定——点「跳过去」定位到第一张', 'These cards are waiting on you — jump to the first one')}>
+        ⏳ {L('{n} 张在等你决定', '{n} waiting on you', { n: count })}
+      </span>
+      <button type="button" className="tb-wait-jump" style={styles.waitBarJump} onClick={onJump}>
+        {L('跳过去', 'Jump to it')} ▸
+      </button>
+      <button
+        type="button"
+        className="tb-iconbtn"
+        style={styles.waitBarClose}
+        onClick={onDismiss}
+        title={L('关闭（仅本会话，刷新就回来）', 'Dismiss (this session only — a reload brings it back)')}
+      >
+        ×
+      </button>
+    </div>
   )
 }
 
@@ -2170,6 +2166,7 @@ function ColumnView({
   dnd,
   overlay,
   onCollapse,
+  flashId,
 }: {
   column: BoardColumn
   tasks: Task[]
@@ -2180,6 +2177,8 @@ function ColumnView({
   overlay?: ReactNode
   /** Given only for the expanded closed lane: folds it back into the strip. */
   onCollapse?: () => void
+  /** T-76：刚被「跳过去」定位到的那张卡（1.2s 高亮），null = 没有。 */
+  flashId?: string | null
 }): JSX.Element {
   return (
     <section
@@ -2219,7 +2218,7 @@ function ColumnView({
           <div style={styles.columnEmpty}>{L('（空）', '(empty)')}</div>
         ) : (
           tasks.map((task) => (
-            <TaskCard key={task.id} task={task} board={state.board} selected={task.id === state.selectedId} onOpen={() => store.select(task.id)} dnd={dnd} busy={state.busy} />
+            <TaskCard key={task.id} task={task} board={state.board} selected={task.id === state.selectedId} onOpen={() => store.select(task.id)} dnd={dnd} busy={state.busy} flash={flashId === task.id} />
           ))
         )}
       </div>
@@ -2246,10 +2245,12 @@ function OwnerLanes({
   groups,
   state,
   onOpen,
+  flashId,
 }: {
   groups: OwnerGroup[]
   state: TaskboardState
   onOpen(id: string): void
+  flashId?: string | null
 }): JSX.Element {
   if (groups.length === 0) {
     return (
@@ -2274,7 +2275,7 @@ function OwnerLanes({
             )}
             <span style={styles.topbarSpacer} />
             {group.kind === 'human' && (
-              <span style={styles.laneHint} title={L('这些卡在等你决定——在上方「等你」条里可以直接回复', 'These are waiting on YOU — answer them in the「等你」strip above')}>
+              <span style={styles.laneHint} title={L('这些卡在等你决定——点开卡片就能回复', 'These are waiting on YOU — open the card and answer right there')}>
                 {L('等你', 'you')}
               </span>
             )}
@@ -2287,6 +2288,7 @@ function OwnerLanes({
                 board={state.board}
                 selected={task.id === state.selectedId}
                 onOpen={() => onOpen(task.id)}
+                flash={flashId === task.id}
               />
             ))}
           </div>
@@ -2346,18 +2348,20 @@ function ClosedStrip({ count, dnd, onExpand }: { count: number; dnd: LaneDnd; on
  *  lane), a faint dot appears once that age passes the column's SLA, and
  *  reviewer / waiting-on get their own badges — a card parked on a person must
  *  never look like a card anyone can pick up. */
-function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; board: Board | null; selected: boolean; onOpen(): void; dnd?: LaneDnd; busy?: boolean }): JSX.Element {
+function TaskCard({ task, board, selected, onOpen, dnd, busy, flash }: { task: Task; board: Board | null; selected: boolean; onOpen(): void; dnd?: LaneDnd; busy?: boolean; flash?: boolean }): JSX.Element {
   const dragging = dnd?.dragId === task.id
   const now = Date.now()
   const staleness = stalenessOf(task, now)
   const waiting = task.waiting_on
+  // T-76：「在等你决定」——左侧竖条 + 徽章（形状与颜色都和琥珀「已超时」分开）。
+  const waitingYou = isWaitingOnYou(task)
   const reviewer = task.status === 'review' ? task.reviewer : null
   const reviewerQuiet = reviewer ? isQuietActor(board, reviewer, now) : false
   const holder = currentHolder(task, board)
   return (
     <button
       type="button"
-      className={selected ? 'tb-card active' : 'tb-card'}
+      className={['tb-card', selected ? 'active' : '', waitingYou ? 'tb-card-wait' : '', flash ? 'tb-card-flash' : ''].filter(Boolean).join(' ')}
       // 稳定、与语言无关的卡身份钩子（T-42：卡面 ref 的 tooltip 改成「任务编号
       // {id}」之后，测试再拿 title 认卡就会跟着措辞漂 —— 认卡应该认 id 本身）。
       data-task={task.id}
@@ -2383,6 +2387,16 @@ function TaskCard({ task, board, selected, onOpen, dnd, busy }: { task: Task; bo
           Owner request 2026-10-01: attributes on top (caption-sized), title in
           the middle, everything that MOVES (owner / who owes / tags) at the foot. */}
       <div style={styles.cardMetaTop}>
+        {/* T-76：这一枚是「需要人做的事」在列表里的**唯一**记号组合之一（另一个是
+            左侧竖条）。title = 问题全文 —— 原横幅第 2–3 行那份内容一个字都没丢，
+            只是从"占一块新空间"改成"hover 就有"。
+            形状/颜色都和琥珀的「已超时」分开：实心蓝 + 5px 圆角矩形 vs 描边琥珀 +
+            999px 胶囊 ⇒ 扫视时"超时"与"等你"不会被读成同一件事。 */}
+        {waitingYou && waiting && (
+          <span className="tb-badge-you" title={waiting.question}>
+            ⏳ {L('等你决定', 'waiting on you')}
+          </span>
+        )}
         <span
           style={{ ...styles.dot, background: PRIORITY_COLORS[task.priority] ?? FAINT }}
           title={L('优先级：{p}', 'Priority: {p}', { p: priorityLabel(task.priority) })}
@@ -2571,6 +2585,8 @@ export function DetailDrawer({
   const [tagsDraft, setTagsDraft] = useState(task.tags.join(', '))
   const [rejectNote, setRejectNote] = useState('')
   const [commentDraft, setCommentDraft] = useState('')
+  // T-76：「等人类」的回复框（comment → unblock 两步，由 store.answerWaiting 拥有）。
+  const [answerDraft, setAnswerDraft] = useState('')
   // v2 state: the assignee disclosure, the in-place tag listing, the copy
   // confirmation, the folded description and the activity baseline.
   //
@@ -2682,6 +2698,13 @@ export function DetailDrawer({
     const note = rejectNote.trim()
     const ok = await store.update({ id: task.id, action: 'reject', ...(note ? { note } : {}) })
     if (ok) setRejectNote('')
+  }
+
+  /** T-76：回答一个「等人类」的问题 —— 留言入档 + 解除等待（顺序由 store 拥有）。 */
+  const submitAnswer = async (): Promise<void> => {
+    const text = answerDraft.trim()
+    if (!text || busy) return
+    if (await store.answerWaiting(task.id, text)) setAnswerDraft('')
   }
 
   const submitComment = async (): Promise<void> => {
@@ -2876,7 +2899,10 @@ export function DetailDrawer({
           </div>
 
           {/* Collaboration fact that is NOT an attribute: a parked card says what
-              it is parked on, in full, so nobody has to open the log. */}
+              it is parked on, in full, so nobody has to open the log.
+              T-76：回答一个「等人类」的问题的**唯一**输入口也从这里进 —— 原来它在
+              看板顶部的「等你」大横幅里；横幅删掉之后，回复框搬到卡片自己的抽屉
+              （同一张卡、同一份问题全文），能力一点没少，只是不再占看板的空间。 */}
           {waiting && (
             <div style={styles.waitBox}>
               <div style={styles.humanItemHead}>
@@ -2886,6 +2912,27 @@ export function DetailDrawer({
                 {staleness.waitOverdue && <span style={styles.humanOverdue}>{L('已超时', 'overdue')}</span>}
               </div>
               <div style={styles.humanQuestion} className="tb-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(waiting.question) }} />
+              {waiting.kind === 'human' && (
+                <div style={styles.humanComposer}>
+                  <textarea
+                    className="tb-textarea"
+                    rows={2}
+                    value={answerDraft}
+                    placeholder={L('写下你的决定或答复（会作为评论留在这张卡上）…', 'Write your decision or answer (it lands on this card as a comment)…')}
+                    onChange={(event) => setAnswerDraft(event.target.value)}
+                  />
+                  <div style={styles.humanComposerFoot}>
+                    <button
+                      type="button"
+                      className="tb-btn tb-btn-primary"
+                      disabled={busy || !answerDraft.trim()}
+                      onClick={() => void submitAnswer()}
+                    >
+                      {busy ? L('提交中…', 'Sending…') : L('回复并解除等待', 'Reply & release')}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -3925,23 +3972,25 @@ const styles: Record<string, CSSProperties> = {
   cardWaitWho: { overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 },
   cardHoldMark: { flexShrink: 0, color: DIM, marginRight: 3 },
   cardHoldAge: { flexShrink: 0, color: FAINT, fontSize: 10 },
-  // The human strip: the only warn-tinted surface on the board (amber, never
-  // alarm-red — the shell has no warn-bg token, so the raised surface plus a
-  // warn left rule carries the emphasis).
-  humanStrip: {
+  // T-76：「在等你决定」的汇总条 —— 一行、写死 28px（与工具栏控件同一把尺），
+  // **不是**一块新面板：没有 padding 出来的高度、没有圆角、没有背景块，
+  // 只有一条分隔线。没有等待卡时整个组件都不渲染（见 BoardPanel 的调用点）。
+  waitBar: {
     flexShrink: 0,
-    margin: '6px 12px 0',
-    padding: '6px 10px 8px',
-    borderRadius: 8,
-    border: `1px solid ${BORDER_STRONG}`,
-    borderLeft: `3px solid ${WARN}`,
-    background: BG_RAISED,
+    height: TB_TOOLBAR.controlHeight,
+    boxSizing: 'border-box',
     display: 'flex',
-    flexDirection: 'column',
+    alignItems: 'center',
     gap: 6,
+    padding: '0 8px 0 14px',
+    borderBottom: `1px solid ${BORDER}`,
+    background: BG_SUNK,
+    minWidth: 0,
   },
-  humanHead: { display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' },
-  humanTitle: { fontSize: 12.5, fontWeight: 600, color: WARN },
+  // 计数允许被截断（320px 下先牺牲它），跳转与关闭不允许 —— 那两个是这行唯一的动作。
+  waitBarText: { flex: '0 1 auto', minWidth: 0, fontSize: 11.5, lineHeight: '16px', color: DIM, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+  waitBarJump: { flexShrink: 0 },
+  waitBarClose: { flexShrink: 0 },
   // The「待收口」strip (done but unsettled): same shape as the human strip,
   // quieter accent — it is a nudge, not a blocked-on-you alarm.
   settleStrip: {
@@ -3960,13 +4009,13 @@ const styles: Record<string, CSSProperties> = {
   settleRow: { display: 'flex', alignItems: 'center', gap: 8, borderTop: `1px solid ${BORDER}`, paddingTop: 7 },
   settleRef: { flexShrink: 0, fontSize: 10.5, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
   settleTitleText: { fontSize: 12.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 },
+  // 「待收口」条与汇总条共用的几条（T-76 删掉大横幅时差点把它们一起删了 ——
+  // 名字带 human* 不等于只有横幅在用，SettleStrip 也读 here）。
+  humanHead: { display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' },
   humanHint: { fontSize: 10.5, color: DIM },
   humanList: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 },
-  humanItem: { display: 'flex', flexDirection: 'column', gap: 4, borderTop: `1px solid ${BORDER}`, paddingTop: 7 },
-  humanItemHead: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  humanRef: { flexShrink: 0, fontSize: 10.5, color: FAINT, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
-  humanItemTitle: { fontSize: 12.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 },
   humanMeta: { fontSize: 10.5, color: DIM, flexShrink: 0 },
+  humanItemHead: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   humanOverdue: { fontSize: 10, color: WARN, border: `1px solid ${WARN}`, borderRadius: 999, padding: '0 7px', flexShrink: 0 },
   humanQuestion: { fontSize: 12, lineHeight: 1.6, color: FG, maxWidth: '70ch' },
   humanComposer: { display: 'flex', flexDirection: 'column', gap: 5, marginTop: 2 },
