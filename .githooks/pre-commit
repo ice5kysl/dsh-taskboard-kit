@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# T-79/T-82：仓内 pre-commit —— **只调用守卫**，不做提交。
+#
+# 为什么它是**版本库里的静态文件**（PO 2026-10-10 打回"安装时才生成"）：
+#   ① hook 是代码 ⇒ 应当进 diff、可 review、可 blame ✓（生成出来的东西评审时看不到 ✗）；
+#   ② 单一事实源必须可见：**看到的 = 会跑的** ✓；
+#   ③ 安装器越薄越好：设配置 + chmod 是幂等的，生成文件不是（正文一改就得重装 ✗）。
+# 安装器（scripts/hooks.mjs）不做别的：`chmod +x` 本文件 + `git config --local core.hooksPath .githooks`。
+#
+# 守卫非零 ⇒ 本次提交被取消 —— 这就是本文件的全部作用。
+# 逃生门：`git commit --no-verify`（守卫是防手滑，不防人）；
+#         卸载：`npm run uninstall-hooks`（把 core.hooksPath 还原成装之前的值）。
+set -euo pipefail
+
+repo="$(git rev-parse --show-toplevel)"
+cd "$repo"
+
+# 只跑守卫（守卫自己会检查：索引为空 / 构建退出码 / 源码↔产物一致 / 没人在并发写）。
+# 注意：这里**不**判断"要不要放行"——守卫的退出码就是答案，原样透传给 git。
+exec npm run --silent check:commit

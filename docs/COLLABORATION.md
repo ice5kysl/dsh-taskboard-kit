@@ -433,11 +433,29 @@ npm run check:commit                         # ② 只检查
 npm run commit:guarded -- -m "提交信息"       # ③ 守卫通过才会真的 commit
 ```
 
+**想让守卫连"忘了用入口"也拦住** ⇒ 装成**仓内** git hook（opt-in，T-82）：
+
+```bash
+npm run install-hooks      # 设 repo-local core.hooksPath=.githooks + 放 pre-commit（只调守卫）
+npm run uninstall-hooks    # 撤销，并把 core.hooksPath 还原成装之前的原值
+npm run hooks-status       # 看当前状态
+```
+
+- **只写 repo-local**（`.git/config`），**绝不 `--global`** ✗ —— 装了 hook 的人不该影响别的仓库（有一条测试专门断言 `git config --global core.hooksPath` 前后不变 ✓）；
+- **安装前先读原值**：你原本设过 `core.hooksPath` ⇒ 卸载时**原样还原**（不是清掉）✓；
+- `pre-commit` **只调用守卫**（`npm run check:commit`）—— pre-commit 的语义是"拦"，在它里面提交是错的 ✗；
+- **逃生门**（守卫是防手滑，不防人 ✓）：`git commit --no-verify` 一定还能提交；`npm run uninstall-hooks` 一定能把配置还原；
+- **hook 是版本库里的静态文件**（`.githooks/pre-commit`）：**看到的 = 会跑的** ✓、进 diff 可 review / blame ✓。
+  安装器**不生成它**，只做两件幂等的事 —— `chmod +x` + 设 `core.hooksPath` ✓；
+  文件缺失时它**大声报错**（而不是悄悄替你造一个 —— 那正是"评审时看不到将要执行什么"的成因 ✗）；
+- **这是仓内开关，不跟着克隆的第一次提交走**：**新克隆要自己跑一次 `npm run install-hooks`** ✓（文件在，配置要装）。
+
 守卫两条，都**必须真的阻断**（失败 ⇒ 非零退出 ⇒ 调用方不执行 commit）：
 
 | 守卫 | 判据 | 反面（错的写法） |
 |---|---|---|
 | **源码↔产物一致** | **构建退出码为 0** + **构建没有产生新的改动**（构建前后 `lib/` 内容哈希相同）+ **工作区 `lib/` = 索引 `lib/`** | ❌ 断言「工作区与 HEAD 无差异」—— `lib/` 本来就是待提交的改动 ⇒ **必然非空 ⇒ 假红**，而假红会训练人绕过它 |
+| **索引为空就别提交** | `git diff --cached --name-only` 为空 ⇒ 拒绝，并说人话（「你是不是忘了 `git add`？」） | ❌ 让它绿着过去 —— 索引为空时"工作区 `lib/` = 索引 `lib/`"**自然成立** ⇒ 四步全绿，然后 git 自己报一句泛泛的 `no changes added to commit` ✗（PO 2026-10-10 dogfood 时踩到）。这一条放在**最前面**（最便宜、不让人白等一次采样），也在**构建之前**（注定不成功的提交不该动发布产物） |
 | **有人在写时不许提交** | 两次采样（间隔 ≥5s）必须一致；采样 = `git status --porcelain` **+ 被跟踪文件的****内容哈希** | ❌ 只比 `porcelain` —— 它只回答"**哪些**文件被改了"；一个**已经处于修改态**的文件被继续写时输出**一字不变** ⇒ **拦不住事故②**（当时被改的 `BoardPanel.tsx` 本就是"已修改"状态） |
 
 **判据的选择要跟着被断言的东西走**（本工作区反复栽的一条）：

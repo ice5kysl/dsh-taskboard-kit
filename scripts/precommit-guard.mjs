@@ -45,7 +45,28 @@ import { join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 /** 退出码（调用方按它决定要不要提交）。 */
-export const EXIT = { ok: 0, usage: 1, writer: 2, build: 3, drift: 4 }
+export const EXIT = { ok: 0, usage: 1, writer: 2, build: 3, drift: 4, emptyIndex: 5 }
+
+/**
+ * 判据：**索引为空就别提交了**（T-82，PO dogfood 时踩到的）。
+ *
+ * 索引为空时「工作区 lib/ = 索引 lib/」**自然成立** ⇒ 守卫四步全绿 ✓，
+ * 然后 git 自己报一句泛泛的 `no changes added to commit` 收场 ✗ —— 真实原因往往只是
+ * **忘了 `git add`**。守卫比 git 更早知道这件事，就该由守卫说人话 ✓。
+ *
+ * @param {{ indexEmpty: boolean, dirty: boolean }} input dirty = 工作区/未跟踪里有东西可提交
+ * @returns {{ ok: boolean, code: number, reason: string }}
+ */
+export function decideIndex({ indexEmpty, dirty }) {
+  if (!indexEmpty) return { ok: true, code: EXIT.ok, reason: '索引里有待提交内容' }
+  return {
+    ok: false,
+    code: EXIT.emptyIndex,
+    reason: dirty
+      ? '索引为空 ⇒ 你是不是忘了 `git add`？（守卫查的是索引；改动还在工作区里，提交会变成"什么都没提"）'
+      : '索引为空且工作区没有改动 ⇒ 没有东西可提交（先改点东西，或确认你改的是这个仓库）',
+  }
+}
 
 /**
  * 一棵目录树的内容指纹：逐字节（路径 + 内容），与 mtime 无关。
@@ -192,6 +213,15 @@ export function runGuard({ cwd, buildCmd, settleMs, json = false, sleep = (ms) =
   const git = (args) => spawnSync('git', args, { cwd, encoding: 'utf8' })
 
   if (!json) log('precommit guard (T-79):')
+  // ---- 守卫 0：索引为空 ⇒ 直接说人话（T-82）--------------------------------
+  // 放在**最前面**（比写入守卫还前）：它最便宜、也最常见 ⇒ 不让人白等一次
+  // 采样；同时在**构建之前**，所以一次注定不会成功的提交不会去动发布产物。
+  const stagedAny = (git(['diff', '--cached', '--name-only']).stdout ?? '').trim()
+  const dirtyAny = (git(['status', '--porcelain']).stdout ?? '').trim()
+  const idx = decideIndex({ indexEmpty: stagedAny.length === 0, dirty: dirtyAny.length > 0 })
+  record('索引里有待提交内容', idx.ok, idx.reason)
+  if (!idx.ok) return { ok: false, code: idx.code, steps }
+
   // ---- 守卫 2：有人在写吗（两次采样）--------------------------------------
   const first = sample()
   sleep(settleMs)
