@@ -130,6 +130,31 @@ Naming `@0.7.4` opts that release out of the gate and installs what you asked fo
 Once a release is more than a day old, a bare `add` finds it too.
 
 <a id="release-notes"></a>
+## v0.9.0 — closing the permission gate's side door, and reshaping drawer / board density
+
+**Every entry is labelled by kind (capability / fix / docs / tooling)** — otherwise the version count gets read as a delivery volume.
+
+- **Fix · the gate's side door** (T-69): parking `block` onto a card that is already waiting **replaces** that wait, so it now goes
+  through the **same ownership gate** as `unblock` and **explicitly records an `unblocked` event** first; a **first-time block is
+  unconstrained**. Motivated by four same-family overreaches in one day — one of them exactly this side door.
+- **Capability · drawer density** (T-74): attributes 11 rows → **4 semantic rows** (people / values / time / tags, wrapping in-row);
+  actions 9 rows → **one chip row + one collapsible 「not available」** line (**no reason is deleted**); assignment → **one line
+  `current: X (change)` + an expandable combobox**; detail tab order is now **attributes → description → actions → assignment**.
+  **Measured**: three blocks **1010.67 → 233.92px (−76.9%)**; **description top 1182 → 237**. Also fixed a real bug: copyable
+  fields had a **dead `title`**.
+- **Capability · board banner → card emphasis** (T-76): the 156.52px banner is gone, replaced by a **left rail + ⏳ badge** on the card
+  (badge `title` carries the **full question text**), the card is **pinned first in its column**, and a single **28px** summary line
+  remains (not rendered when nothing waits). **Measured**: top block **156.52 → 28px**, board content up **135px**, waiting card
+  **6/7 → 0/7**. Colour rule: 「waiting on you」= accent blue + solid rectangle; 「overdue」= amber + pill outline (verified in both themes).
+- **Fix · changelog correction (history is not rewritten)**: v0.8.0's note claimed "every path now runs the same ownership check";
+  T-69 disproved it (`block` replacement was ungated then). The published text stays as-is; corrected here.
+- **Docs · two design-system facts**: `ACCENT` is the host's inverting monochrome (use `LINK` for an accent blue); CSS inside
+  template strings is **not** type-checked (`tsc`), so a comment placed after `*/` silently eats a whole rule — hence the new
+  skeleton-validity check.
+
+**Verified**: `npm test` **333 checks / 16 suites green** + clean typecheck + green `action-parity`; negative controls genuinely red;
+the loaded face was proven by **page-level sha256** (not `rev`+200, which was shown to be invalid).
+
 ## v0.8.0 — permissions move from convention to mechanism, plus a proactive channel for reviewers
 
 Everything here is a **behaviour change**; the client side shows up on refresh, while the **host side (permission checks, notifications)
