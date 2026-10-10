@@ -1328,7 +1328,7 @@ await check('panel: the「按负责人」view renders owner lanes, the switch an
   assert.ok(shown.includes('settledMarker'), 'the toggle brings settled cards back')
 })
 
-await check('panel: done-but-unsettled cards get a settle strip with a one-click close', async () => {
+await check('T-77 · 顶部「待收口」条整块删掉（方案 A）：信号在列里，规则在列头 tooltip', async () => {
   const calls = []
   const board = collabBoard([
     { id: 'T-1', title: 'approvedNotClosed', status: 'done', assignee: 'kimi' },
@@ -1343,19 +1343,47 @@ await check('panel: done-but-unsettled cards get a settle strip with a one-click
   })
   store.setCwd(board.workspace)
   await store.refresh()
-
   const html = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
-  // The strip names the card that is finished but not closed out.
-  assert.ok(html.includes('done, awaiting settle'), 'the settle strip is rendered')
-  assert.ok(html.includes('approvedNotClosed'), 'the unsettled card is listed')
-  // done is not terminal, so the lane label says so instead of reading "Done".
-  assert.ok(html.includes('To settle'), 'the done lane is labelled「待收口」/ To settle')
 
-  // The one-click settle closes through the store (not a hand-rolled fetch).
-  const task = store.getState().board.tasks['T-1']
-  assert.equal(task.status, 'done', 'fixture starts at done')
+  // ① 那条**不再被渲染** —— 这条要量的是"节点在不在"，不是"看不看得见"：
+  //    它断言的是「这个组件不该再被渲染」，所以按节点数/文本判定（与 T-76 那条
+  //    量可见性的判据不同 —— 判据要跟着被断言的东西选）。
+  assert.ok(!html.includes('tb-settle-strip'), '不存在 settle strip 节点')
+  // 注意：不能只搜 'awaiting settle' —— 卡面那句权威口径（done and awaiting settle —
+  // closed by …）本来就含这个词，它**必须**还在。这里只钉顶部条那句独有的计数文案。
+  assert.ok(!html.includes('card(s) done, awaiting settle'), '顶部条那句计数文案不再被渲染')
+  assert.ok(!/✔ \d+ card\(s\)/.test(html), '连计数标题都没有了')
+
+  // ② 那句解释没丢：搬进「待收口」列头的 title（规则信息一条不少）。
+  const lane = html.slice(html.indexOf('To settle') - 400, html.indexOf('To settle') + 40)
+  assert.ok(lane.includes('Done ≠ settled'), `列头 title 带着那句解释：${lane.slice(0, 200)}`)
+  assert.ok(html.includes('Settle it too'), '解释的后半句也在（不做了也走收口，但写明原因）')
+
+  // ③ `done` 的卡在「待收口」列里**可见**（信号靠这一列本身，不靠顶部条）。
+  assert.ok(html.includes('To settle'), 'done 列的表头就是「待收口」')
+  assert.ok(html.includes('approvedNotClosed'), 'done 的卡渲染在这一列里')
+  assert.ok(html.includes('data-task="T-1"'), '它是一张正常的卡（可点开）')
+
+  // ④ 卡面那条**权威口径**仍在（谁有权收口）：它在持球行/卡面的 tooltip 里。
+  // 收口义务在**卡主**身上（不是 assignee）⇒ 只钉句式，不钉具体是谁。
+  assert.match(html, /done and awaiting settle — closed by \w+/, '卡面仍写着「已完成待收口，由卡主 … 收口」')
+  assert.ok(html.includes('only the creator / owner / reviewer / the human may settle'), '并且仍然写明只有谁能收口')
+
+  // ⑤ 收口路径之二还在：抽屉里 done 卡的 close 主操作叫「收口结清」，仍是同一个 action。
+  store.select('T-1')
+  const opened = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+  assert.ok(opened.includes('Settle (close)'), '抽屉里 done 卡的主操作就是「收口结清」')
+  store.select(null)
   assert.equal(await store.update({ id: 'T-1', action: 'close' }), true)
-  assert.deepEqual(calls, [['T-1', 'close']], 'settle posts action=close')
+  assert.deepEqual(calls, [['T-1', 'close']], '收口仍然走 action=close（与列里那枚按钮同一个动作）')
+
+  // ⑥ 没有 done 卡时，看板顶部**什么都不多**（删干净了，不是换成空条）。
+  const quiet = collabBoard([{ id: 'T-9', title: 'nothing done', status: 'in_progress', assignee: 'kimi' }])
+  const quietStore = client.createTaskboardStore({ bridge: { board: async () => ({ ok: true, board: quiet }) }, pollMs: 10 ** 9 })
+  quietStore.setCwd(quiet.workspace)
+  await quietStore.refresh()
+  const quietHtml = renderToStaticMarkup(React.createElement(client.BoardPanel, { store: quietStore }))
+  assert.ok(!quietHtml.includes('tb-settle-strip'), '没有 done 卡时顶部同样没有它')
 })
 
 await check('escapeTarget: one Escape closes exactly ONE layer, topmost first', () => {
