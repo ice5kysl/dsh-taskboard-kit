@@ -3135,6 +3135,35 @@ await check('T-35 · theme: every 10px pill truncates instead of spilling out of
   assert.ok(cssRule(css, '.tb-about-link:hover').includes('background:var(--dsw-alias'), 'the about link hovers on a host token')
 })
 
+await check('T-75 · 抽屉头部：窄视口不许把标题压成竖排（wrap + 标题 flex-basis 下限）', () => {
+  const css = client.TB_CSS
+  const head = cssRule(css, '.tb-drawer-head')
+  const title = cssRule(css, '.tb-drawer-title')
+  assert.ok(head && title, '两条规则都在样式表里')
+
+  // ① 头部必须允许换行。没有它，窄视口下右侧控件把那一行占满 ⇒ 标题只剩 1 字宽。
+  assert.ok(head.includes('flex-wrap:wrap'), `头部必须 flex-wrap:wrap：${head}`)
+  // ② 标题的 flex-basis 必须是一个**下限**（px），不能是 0/0%（0.8.0 的 flex:1 就是 0%）。
+  //    实测：flex-basis:0% 时标题的 hypothetical size 也是 0 ⇒ 换行算法永远认为它放得下，
+  //    于是 flex-wrap 单独用完全无效（320px 下头部 953.95px、标题 15px 宽、47 行）。
+  const m = /flex:11(\d+)px/.exec(title)
+  assert.ok(m, `标题的 flex-basis 必须是一个 px 下限：${title}`)
+  assert.ok(Number(m[1]) >= 120, `下限要够宽（≥120px），实测 ${m[1]}px`)
+  assert.ok(title.includes('min-width:0'), '还要留着 min-width:0，长标题才能在行内折行')
+
+  // ③ 类名必须真的挂在 DOM 上 —— 布局现在在样式表里，而**行内 style 会压过样式表**；
+  //    谁要是把这几条挪回 inline style（0.8.0 就是那样），CSS 会静默失效。
+  const board = collabBoard([{ id: 'T-1', title: '窄视口下的标题', status: 'in_progress', assignee: 'dsh' }])
+  return renderBoard(board).then(({ store }) => {
+    store.select('T-1')
+    const opened = renderToStaticMarkup(React.createElement(client.BoardPanel, { store }))
+    assert.ok(opened.includes('class="tb-drawer-head"'), '抽屉头部带 tb-drawer-head（否则 CSS 够不着）')
+    assert.ok(opened.includes('class="tb-drawer-ref"'), '编号带 tb-drawer-ref')
+    assert.ok(opened.includes('class="tb-drawer-title"'), '标题带 tb-drawer-title')
+    store.select(null)
+  })
+})
+
 await check('T-76 · TB_CSS 的骨架必须合法：注释之外、每个 `{` 之前只能是选择器', () => {
   // 这条来自一次**真机才发现**的事故（T-76 自查）：把一段注释文字写在了 `*/` 之后，
   // CSS 解析器从错处一路跳到下一个 `}`，于是紧跟着的 `.tb-card-wait` 整条规则被吃掉

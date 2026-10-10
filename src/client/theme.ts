@@ -174,6 +174,22 @@ export const TB_CSS = `
    drawerHeadWrap），标签页上的「有新动态」圆点与琥珀色的「久未活动」点都只是记号。 */
 .tb-tab-dot { display: inline-block; width: 6px; height: 6px; border-radius: 3px; background: ${LINK}; margin-left: 5px; vertical-align: 1px; }
 .tb-quiet-dot { display: inline-block; width: 6px; height: 6px; border-radius: 3px; background: ${WARN}; flex-shrink: 0; }
+/* 抽屉头部（T-75）：「#id + 标题 + 主操作 / 编辑 / ×」。
+   0.8.0 的写法是「标题 flex:1 + min-width:0」—— 在 320px 视口（抽屉 236px）下，三枚
+   右侧控件加起来就快把那一行占满，标题被压到 **≈1 个汉字宽 ⇒ 竖排**，头部整块高
+   **935px**（T-74 实测两遍，改前改后同值 ⇒ 0.8.0 起的既有缺陷，不是 T-74 引入）。
+   修法（实测选出来的，见 T-75 卡）：flex-wrap + 给标题一个 flex-basis 的**下限**
+   —— 标题拿不到那个宽度就整体换行，而不是一个一个字往下掉。
+   （布局写在这里而不是 inline style：inline 压过样式表，窄视口行为就没法被覆盖、
+   负面对照、测试读到了。） */
+.tb-drawer-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.tb-drawer-ref { flex-shrink: 0; }
+/* flex-basis 是**下限**，不是宽度：160px 是"标题至少要有这么宽才配和别的控件同行"
+   的门槛。低于它 ⇒ 标题整条换行（拿满 208px），而不是被压成一根竖条。
+   为什么不是 0%（= 0.8.0 的 flex:1）：flex-basis:0 让标题的 hypothetical size 也是 0，
+   换行算法永远认为它"放得下" ⇒ flex-wrap 一个人救不了场（实测：wrap 单独用，
+   320px 下头部仍是 953.95px、标题 15px 宽）。两者必须一起上。 */
+.tb-drawer-title { flex: 1 1 160px; min-width: 0; }
 /* T-76 汇总条里的「跳过去 ▸」：读起来是一句链接，行为是一个按钮（与 .tb-link 同一套
    语言：link 蓝、无边框、hover 才浮底）。 */
 .tb-wait-jump { border: none; border-radius: 6px; background: transparent; color: ${LINK}; font: inherit; font-size: 11.5px; line-height: 16px; padding: 2px 6px; white-space: nowrap; cursor: pointer; }

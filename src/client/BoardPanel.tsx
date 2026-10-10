@@ -610,6 +610,16 @@ export function humanWaiting(board: Board | null, now: number = Date.now()): Hea
  * **同一个谓词**，否则「条上说 1 张、列表里却找不到那张」就会成为常态。
  * 等 Agent / 等外部**不算**：那是 Agent 之间的事，卡片自带的琥珀等待徽章已经说了。
  */
+/**
+ * T-77：「待收口」这一列**自己**就是那条规则的家 —— 原来顶部 `SettleStrip` 里那句
+ * 「已完成 ≠ 结清…」搬到这里当列头 tooltip（主人选定方案 A：信息已在列里，
+ * 顶部不该再占一块）。文案一个字没改，只是换了个出口。
+ */
+export const SETTLE_LANE_HINT = L(
+  '已完成 ≠ 结清：收口后卡才会离开活跃视图。不做了也走收口，但请在备注里写明原因。',
+  'Done ≠ settled: a card leaves the active view only once closed. Not doing it after all? Settle it too — but say why in the note.',
+)
+
 export function isWaitingOnYou(task: Task): boolean {
   return task.waiting_on?.kind === 'human'
 }
@@ -1209,16 +1219,6 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
     setFlashId(id)
     window.setTimeout(() => setFlashId((current) => (current === id ? null : current)), 1200)
   }
-  /**
-   * Approved-but-unsettled cards (v0.6): `done` is not terminal, so these still
-   * need someone to close them out. They get their own strip because the whole
-   * point of the two-step close is that finished work must not quietly rot in a
-   * lane nobody feels responsible for.
-   */
-  const unsettled = useMemo(
-    () => tasks.filter((task) => needsSettling(task)).sort(compareTasks),
-    [tasks],
-  )
   const drawerOpen = createOpen || selected !== null
   const closeDrawer = (): void => {
     setCreateOpen(false)
@@ -1407,9 +1407,6 @@ export function BoardPanel(props: BoardPanelProps): JSX.Element {
           ≤28px 的汇总条；**没有等待卡时整条不渲染**（不许出现「0 张在等你」）。 */}
       {waitingHuman.length > 0 && !waitBarClosed && (
         <WaitBar count={waitingHuman.length} onJump={jumpToWaiting} onDismiss={() => setWaitBarClosed(true)} />
-      )}
-      {unsettled.length > 0 && (
-        <SettleStrip tasks={unsettled} store={store} />
       )}
       {!state.cwd ? (
         <div style={styles.center}>
@@ -2075,47 +2072,6 @@ function EnableBoardWizard({
 }
 
 /**
- * The「待收口」strip: cards that are `done` but not yet settled.
- *
- * v0.6 made `done` non-terminal, which introduces a new way for the board to
- * rot — a card everyone agrees is finished, that nobody feels owns the closing
- * step. This strip is the answer: it lists them at the top with a one-click
- * settle, so "approved" and "actually closed out" cannot silently diverge.
- */
-function SettleStrip({ tasks, store }: { tasks: Task[]; store: TaskboardStore }): JSX.Element {
-  return (
-    <section style={styles.settleStrip} className="tb-settle-strip">
-      <div style={styles.humanHead}>
-        <span style={styles.settleTitle}>{L('✔ {n} 张卡已完成、待收口', '✔ {n} card(s) done, awaiting settle', { n: tasks.length })}</span>
-        <span style={styles.humanHint}>
-          {L('已完成 ≠ 结清：收口后卡才会离开活跃视图。不做了也走收口，但请在备注里写明原因。', 'Done ≠ settled: a card leaves the active view only once closed. Not doing it after all? Settle it too — but say why in the note.')}
-        </span>
-      </div>
-      <ul style={styles.humanList}>
-        {tasks.map((task) => (
-          <li key={task.id} style={styles.settleRow}>
-            <button type="button" className="tb-link" style={styles.settleRef} onClick={() => store.select(task.id)} title={L('打开详情', 'Open details')}>
-              {taskRef(task.id)}
-            </button>
-            <span style={styles.settleTitleText}>{task.title}</span>
-            {task.assignee && <span style={styles.humanMeta}>{task.assignee}</span>}
-            <span style={styles.topbarSpacer} />
-            <button
-              type="button"
-              className="tb-btn tb-btn-primary"
-              onClick={() => void store.update({ id: task.id, action: 'close' })}
-              title={L('结清这张卡', 'Settle this card')}
-            >
-              {L('收口', 'Settle')}
-            </button>
-          </li>
-        ))}
-      </ul>
-    </section>
-  )
-}
-
-/**
  * T-76 —— 「在等你决定」的**汇总条**（≤28px 的一行）。
  *
  * 0.8.0 这里是一块 ~150px 的大横幅，把每张等待卡的标题 + 问题全文 + 回复框都铺在
@@ -2201,7 +2157,17 @@ function ColumnView({
       }}
     >
       <div style={styles.columnHead}>
-        <span style={styles.columnTitle}>{columnLabel(column)}</span>
+        {/* T-77（主人选定方案 A）：顶部那条「✔ N 张卡已完成、待收口」整块删掉了 ——
+            信息本来就在这一列里。它当时多给的两样东西，一样不少地留在这里：
+              · 那句规则说明 ⇒ 变成列头标题的 title（hover 就有）；
+              · 逐卡的一键「收口」 ⇒ 抽屉里 done 卡的 close 主操作「收口结清」
+                （同一个 action，代价是从 1 次点击变成 2 次，这是 A 的已知取舍）。 */}
+        <span
+          style={styles.columnTitle}
+          title={column === 'done' ? SETTLE_LANE_HINT : undefined}
+        >
+          {columnLabel(column)}
+        </span>
         <span style={styles.columnCount}>{tasks.length}</span>
         <span style={styles.topbarSpacer} />
         {onCollapse && (
@@ -2743,11 +2709,11 @@ export function DetailDrawer({
           covers the container's 14px padding band — without it, scrolled
           content peeks through the strip above the bar. */}
       <div style={styles.drawerHeadWrap}>
-        <div style={styles.drawerHead}>
-          <span style={styles.drawerRef} title={taskRefTitle(task.id)}>
+        <div className="tb-drawer-head">
+          <span className="tb-drawer-ref" style={styles.drawerRef} title={taskRefTitle(task.id)}>
             {taskRef(task.id)}
           </span>
-          <span style={styles.drawerTitle} title={task.title}>
+          <span className="tb-drawer-title" style={styles.drawerTitle} title={task.title}>
             {task.title}
           </span>
           {tab === 'detail' && !editing && chosen && (
@@ -3441,8 +3407,8 @@ function CreateForm({ state, store, actors, onClose }: { state: TaskboardState; 
 
   return (
     <aside style={styles.drawer}>
-      <div style={styles.drawerHead}>
-        <span style={styles.drawerTitle}>{L('新建任务', 'New task')}</span>
+      <div className="tb-drawer-head">
+        <span className="tb-drawer-title" style={styles.drawerTitle}>{L('新建任务', 'New task')}</span>
         <button type="button" className="tb-iconbtn" onClick={onClose} title={L('关闭', 'Close')}>
           ×
         </button>
@@ -3991,24 +3957,7 @@ const styles: Record<string, CSSProperties> = {
   waitBarText: { flex: '0 1 auto', minWidth: 0, fontSize: 11.5, lineHeight: '16px', color: DIM, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
   waitBarJump: { flexShrink: 0 },
   waitBarClose: { flexShrink: 0 },
-  // The「待收口」strip (done but unsettled): same shape as the human strip,
   // quieter accent — it is a nudge, not a blocked-on-you alarm.
-  settleStrip: {
-    flexShrink: 0,
-    margin: '6px 12px 0',
-    padding: '6px 10px 8px',
-    borderRadius: 8,
-    border: `1px solid ${BORDER_STRONG}`,
-    borderLeft: `3px solid ${ACCENT}`,
-    background: BG_RAISED,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
-  },
-  settleTitle: { fontSize: 12.5, fontWeight: 600, color: ACCENT },
-  settleRow: { display: 'flex', alignItems: 'center', gap: 8, borderTop: `1px solid ${BORDER}`, paddingTop: 7 },
-  settleRef: { flexShrink: 0, fontSize: 10.5, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
-  settleTitleText: { fontSize: 12.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 },
   // 「待收口」条与汇总条共用的几条（T-76 删掉大横幅时差点把它们一起删了 ——
   // 名字带 human* 不等于只有横幅在用，SettleStrip 也读 here）。
   humanHead: { display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' },
@@ -4092,9 +4041,11 @@ const styles: Record<string, CSSProperties> = {
     gap: 12,
     boxSizing: 'border-box',
   },
-  drawerHead: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
-  drawerRef: { fontSize: 13, fontWeight: 600, color: FAINT, marginTop: 1, flexShrink: 0 },
-  drawerTitle: { flex: 1, minWidth: 0, fontSize: 14, fontWeight: 600, lineHeight: 1.45, overflowWrap: 'anywhere' },
+  // T-75：**布局**（flex / 换行 / 标题的最小宽度）搬进 TB_CSS 的 .tb-drawer-head 一族
+  // —— inline style 会压过样式表，而"窄视口该怎么办"必须能被覆盖、被负面对照、被测试
+  // 读到。这里只剩排版与颜色。
+  drawerRef: { fontSize: 13, fontWeight: 600, color: FAINT, marginTop: 1 },
+  drawerTitle: { fontSize: 14, fontWeight: 600, lineHeight: 1.45, overflowWrap: 'anywhere' },
   // 粘性头部（T-29）：抽屉自己就是滚动容器（overflowY:auto），头部是它的第一个
   // 孩子 ⇒ position:sticky 不需要任何库。细节全在那两个 -14 上：overflow 容器的
   // 可见区是 padding box，所以 top:0 只会把头部钉在 14px 内边距的下沿，上面那一条
