@@ -130,6 +130,20 @@ Naming `@0.7.4` opts that release out of the gate and installs what you asked fo
 Once a release is more than a day old, a bare `add` finds it too.
 
 <a id="release-notes"></a>
+## v0.9.2 — fix: rigid 1310px column row (clipped on narrow, blank on wide)
+
+- **Fix** (T-85): `styles.column` was `width: 240` with `flexShrink: 0`, producing a rigid **1310px** row: narrower panels **clipped the right-hand columns**
+  (317px at 1280, 157px at 1440) while wider ones **left dead space** (83px at 1680, 963px at 2560). Columns now use
+  `flex: 1 1 240px; min-width: 168px`, the width spec lives in a single `TB_LANE` constant, and `overflowX: auto` is kept only as a fallback —
+  no `overflow: hidden` band-aid. This was a **pre-existing defect, not a v0.9.x regression** (identical measurements at v0.9.0 and v0.9.1).
+- **Tooling**: a new 18th suite (`tests/layout-invariants.test.mjs`) drives a real headless Chrome against the **built** artifact and asserts, at four widths:
+  no page-level horizontal overflow, the lane row is not clipped, the last column's right edge is inside the viewport, **the row must fill**, and column width ≥ the minimum.
+  Note: page-level `scrollWidth === clientWidth` was **already true before the fix**, so asserting only "the page doesn't overflow" would **not** have caught this.
+  Pointing the suite at the v0.9.0/v0.9.1 client makes it genuinely red (clipping 310/150px, blank 90/970px).
+- **Known consequence (accepted)**: the "by owner" view fills the panel when there is a single owner; do **not** revert to `flexShrink: 0`.
+
+**Versioning**: under 0.x, fixes and internal changes are patches — hence **0.9.2**.
+
 ## v0.9.1 — 320px drawer header fix · remove the “to settle” strip · pre-commit guard
 
 **Versioning (effective this release)**: under 0.x, **fixes and internal changes are patches**; **only new capabilities or
